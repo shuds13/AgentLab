@@ -1,0 +1,28 @@
+{
+  "_comment": "Facts about ALCF Polaris that are the same for everyone. Credentials and allocations go in users/<you>/polaris.json; what to run goes in the campaign.",
+
+  "ppn": 1,
+  "max_concurrent": 1,
+
+  "target": {
+    "worker_setup": "module use /soft/modulefiles && module load conda && conda activate",
+    "env": {
+      "http_proxy": "http://proxy.alcf.anl.gov:3128",
+      "https_proxy": "http://proxy.alcf.anl.gov:3128",
+      "no_proxy": "localhost,127.0.0.1,.alcf.anl.gov",
+      "TMPDIR": "/tmp",
+      "FI_PROVIDER": "cxi",
+      "MPICH_OFI_NIC_POLICY": "NUMA"
+    }
+  },
+
+  "bucket_defaults": {
+    "queue": "debug",
+    "num_nodes": 1,
+    "walltime": "00:30:00",
+    "init_blocks": 0,
+    "min_blocks": 0,
+    "max_blocks": 1,
+    "max_retries_on_system_failure": 0
+  }
+}

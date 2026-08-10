@@ -1,0 +1,10 @@
+{
+  "_comment": "What this campaign runs. System facts live in systems/<system>.json; your access lives in users/<you>/<system>.json.",
+
+  "system": "aurora",
+
+  "target": {
+    "model": "meta-llama/Meta-Llama-3-70B",
+    "timeout": 5400
+  }
+}

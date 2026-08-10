@@ -1,0 +1,33 @@
+# Globus Compute endpoint template -- Slurm.
+#
+# Lives on the machine that runs the work, at
+#   ~/.globus_compute/<endpoint-name>/user_config_template.yaml.j2
+# The {{ variables }} are filled per job from the "user_config" block of the
+# matching bucket in cas_agent/config.json.
+#
+# EDIT: account, partition, worker_init.
+# Slurm calls it "partition" where PBS calls it "queue"; this accepts either.
+
+engine:
+  type: GlobusComputeEngine
+  max_workers_per_node: 1
+
+  provider:
+    type: SlurmProvider
+    launcher:
+      type: SimpleLauncher
+
+    account: {{ account }}
+    partition: {{ partition | default(queue) }}
+    walltime: {{ walltime | default("00:30:00") }}
+
+    nodes_per_block: {{ num_nodes | default(1) }}
+    init_blocks: 0
+    min_blocks: 0
+    max_blocks: 1
+
+    # EDIT: activate the environment the job needs. The worker starts in a bare
+    # shell, so anything the job assumes must be set up here.
+    worker_init: |
+      # module load ...
+      # source ~/venvs/myenv/bin/activate

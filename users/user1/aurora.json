@@ -1,0 +1,7 @@
+{
+  "_comment": "Copy this to users/<your-username>/<system>.json and fill it in. Applies to every campaign you run on that system.",
+
+  "endpoint": "<globus-compute-endpoint-uuid>",
+  "account": "<project-to-charge>",
+  "work_dir": "<writable-path-on-the-compute-system>"
+}

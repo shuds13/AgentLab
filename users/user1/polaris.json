@@ -1,0 +1,7 @@
+{
+  "_comment": "Copy this to users/<your-username>/polaris.json and fill it in. Applies to every campaign you run on Polaris.",
+
+  "endpoint": "<globus-compute-endpoint-uuid>",
+  "account": "<project-to-charge>",
+  "work_dir": "/eagle/<project>/<you>/agentlab_runs"
+}

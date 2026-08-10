@@ -1,0 +1,45 @@
+# Globus Compute endpoint template -- PBS (tested on ALCF Polaris).
+#
+# Lives on the machine that runs the work, at
+#   ~/.globus_compute/<endpoint-name>/user_config_template.yaml.j2
+# The {{ variables }} are filled per job from the "user_config" block of the
+# matching bucket in cas_agent/config.json.
+#
+# EDIT: account, filesystems, and worker_init are site- and project-specific.
+
+# Idle timeout (UserEndpointConfig, NOT engine). Heartbeat = 30s.
+# soft: after 10 idle heartbeats (~5 min) with NO outstanding tasks, shut the user
+#   endpoint down so its PBS block is torn down and the nodes released. A task
+#   arriving inside the window keeps it alive.
+# idle_heartbeats_hard is deliberately NOT set: "hard" shuts down when tasks are
+#   outstanding-but-not-moving, which is exactly what a job legitimately WAITING in
+#   the queue looks like -- it would kill long-queued jobs.
+idle_heartbeats_soft: 10
+
+engine:
+  type: GlobusComputeEngine
+  max_workers_per_node: 1          # one task per node at a time
+
+  provider:
+    type: PBSProProvider
+    launcher:
+      type: SimpleLauncher         # the worker runs plain on the head node; the
+                                   # task's own mpiexec spans the allocation, so
+                                   # there is no nested mpiexec
+
+    account: {{ account }}
+    queue: {{ queue }}
+    cpus_per_node: 64
+    # ALCF requires the filesystems you touch to be declared.
+    scheduler_options: "#PBS -l filesystems=home:eagle"
+    # EDIT: activate the environment your job needs. Keep it to one line.
+    worker_init: "module use /soft/modulefiles && module load conda && conda activate && source ~/venvs/gcompute/bin/activate && export TMPDIR=/tmp && export FI_PROVIDER=cxi && export MPICH_OFI_NIC_POLICY=NUMA"
+    walltime: {{ walltime|default("00:30:00") }}
+
+    # These are the ceilings on what an agent can consume. default() is only a
+    # fallback -- hard-code a value, or clamp it, to make it an enforced limit
+    # (see endpoints/README.md). max_blocks caps concurrent batch jobs.
+    nodes_per_block: {{ num_nodes|default(1) }}
+    init_blocks: {{ init_blocks|default(0) }}
+    min_blocks: {{ min_blocks|default(0) }}
+    max_blocks: {{ max_blocks|default(1) }}

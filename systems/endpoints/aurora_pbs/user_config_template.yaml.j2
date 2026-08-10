@@ -1,0 +1,37 @@
+# Globus Compute endpoint template -- Aurora, PBS, SimpleLauncher.
+#
+# Install on Aurora at:
+#   ~/.globus_compute/<endpoint-name>/user_config_template.yaml.j2
+# The {{ variables }} are filled per job from the bucket's user_config block.
+#
+# Edit before use: the worker_init environment.
+
+# Shut the endpoint down after 10 idle heartbeats (~5 min) with no outstanding tasks,
+# releasing the PBS block. idle_heartbeats_hard is left unset: it triggers on tasks that
+# are outstanding but not progressing, which is what a queued job looks like.
+idle_heartbeats_soft: 10
+
+engine:
+  type: GlobusComputeEngine
+  max_workers_per_node: 1          # vLLM spans the tiles itself via tensor parallelism
+
+  provider:
+    type: PBSProProvider
+    launcher:
+      type: SimpleLauncher         # the worker runs on the head node of the allocation
+
+    account: {{ account|default("datascience") }}
+    queue: {{ queue|default("debug") }}
+    cpus_per_node: 208
+    # ALCF requires the filesystems you touch to be declared.
+    scheduler_options: "#PBS -l filesystems=home:flare"
+    # Edit: activate the environment providing `vllm`. One line.
+    worker_init: "module load frameworks && source ~/venvs/agentlab/bin/activate"
+    walltime: {{ walltime|default("01:00:00") }}
+
+    # Ceilings on what the agent can consume. Hard-code a value to enforce a limit
+    # rather than leaving a default() fallback. max_blocks caps concurrent batch jobs.
+    nodes_per_block: {{ num_nodes|default(1) }}
+    init_blocks: {{ init_blocks|default(0) }}
+    min_blocks: {{ min_blocks|default(0) }}
+    max_blocks: {{ max_blocks|default(1) }}

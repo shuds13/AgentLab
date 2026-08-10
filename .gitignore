@@ -1,0 +1,15 @@
+# Campaign output. run.sh writes everything an agent produces here.
+workspace/*
+!workspace/*/
+workspace/*/*
+!workspace/*/README.md
+
+# Your access details: endpoint UUIDs, accounts, paths.
+users/*
+!users/user1/
+
+__pycache__/
+*.pyc
+*.orig
+.venv/
+venv/
