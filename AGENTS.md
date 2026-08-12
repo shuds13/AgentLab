@@ -1,57 +1,73 @@
 # Working in this repository
 
-AgentLab runs persistent agents on **campaigns** — one investigation each, submitting
-work to a compute system through Globus Compute.
+Someone arriving here has something they want to run and access to a machine. Get them
+running.
 
-Someone arriving here has a problem to solve and access to a machine. Your job is to
-get them from a clone to a running campaign.
+## Setting someone up
 
-## What you can do, and what you cannot
+Open by telling them what they will need, three short lines and nothing else:
 
-Authentication is theirs. You cannot supply a password, an MFA passcode, or complete a
-browser login. These points need a human:
+- a prompt — what they want the agent to do
+- a machine they can run on, and an account to charge
+- any files they already have — a script, notes, previous results
 
-- **Logging in to the compute system.** Most facilities require a one-time passcode per
-  login. Check whether you already have a usable session before assuming anything:
+One step per message. Each step is a single question or a single action. Take the
+answer, do the thing, move to the next.
 
-  ```
-  ssh -o BatchMode=yes <host> true
-  ```
+### 1. Make somewhere to put their work
 
-  If that succeeds, they have keys or a multiplexed connection and you can drive the
-  machine. If it fails, ask them to log in — with `ControlMaster`/`ControlPersist`
-  configured, their session is then reusable and your later commands work without
-  re-authenticating.
-- **Globus login**, the first time the endpoint starts.
-- **Globus Transfer endpoint activation**, if they sync a workspace across machines
-  with `framework/sync_shared.sh`.
-- **Slack app setup**, if they want it.
+Ask for a short name for what they are doing. Create `campaigns/<name>/` and tell them
+to copy their files in, or point you at them and you will copy them.
 
-At each, stop and give them the exact command to run. Continue when they report back.
+### 2. Find out what one job is
 
-Given a working session you can do the rest: create environments, install packages,
-write template and config files, start the endpoint, read back its UUID, run preflight,
-and launch the agent.
+You are building the machinery around their work, so what you need is mechanical: the
+command or script that runs one piece of work, what changes between one job and the
+next, and where its result comes from — a number it prints, a file it writes.
 
-Ask them for what only they know: which compute system, which project or allocation to
-charge, which queue, and where they have writable space on that system.
+Read their files first, then ask only for what you still need. Their goal is theirs;
+take it as given and build to it.
 
-## Onboarding sequence
+### 3. Fill in the campaign
 
-### 1. Establish the target
+A campaign is five files. Use whatever they gave you as it stands, and write only the
+ones that are absent:
 
-Ask which system they will run on, and check whether `systems/<system>.json` exists.
-If it does not, you are adding a new machine — read an existing one and the endpoint
-templates in `systems/endpoints/` to see what is needed.
+| | |
+|---|---|
+| `prompt.md` | their prompt |
+| `user_prompt.md` | what to do first |
+| `task.py` | how one job runs, what it returns, what the agent is told about it |
+| `campaign.json` | which system, and any parameters for it |
+| `run.sh` | settings and launch |
 
-### 2. Stand up a Globus Compute endpoint
+`campaigns/example-vllm-inference-opt/` has all five to copy the shape from, and its
+README says more about each.
 
-This runs on the compute system. Over ssh:
+`task.py` defines `JOB_DESC`, `JOB_SCHEMA`, `job_key` and `remote_fn`. `remote_fn` is
+shipped to the worker by source, so every import goes inside its body and paths reach it
+through `args` and `target`. Expose more parameters than seem needed — a campaign can
+only explore what its schema allows.
 
-Check the Python version first. On many HPC systems the bare `python3` is the OS one
-and may be years old, too old for the endpoint package. If their application comes from
-a module, load it and build the venv on top with `--system-site-packages`, so the
-endpoint's workers can see that application:
+Then the caps in `run.sh`: ask how many jobs and how long the agent may run before it
+winds down. If they have no view, say what the defaults are. `docs/settings.md` has
+every setting.
+
+### 4. The machine
+
+Ask which system. If `systems/<system>.json` exists you have its module line, proxy,
+cache paths and queue defaults already. If not, you are adding a machine — read an
+existing one and the templates in `systems/endpoints/`.
+
+### 5. The Globus Compute endpoint
+
+This runs on the compute system, over ssh. It is the longest step and the only one where
+they must do something themselves.
+
+Check the Python version first. On many HPC systems the bare `python3` is the OS one and
+too old for the endpoint package. If their application comes from a module, load it and
+build the venv on top with `--system-site-packages`, so the endpoint's workers can see
+that application:
 
 ```
 module load <their-module> && python3 -m venv --system-site-packages ~/venvs/agentlab && source ~/venvs/agentlab/bin/activate && pip install -U globus-compute-endpoint
@@ -64,44 +80,51 @@ Create the endpoint, then replace the generated
 `systems/endpoints/`, editing account, filesystem declarations, and the `worker_init`
 line that activates their environment.
 
-Starting it may require a Globus login in a browser. Hand that step to them.
-
-Read the UUID back with `globus-compute-endpoint list`.
-
-Choose the launcher deliberately. `SimpleLauncher` gives one worker per allocation, and
+Choose the launcher deliberately. `SimpleLauncher` gives one worker per allocation and
 the job's own launcher spans the nodes — correct when the application manages devices
 itself. `MpiExecLauncher` with `available_accelerators` fans out one worker per device —
 correct for many independent single-device tasks.
 
-### 3. Record their access
+Starting it may need a Globus login in a browser; hand that to them. Then read the UUID
+back with `globus-compute-endpoint list`.
 
-Write `users/<their-username>/<system>.json` with the endpoint UUID, the account to
-charge, and their `work_dir`. Create that directory on the compute system.
+### 6. Record their access
 
-This file is not tracked by git.
+Write `users/<their-username>/<system>.json`: endpoint UUID, account to charge, and a
+writable directory on the compute system. Create that directory. This file is not
+tracked by git.
 
-### 4. Verify before running a campaign
+### 7. One job
 
-Preflight checks the task contract, endpoint status and workspace writability, and
-fails with a message rather than starting a run that cannot work. A single job that
-returns is worth more than any amount of configuration review.
+Run one before a full campaign. Preflight checks the task contract, endpoint status and
+workspace writability, so most misconfigurations fail with a message before anything is
+submitted.
 
-### 5. Build their campaign
+## Authentication is theirs
 
-Copy `campaigns/example-vllm-inference-opt/` and replace four files: `prompt.md`,
-`user_prompt.md`, `task.py`, `campaign.json`. The README describes what each holds.
+You cannot supply a password, an MFA passcode, or complete a browser login. These points
+need a human:
 
-Write `prompt.md` from what they tell you about their problem: the current numbers,
-what is fixed, what may vary, what counts as an answer, and when to stop. Keep it to
-their investigation — the framework's own mechanics live in `framework/SYSTEM.md` and
-are already given to the agent.
+- **Logging in to the compute system.** Most facilities require a one-time passcode per
+  login. Check whether you already have a usable session:
 
-`task.py` defines `JOB_DESC`, `JOB_SCHEMA`, `job_key` and `remote_fn`. `remote_fn` is
-shipped to the worker by source: every import must be inside its body, and paths reach
-it through `args` and `target`.
+  ```
+  ssh -o BatchMode=yes <host> true
+  ```
 
-Expose more parameters than you think are needed. A campaign can only explore what its
-schema allows, and a lead nobody can reach is a lead nobody tests.
+  If that succeeds, they have keys or a multiplexed connection and you can drive the
+  machine. If it fails, ask them to log in — with `ControlMaster`/`ControlPersist`
+  configured their session is reusable, and your later commands work without
+  re-authenticating.
+- **Globus login**, the first time the endpoint starts.
+- **Globus Transfer endpoint activation**, if they sync a workspace across machines with
+  `framework/sync_shared.sh`.
+- **Slack app setup**, if they want it.
+
+At each, stop and give them the exact command to run. Continue when they report back.
+
+Ask them for what only they know: which system, which project or allocation to charge,
+which queue, and where they have writable space.
 
 ## Slack
 
@@ -152,13 +175,16 @@ uncollected. Confirm they are in a tmux session before launching, or start one.
 
 ```
 tmux new -s agentlab
-./run.sh <campaign> [user]
+cd campaigns/<name> && ./run.sh
 ```
 
 ```
 framework/list_agents.sh --all          every run and its outcome
 framework/kill_agent.sh --drain <run>   stop cleanly, finishing jobs in flight
 ```
+
+Stopping caps, Slack and the rest live in the campaign's `run.sh`. Every setting, with
+its default, is in `docs/settings.md`. Set the caps from what the user tells you.
 
 Campaign output goes to `workspace/<campaign>/`, untracked: `results.jsonl`,
 `LOGBOOK.md`, `JOURNAL.md`, `SKILL.md`, run directories and logs.

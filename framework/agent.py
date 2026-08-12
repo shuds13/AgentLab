@@ -30,10 +30,16 @@ import tools
 from tools import create_server, shutdown_executor
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-WORKSPACE_DIR = os.environ.get("WORKSPACE_DIR", SCRIPT_DIR)
+WORKSPACE_DIR = os.environ.get("WORKSPACE_DIR") or (
+    os.path.join(os.path.abspath(os.environ.get("LAB_DIR",
+        os.path.join(SCRIPT_DIR, ".."))), "workspace", os.environ["CAMPAIGN"])
+    if os.environ.get("CAMPAIGN") else SCRIPT_DIR)
 # Campaign files (prompt.md, user prompt) live with the campaign, not the framework.
-CAMPAIGN_DIR = os.path.abspath(os.environ.get("CAMPAIGN_DIR", SCRIPT_DIR))
-SYSTEM = os.environ.get("SYSTEM", "example")
+LAB_DIR = os.path.abspath(os.environ.get("LAB_DIR", os.path.join(SCRIPT_DIR, "..")))
+CAMPAIGN = os.environ.get("CAMPAIGN", "")
+CAMPAIGN_DIR = os.path.abspath(os.environ.get(
+    "CAMPAIGN_DIR", os.path.join(LAB_DIR, "campaigns", CAMPAIGN) if CAMPAIGN else SCRIPT_DIR))
+SYSTEM = tools.SYSTEM          # from the campaign's campaign.json
 ROLE = os.environ.get("ROLE", "both")
 LOG_DIR = os.path.join(WORKSPACE_DIR, "logs")
 USER_PROMPT_FILE = os.environ.get("USER_PROMPT_FILE", "user_prompt.md")
@@ -254,7 +260,7 @@ def _start_run_dir():
                 host=socket.gethostname(), pid=os.getpid(),
                 started_at=datetime.now().isoformat(timespec="seconds"),
                 user_prompt_file=USER_PROMPT_FILE,
-                config_file=os.environ.get("CONFIG_FILE", "config.json"),
+                campaign=CAMPAIGN,
                 shared_dir=WORKSPACE_DIR, log=LOG_PATH, status="running")
     _heartbeat()
     print(f"Run dir: {RUN_DIR}", flush=True)

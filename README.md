@@ -41,21 +41,27 @@ workspace/<name>/
 
 ## Getting started
 
-Ask your agent to get you running. `AGENTS.md` is the procedure it follows: standing
-up a Globus Compute endpoint, describing your system and your access, verifying, and
-building a campaign around your problem.
+Clone this repository, start your agent in it, and say:
 
-`docs/setup.md` covers the same ground for reading directly.
+> Help me set up a campaign.
+
+It will ask what you are trying to find out, which machine you will run on, and whether
+you already have files — a script, a prompt, notes. From that it creates
+`campaigns/<your-name>/`, writes the four files a campaign needs, records your access in
+`users/<you>/`, and walks you through the Globus Compute endpoint.
+
+If you would rather set it up by hand, `docs/setup.md` covers the same ground and
+`campaigns/example-vllm-inference-opt/README.md` describes what a campaign directory
+holds.
 
 ## Running
 
-```
-./run.sh <campaign> [user]
-```
+Each campaign has its own `run.sh` holding its settings — job budget, wallclock cap,
+Slack. Edit it, then from the campaign directory:
 
-`run.sh` merges `systems/<system>.json`, `users/<you>/<system>.json` and the campaign's
-`campaign.json` into the single config the framework reads, writes it into the
-campaign's workspace, and starts the agent.
+```
+cd campaigns/<name> && ./run.sh
+```
 
 Start it inside tmux. A campaign runs for hours or days, and closing the terminal kills
 it with jobs in flight.
@@ -98,5 +104,5 @@ problem.
 - `task.py` in the example exposes a fixed set of vLLM flags. An `extra_args`
   passthrough would let a campaign reach any flag its version supports.
 - Slack is present and unwired — `framework/secretary.py` and the bridge scripts.
-- `run.sh` emits a single resource bucket per system. Several shapes per system would
-  need the merge extended.
+- One resource bucket per system. Several shapes per system would need
+  `systems/<system>.json` extended.

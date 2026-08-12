@@ -26,30 +26,64 @@ from claude_agent_sdk import tool, create_sdk_mcp_server
 from globus_compute_sdk import Executor
 from globus_compute_sdk.serialize import ComputeSerializer, AllCodeStrategies
 
-SYSTEM = os.environ.get("SYSTEM", "example")   # which entry in config.json "systems"
 ROLE = os.environ.get("ROLE", "both")          # free-form; the prompt defines what roles mean
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+LAB_DIR = os.path.abspath(os.environ.get("LAB_DIR", os.path.join(SCRIPT_DIR, "..")))
 WORKSPACE_DIR = os.environ.get("WORKSPACE_DIR", SCRIPT_DIR)
 
-# Everything site-specific (endpoints, queues, node counts, walltime) lives in a
-# JSON config file, not in this code.
-_CONFIG_FILE = os.path.join(SCRIPT_DIR, os.environ.get("CONFIG_FILE", "config.json"))
-with open(_CONFIG_FILE) as _cf:
-    _CONFIG = json.load(_cf)
+CAMPAIGN = os.environ.get("CAMPAIGN", "")
+USER_NAME = os.environ.get("USER_NAME") or os.environ.get("USER", "")
 
-_SYS = _CONFIG["systems"][SYSTEM]
-ENDPOINT_ID = _SYS["endpoint"]
-MAX_CONCURRENT = int(_SYS.get("max_concurrent", 1))   # remote jobs running/queued at once
 
-# Buckets are named resource shapes on one system (e.g. a small quick queue and a
-# large long one). A task may route a job to one; otherwise the default is used.
-_default_bucket = next(iter(_SYS["buckets"]))
+def _read_json(path, what, needs=()):
+    """Load one configuration file, saying what to do about it if it is unusable."""
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        sys.exit(f"{what} not found: {path}")
+    except json.JSONDecodeError as e:
+        sys.exit(f"{what} is not valid JSON: {path}\n  {e}")
+    missing = [k for k in needs if not data.get(k) or str(data[k]).startswith("<")]
+    if missing:
+        sys.exit(f"{what} needs {', '.join(missing)} filled in: {path}")
+    return data
+
+
+# Configuration comes from three files, composed here. Machine facts are shared, access
+# is per user, and what to run is per campaign, so each fact is stated once.
+if not CAMPAIGN:
+    sys.exit("CAMPAIGN is not set (the directory name under campaigns/).")
+
+_CAMPAIGN_DIR = os.path.join(LAB_DIR, "campaigns", CAMPAIGN)
+_cam = _read_json(os.path.join(_CAMPAIGN_DIR, "campaign.json"),
+                  f"campaign '{CAMPAIGN}'", needs=("system",))
+SYSTEM = _cam["system"]
+
+_sys_cfg = _read_json(os.path.join(LAB_DIR, "systems", f"{SYSTEM}.json"),
+                      f"system '{SYSTEM}'")
+_usr = _read_json(os.path.join(LAB_DIR, "users", USER_NAME, f"{SYSTEM}.json"),
+                  f"your access to '{SYSTEM}'",
+                  needs=("endpoint", "account", "work_dir"))
+
+ENDPOINT_ID = _usr["endpoint"]
+MAX_CONCURRENT = int(_sys_cfg.get("max_concurrent", 1))   # remote jobs running/queued at once
+
+# Named resource shapes on one system (e.g. a small quick queue and a large long one).
+# A task may route a job to one; otherwise the default is used.
+_bucket_defaults = dict(_sys_cfg.get("bucket_defaults", {}))
+_bucket_defaults["account"] = _usr["account"]
+_SYS = {"buckets": {"default": {"num_nodes": _bucket_defaults.get("num_nodes", 1),
+                                "user_config": _bucket_defaults}}}
+_default_bucket = "default"
 
 # TARGET is handed to the task's remote_fn. Everything the remote side needs must be
 # in here: the function is shipped source-only and cannot read this module.
-TARGET = dict(_SYS.get("target", {}))
-TARGET.setdefault("ppn", _SYS.get("ppn", 1))
+TARGET = dict(_sys_cfg.get("target", {}))
+TARGET.update(_cam.get("target", {}))
+TARGET["work_dir"] = _usr["work_dir"]
+TARGET.setdefault("ppn", _sys_cfg.get("ppn", 1))
 TARGET["nranks"] = _SYS["buckets"][_default_bucket].get("num_nodes", 1) * TARGET["ppn"]
 
 # --- the task plug-in ----------------------------------------------------------
@@ -60,8 +94,7 @@ TARGET["nranks"] = _SYS["buckets"][_default_bucket].get("num_nodes", 1) * TARGET
 # The task is imported from its own directory rather than copied in here, so it can
 # keep support files (scripts, data) beside it and refer to them relative to its own
 # __file__.
-TASK_DIR = os.path.abspath(os.environ.get(
-    "TASK_DIR", os.path.join(SCRIPT_DIR, "..", "example")))
+TASK_DIR = os.path.abspath(os.environ.get("TASK_DIR", _CAMPAIGN_DIR))
 if TASK_DIR not in sys.path:
     sys.path.insert(0, TASK_DIR)
 task = importlib.import_module(os.environ.get("TASK_MODULE", "task"))

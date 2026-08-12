@@ -82,11 +82,10 @@ Create that directory on the compute system before the first run.
 ## 5. Run
 
 ```
-./run.sh <campaign> [user]
+cd campaigns/<name> && ./run.sh
 ```
 
-`run.sh` merges the system, user and campaign configuration into the one config the
-framework reads, writes it into the campaign's workspace, and starts the agent.
+Each campaign's `run.sh` holds its own settings — job budget, wallclock cap, Slack.
 
 Start it inside tmux. A campaign runs for hours or days, and closing the terminal or
 dropping an ssh session kills it with jobs in flight and their results uncollected.
