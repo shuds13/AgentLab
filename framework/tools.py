@@ -73,6 +73,8 @@ MAX_CONCURRENT = int(_sys_cfg.get("max_concurrent", 1))   # remote jobs running/
 # Named resource shapes on one system (e.g. a small quick queue and a large long one).
 # A task may route a job to one; otherwise the default is used.
 _bucket_defaults = dict(_sys_cfg.get("bucket_defaults", {}))
+_bucket_defaults.update(_cam.get("resources", {}))    # campaign: queue, walltime, nodes
+_bucket_defaults.update(_usr.get("resources", {}))    # user: anything they must override
 _bucket_defaults["account"] = _usr["account"]
 _SYS = {"buckets": {"default": {"num_nodes": _bucket_defaults.get("num_nodes", 1),
                                 "user_config": _bucket_defaults}}}
@@ -81,7 +83,11 @@ _default_bucket = "default"
 # TARGET is handed to the task's remote_fn. Everything the remote side needs must be
 # in here: the function is shipped source-only and cannot read this module.
 TARGET = dict(_sys_cfg.get("target", {}))
-TARGET.update(_cam.get("target", {}))
+_cam_target = dict(_cam.get("target", {}))
+# env merges key by key, so a campaign adds to the system's environment rather than
+# replacing it. Everything else the campaign sets wins outright.
+TARGET["env"] = {**TARGET.get("env", {}), **_cam_target.pop("env", {})}
+TARGET.update(_cam_target)
 TARGET["work_dir"] = _usr["work_dir"]
 TARGET.setdefault("ppn", _sys_cfg.get("ppn", 1))
 TARGET["nranks"] = _SYS["buckets"][_default_bucket].get("num_nodes", 1) * TARGET["ppn"]

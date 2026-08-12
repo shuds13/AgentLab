@@ -1,24 +1,16 @@
 {
-  "_comment": "Facts about Aurora that are the same for everyone. Credentials and allocations go in users/<you>/aurora.json; what to run goes in the campaign.",
-
+  "_comment": "Aurora. Starting points only \u2014 a campaign overrides anything here that depends on what it runs, in campaign.json. Credentials go in users/<you>/aurora.json.",
   "ppn": 1,
   "max_concurrent": 1,
-
   "target": {
     "worker_setup": "module load frameworks",
     "env": {
       "http_proxy": "http://proxy.alcf.anl.gov:3128",
       "https_proxy": "http://proxy.alcf.anl.gov:3128",
       "no_proxy": "localhost,127.0.0.1,.alcf.anl.gov",
-      "CCL_PROCESS_LAUNCHER": "hydra",
-      "HF_HOME": "/flare/datasets/model-weights",
-      "HF_DATASETS_CACHE": "/flare/datasets/model-weights",
-      "HF_MODULES_CACHE": "/flare/datasets/model-weights",
-      "RAY_TMPDIR": "/tmp",
       "TMPDIR": "/tmp"
     }
   },
-
   "bucket_defaults": {
     "queue": "debug",
     "num_nodes": 1,

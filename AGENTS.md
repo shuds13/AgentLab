@@ -1,25 +1,36 @@
 # Working in this repository
 
 Someone arriving here has something they want to run and access to a machine. Get them
-running.
+running. The aim is to be concise. Do not quibble over things unless they really matter.
 
 ## Setting someone up
 
-Open by telling them what they will need, three short lines and nothing else:
+Open with what they will need:
 
-- a prompt — what they want the agent to do
-- a machine they can run on, and an account to charge
-- any files they already have — a script, notes, previous results
+- A prompt — what they want the agent to do.
+- A machine they can run on, and an account to charge.
+- The Claude Agent SDK, and access to an LLM service it can use.
+- Any files they already have — a script, notes, previous results.
 
-One step per message. Each step is a single question or a single action. Take the
-answer, do the thing, move to the next.
+Then step 1, in the same message.
 
-### 1. Make somewhere to put their work
+One step per message after that: a single question or a single action, take the answer,
+do the thing, move on. Start each message with its step number. When their files already
+answer a step, say so in a line and go to the next, so they can see nothing was skipped.
 
-Ask for a short name for what they are doing. Create `campaigns/<name>/` and tell them
-to copy their files in, or point you at them and you will copy them.
+Where there is more than one way to do something, choose the one that works and say
+which in a line.
 
-### 2. Find out what one job is
+### 1. Ask for a name
+
+A short name for what they are doing. When they answer, create `campaigns/<name>/`.
+
+### 2. Get their files
+
+Ask them to copy what they have into that directory, or to point you at the files and
+you will copy them. If they have nothing on disk, move on.
+
+### 3. Find out what one job is
 
 You are building the machinery around their work, so what you need is mechanical: the
 command or script that runs one piece of work, what changes between one job and the
@@ -28,10 +39,10 @@ next, and where its result comes from — a number it prints, a file it writes.
 Read their files first, then ask only for what you still need. Their goal is theirs;
 take it as given and build to it.
 
-### 3. Fill in the campaign
+### 4. Fill in the campaign
 
-A campaign is five files. Use whatever they gave you as it stands, and write only the
-ones that are absent:
+Write whichever of these the campaign does not have yet, and use what they gave you as
+it stands:
 
 | | |
 |---|---|
@@ -49,20 +60,23 @@ shipped to the worker by source, so every import goes inside its body and paths 
 through `args` and `target`. Expose more parameters than seem needed — a campaign can
 only explore what its schema allows.
 
-Then the caps in `run.sh`: ask how many jobs and how long the agent may run before it
-winds down. If they have no view, say what the defaults are. `docs/settings.md` has
-every setting.
+Then the stopping conditions, which go in `run.sh`: There are safeguards in place in
+case to stop the agent if it has not met the users goal such as total tasks or campaign
+wallclock. `docs/settings.md` has every setting. If their files already indicate these,
+use that and tell them what you set. Otherwise ask, and offer the defaults.
 
-### 4. The machine
+### 5. The machine
 
 Ask which system. If `systems/<system>.json` exists you have its module line, proxy,
 cache paths and queue defaults already. If not, you are adding a machine — read an
 existing one and the templates in `systems/endpoints/`.
 
-### 5. The Globus Compute endpoint
+### 6. The Globus Compute endpoint
 
-This runs on the compute system, over ssh. It is the longest step and the only one where
-they must do something themselves.
+The user needs to have their endpoint on the remote system. Check with them they do not
+already have an endpoint and environment set up. If they do, get the UUID from them with
+`globus-compute-endpoint list` and go to step 7. If not, the user will need to have an ssh
+connection available. Once they have that you can help put the endpoint in place.
 
 Check the Python version first. On many HPC systems the bare `python3` is the OS one and
 too old for the endpoint package. If their application comes from a module, load it and
@@ -83,18 +97,20 @@ line that activates their environment.
 Choose the launcher deliberately. `SimpleLauncher` gives one worker per allocation and
 the job's own launcher spans the nodes — correct when the application manages devices
 itself. `MpiExecLauncher` with `available_accelerators` fans out one worker per device —
-correct for many independent single-device tasks.
+correct for many independent single-device tasks. `SimpleLauncher` should be
+considered the default. If you think they might want `MpiExecLauncher` you should check
+with them.
 
 Starting it may need a Globus login in a browser; hand that to them. Then read the UUID
 back with `globus-compute-endpoint list`.
 
-### 6. Record their access
+### 7. Record their access
 
 Write `users/<their-username>/<system>.json`: endpoint UUID, account to charge, and a
 writable directory on the compute system. Create that directory. This file is not
 tracked by git.
 
-### 7. One job
+### 8. One job
 
 Run one before a full campaign. Preflight checks the task contract, endpoint status and
 workspace writability, so most misconfigurations fail with a message before anything is
@@ -183,8 +199,8 @@ framework/list_agents.sh --all          every run and its outcome
 framework/kill_agent.sh --drain <run>   stop cleanly, finishing jobs in flight
 ```
 
-Stopping caps, Slack and the rest live in the campaign's `run.sh`. Every setting, with
-its default, is in `docs/settings.md`. Set the caps from what the user tells you.
+Stopping conditions, Slack and the rest live in the campaign's `run.sh`. Every setting,
+with its default, is in `docs/settings.md`.
 
 Campaign output goes to `workspace/<campaign>/`, untracked: `results.jsonl`,
 `LOGBOOK.md`, `JOURNAL.md`, `SKILL.md`, run directories and logs.
