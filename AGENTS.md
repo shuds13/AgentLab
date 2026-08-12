@@ -119,13 +119,15 @@ submitted.
 
 ### 9. Slack, if they want it
 
-Worth having: the campaign posts status, milestones and alerts as it goes, and they can
-message it back to steer it mid-run. It can be added at any time, so if they would
-rather get going, offer it and move on.
+The campaign posts status, milestones and alerts as it goes, and they can message it
+back to steer it mid-run.
 
 Ask whether they are joining an existing lab or setting one up — joining needs only the
-channel and its webhook URL, setting up needs the app created. The `Slack` section below
-has both.
+channel and its webhook URL. Setting one up means creating a Slack app, which in most
+workspaces a Slack admin has to approve; requesting that approval is part of the setup,
+so they do not need it arranged beforehand. The `Slack` section below has both.
+
+It can also be added later, if they would rather set it up another time.
 
 ### 10. Hand over
 
@@ -139,10 +141,10 @@ cd campaigns/<name> && ./run.sh
 Tell them what the stopping conditions are set to, and how to watch and stop it —
 `framework/list_agents.sh --all` and `framework/kill_agent.sh --drain <run_id>`.
 
-## Authentication is theirs
+## Steps that need them at the keyboard
 
-You cannot supply a password, an MFA passcode, or complete a browser login. These points
-need a human:
+A few things you cannot do for them — a password, an MFA passcode, a browser login. Walk
+them through those: say exactly what to do, wait, and pick it up from there.
 
 - **Logging in to the compute system.** Most facilities require a one-time passcode per
   login. Check whether you already have a usable session:
@@ -160,7 +162,8 @@ need a human:
   `framework/sync_shared.sh`.
 - **Slack app setup**, if they want it.
 
-At each, stop and give them the exact command to run. Continue when they report back.
+At each of these, give them the exact command or the exact page, and carry on when
+they say it is done.
 
 Ask them for what only they know: which system, which project or allocation to charge,
 which queue, and where they have writable space.
@@ -181,10 +184,12 @@ token, no processes to run.
 
 ### Setting up a lab
 
-Done once by whoever hosts it. All the browser work lives here, which is why joining
-needs none of it.
+Done once by whoever hosts it. Walk them through each of these — say what to click,
+wait, carry on:
 
-1. Create a Slack app in the workspace and get it approved.
+1. Create a Slack app in the workspace. Most workspaces require a Slack admin to
+   approve it — request that as part of this step rather than expecting it in advance,
+   and expect to wait.
 2. Add an incoming webhook. Its URL goes in `~/.slack_webhook` and is what members
    receive when they join.
 3. Create a bot token with `channels:history`, in `~/.slack_bot_token`. Inbound only —
