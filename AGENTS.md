@@ -15,7 +15,7 @@ Open with what they will need:
 Then step 1, in the same message.
 
 One step per message after that: a single question or a single action, take the answer,
-do the thing, move on. Start each message with its step number. When their files already
+do the thing, move on. Start each message with `Step N`. When their files already
 answer a step, say so in a line and go to the next, so they can see nothing was skipped.
 
 Where there is more than one way to do something, choose the one that works and say
@@ -23,7 +23,7 @@ which in a line.
 
 ### 1. Ask for a name
 
-A short name for what they are doing. When they answer, create `campaigns/<name>/`.
+Ask for a short name for what they are doing. When they answer, create `campaigns/<name>/`.
 
 ### 2. Get their files
 
@@ -112,9 +112,32 @@ tracked by git.
 
 ### 8. One job
 
-Run one before a full campaign. Preflight checks the task contract, endpoint status and
+Ask before submitting anything — a single job can hold a node for a long time. With
+their agreement, run one. Preflight checks the task contract, endpoint status and
 workspace writability, so most misconfigurations fail with a message before anything is
 submitted.
+
+### 9. Slack, if they want it
+
+Worth having: the campaign posts status, milestones and alerts as it goes, and they can
+message it back to steer it mid-run. It can be added at any time, so if they would
+rather get going, offer it and move on.
+
+Ask whether they are joining an existing lab or setting one up — joining needs only the
+channel and its webhook URL, setting up needs the app created. The `Slack` section below
+has both.
+
+### 10. Hand over
+
+The campaign is theirs to start. Show them the command, and that it goes in tmux:
+
+```
+tmux new -s agentlab
+cd campaigns/<name> && ./run.sh
+```
+
+Tell them what the stopping conditions are set to, and how to watch and stop it —
+`framework/list_agents.sh --all` and `framework/kill_agent.sh --drain <run_id>`.
 
 ## Authentication is theirs
 
@@ -144,8 +167,8 @@ which queue, and where they have writable space.
 
 ## Slack
 
-Optional. Everything runs without it. Without a webhook file, `slack_notify.sh` exits
-quietly and the agent is unaffected.
+A campaign posts its status, milestones and alerts to Slack, and messages sent back
+reach a running agent through the announcements board. It can be added at any time.
 
 Ask first whether they are **setting up a lab** or **joining one**. The work is almost
 entirely on the first.
