@@ -20,13 +20,8 @@ import sys
 import time
 from datetime import datetime
 
-from claude_agent_sdk import (
-    ClaudeSDKClient,
-    ClaudeAgentOptions,
-    AssistantMessage,
-    ResultMessage,
-)
 import tools
+from provider import OpenAICompatibleSession, local_tool_functions, local_tool_specs
 from tools import create_server, shutdown_executor
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -133,8 +128,7 @@ def _fmt_uptime(secs):
 
 
 async def _context_usage(client):
-    """Best-effort /context data (model, tokens, window, pct) via the SDK method that
-    backs the CLI /context command. Returns the dict or None on failure."""
+    """Best-effort provider usage data."""
     try:
         return await client.get_context_usage()
     except Exception as e:
@@ -261,6 +255,8 @@ def _start_run_dir():
                 started_at=datetime.now().isoformat(timespec="seconds"),
                 user_prompt_file=USER_PROMPT_FILE,
                 campaign=CAMPAIGN,
+                provider=tools.AGENT_CONFIG["provider"],
+                model=tools.AGENT_CONFIG.get("model"),
                 shared_dir=WORKSPACE_DIR, log=LOG_PATH, status="running")
     _heartbeat()
     print(f"Run dir: {RUN_DIR}", flush=True)
@@ -297,6 +293,10 @@ def preflight():
             problems.append(f"task preflight() raised: {e}")
     if not os.path.isdir(WORKSPACE_DIR):
         problems.append(f"WORKSPACE_DIR does not exist: {WORKSPACE_DIR}")
+    if tools.AGENT_CONFIG["provider"] == "openai":
+        key_env = tools.AGENT_CONFIG["api_key_env"]
+        if key_env and not os.environ.get(key_env) and not tools.AGENT_CONFIG.get("base_url"):
+            problems.append(f"OpenAI provider needs {key_env} to be set")
     system_md = os.path.join(SCRIPT_DIR, "SYSTEM.md")
     if not os.path.isfile(system_md):
         problems.append(f"SYSTEM.md missing: {system_md} (system-details prompt loaded into the agent)")
@@ -335,37 +335,29 @@ def preflight():
 
 
 async def drain_turn(client, round_num):
-    """Print the assistant's output for one turn (until its ResultMessage)."""
-    async for message in client.receive_response():
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if hasattr(block, "text"):
-                    print(block.text, flush=True)
-        elif isinstance(message, ResultMessage):
-            print(f"\n[round {round_num} turn end] {message.subtype}", flush=True)
+    """Drain one provider turn and print a uniform turn marker."""
+    if hasattr(client, "drain_turn"):
+        await client.drain_turn(round_num)
+    print(f"\n[round {round_num} turn end]", flush=True)
 
 
 async def main():
     system_prompt = load_prompt()
     system_prompt += "\n\n" + load_system()
     system_prompt += f"\n\n# This agent\nSYSTEM={SYSTEM}  ROLE={ROLE}.\nThe shared files (results.jsonl, LOGBOOK.md, JOURNAL.md, claims.jsonl) live in {WORKSPACE_DIR} \u2014 always read and write them by full path there (e.g. {WORKSPACE_DIR}/results.jsonl). Follow the role rules in the Collaboration section of the prompt."
-    server = create_server()
-
-    options = ClaudeAgentOptions(
-        mcp_servers={"cas": server},
-        # The task plug-in decides which job tools exist (a task with no local
-        # comparator does not get the local pair), so take the list from tools.
-        allowed_tools=tools.tool_names() + [
-            "Read",
-            "Write",
-            "Glob",
-            "Grep",
-            "Bash",
-        ],
-        permission_mode="bypassPermissions",
-        system_prompt=system_prompt,
-        cwd=SCRIPT_DIR,
-    )
+    config = tools.AGENT_CONFIG
+    tool_functions = local_tool_functions(LAB_DIR)
+    if config["provider"] == "openai":
+        tool_specs = local_tool_specs()
+        # The compute tools remain ordinary Python callables; the OpenAI adapter
+        # serializes their existing Claude-shaped results for compatibility.
+        tool_functions.update(tools.openai_tool_functions())
+        session_factory = lambda: OpenAICompatibleSession(
+            config, system_prompt, tool_specs + tools.openai_tool_specs(), tool_functions)
+    else:
+        server = create_server()
+        session_factory = lambda: __import__("provider").ClaudeSession(
+            system_prompt, server, tools.tool_names() + ["Read", "Write", "Glob", "Grep", "Bash"], SCRIPT_DIR)
 
     results_file = os.path.join(WORKSPACE_DIR, "results.jsonl")
     loop = asyncio.get_event_loop()
@@ -403,9 +395,10 @@ async def main():
     beat_task = asyncio.create_task(_heartbeat_loop())
 
     try:
-        async with ClaudeSDKClient(options=options) as client:
-            model = (await _context_usage(client) or {}).get("model") or "?"
-            print(f"Agent started -- {SYSTEM} ({ROLE}) · model {model}", flush=True)
+        async with session_factory() as client:
+            usage = await client.get_context_usage() if hasattr(client, "get_context_usage") else None
+            model = (usage or {}).get("model") or tools.AGENT_CONFIG.get("model") or "?"
+            print(f"Agent started -- {SYSTEM} ({ROLE}) · provider {tools.AGENT_CONFIG['provider']} · model {model}", flush=True)
             _write_meta(model=model)
             if NOTIFY_START:
                 slack_notify(f":rocket: Agent started — {SYSTEM} ({ROLE}) · {model}.")

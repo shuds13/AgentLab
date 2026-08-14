@@ -11,5 +11,6 @@ users/*
 __pycache__/
 *.pyc
 *.orig
+.pytest_cache/
 .venv/
 venv/

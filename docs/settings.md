@@ -45,6 +45,28 @@ Less often changed.
 | `CAMPAIGN_DIR` | `campaigns/<campaign>` | where the campaign's files are |
 | `TASK_DIR` | the campaign directory | where `task.py` is found |
 | `TASK_MODULE` | task | module name within `TASK_DIR` |
+| `AGENT_PROVIDER` | campaign setting | override provider: `claude` or `openai` |
+| `AGENT_MODEL` | campaign setting | override the OpenAI-compatible model name |
+| `AGENT_BASE_URL` | campaign setting | override the OpenAI-compatible API base URL |
+| `AGENT_API` | `chat_completions` | OpenAI-compatible API mode |
+| `AGENT_API_KEY_ENV` | `OPENAI_API_KEY` | environment variable containing the OpenAI-compatible API key |
+
+For per-campaign configuration, add an `agent` object to `campaign.json`, for example:
+
+```json
+{
+  "agent": {
+    "provider": "openai",
+    "model": "my-model",
+    "base_url": "https://llm.example/v1",
+    "api": "chat_completions",
+    "api_key_env": "OPENAI_API_KEY"
+  }
+}
+```
+
+Claude remains the default when `agent` is omitted. Environment variables override the
+campaign object.
 | `CLAIM_STALE_SECONDS` | 21600 | before an unfinished claim can be taken over |
 | `ANNOUNCE_POLL` | 2 | seconds between announcement-board checks while waiting |
 
@@ -68,7 +90,7 @@ Time limits that bound a job rather than a launch live here.
 
 | | |
 |---|---|
-| `campaigns/<name>/campaign.json` | which system, the model, `target.timeout` — seconds a job's own command may run |
+| `campaigns/<name>/campaign.json` | which system, optional `agent` provider/model settings, and `target.timeout` — seconds a job's own command may run |
 | `systems/<system>.json` | module line, proxy, cache paths, `ppn`, `max_concurrent`, and `bucket_defaults` including the batch allocation's `walltime` |
 | `users/<you>/<system>.json` | endpoint UUID, account to charge, `work_dir` on the compute system |
 

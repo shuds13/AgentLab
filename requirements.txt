@@ -1,5 +1,6 @@
 claude-agent-sdk
 globus-compute-sdk
+openai
 # Optional: only if your task or figures need them.
 # matplotlib
 # mpi4py

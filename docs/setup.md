@@ -4,7 +4,7 @@ From a clone to a running agent.
 
 ## 1. Install
 
-Python 3.10+, and the `claude` CLI on your PATH and authenticated (`claude --version`).
+Python 3.10+. Claude campaigns also need the `claude` CLI on your PATH and authenticated (`claude --version`). OpenAI-compatible campaigns need an API key in the configured environment variable; `OPENAI_API_KEY` is the default.
 
 ```
 pip install -r requirements.txt

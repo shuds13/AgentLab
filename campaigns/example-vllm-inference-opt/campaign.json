@@ -1,6 +1,9 @@
 {
   "_comment": "What this campaign runs. `resources` overrides the system's defaults; `target` is handed to the job, merging over the system's.",
   "system": "aurora",
+  "agent": {
+    "provider": "claude"
+  },
   "resources": {
     "queue": "debug",
     "walltime": "01:00:00",

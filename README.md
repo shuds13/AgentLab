@@ -33,7 +33,7 @@ campaigns/<name>/
                prompt.md        the goal
                user_prompt.md   this run's kick-off
                task.py          what a job does
-               campaign.json    which system, and what to run on it
+               campaign.json    which system, agent provider, and what to run on it
 
 workspace/<name>/
                everything the agent produces. Not tracked by git.
@@ -83,8 +83,10 @@ Copy `campaigns/example-vllm-inference-opt/` and replace four files:
 | `campaign.json` | which system, and any parameters for it |
 
 `task.py` defines four names the framework imports — `JOB_DESC`, `JOB_SCHEMA`,
-`job_key`, `remote_fn`. `remote_fn` is sent to the worker by source, so everything it
-needs must be imported inside it or passed in through its arguments.
+`job_key`, `remote_fn`. `JOB_SCHEMA` may use the existing Python-type shorthand or explicit
+JSON Schema; the framework adapts the shorthand for each agent provider. `remote_fn` is sent
+to the worker by source, so everything it needs must be imported inside it or passed in through
+its arguments.
 
 Nothing in `framework/` changes.
 
