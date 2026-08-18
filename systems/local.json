@@ -1,0 +1,18 @@
+{
+  "_comment": "Local execution system. No Globus Compute endpoint needed; jobs run as local_fn via thread pool.",
+  "local": true,
+  "ppn": 1,
+  "max_concurrent": 1,
+  "target": {
+    "env": {}
+  },
+  "bucket_defaults": {
+    "queue": "local",
+    "num_nodes": 1,
+    "walltime": "24:00:00",
+    "init_blocks": 0,
+    "min_blocks": 0,
+    "max_blocks": 1,
+    "max_retries_on_system_failure": 0
+  }
+}

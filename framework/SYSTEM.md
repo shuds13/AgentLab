@@ -2,12 +2,13 @@
 
 ## Submitting work
 
-`submit_job` sends work to a remote compute system through Globus Compute and returns a
-`job_id`. The system is selected by configuration; you do not name it.
+Use the submission and collection tools exposed for this campaign. A local
+campaign provides `submit_local` and `get_local_completed`; a remote campaign
+provides `submit_job` and `get_completed_jobs`. The system is selected by
+configuration; you do not name it.
 
-`get_completed_jobs` collects whatever has finished. Call it near the start of a turn.
-
-After submitting, end your turn. Jobs keep running and you are resumed when they finish.
+After submitting, end your turn. Jobs keep running and you are resumed when
+they finish.
 
 Check `results.jsonl` and jobs in flight before submitting, so each configuration runs
 once.

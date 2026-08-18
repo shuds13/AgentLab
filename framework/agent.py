@@ -55,8 +55,9 @@ MAX_FINALIZE_ROUNDS = 2
 # have finished; then agent.py waits Python-side (off the event loop) for the next
 # job to complete and nudges the same conversation onward. Remote jobs keep
 # running and are never cancelled by a turn ending.
+_COMPLETED_TOOL = "get_local_completed" if tools.IS_LOCAL_SYSTEM else "get_completed_jobs"
 CONTINUE_PROMPT = (
-    "One or more jobs have finished. Collect them with get_completed_jobs, "
+    f"One or more jobs have finished. Collect them with {_COMPLETED_TOOL}, "
     "fit and log each, then continue exploring: pick the next promising region "
     "from your results and submit it. A good result means probe nearby, not stop."
 )
@@ -301,23 +302,25 @@ def preflight():
     if not os.path.isfile(system_md):
         problems.append(f"SYSTEM.md missing: {system_md} (system-details prompt loaded into the agent)")
     # Fail fast if the Globus Compute endpoint is not online -- otherwise every
-    # submit fails with ENDPOINT_NOT_ONLINE and the run does nothing.
-    try:
-        import globus_compute_sdk as _gc
-        _c = _gc.Client()
-        _st = _c.get_endpoint_status(tools.ENDPOINT_ID).get("status")
-        if _st != "online":
-            try:
-                _nm = _c.get_endpoint_metadata(tools.ENDPOINT_ID).get("name") or tools.ENDPOINT_ID
-            except Exception:
-                _nm = tools.ENDPOINT_ID
-            slack_notify(f":rotating_light: Agent exiting -- {SYSTEM} ({ROLE}): Globus Compute "
-                         f"endpoint '{_nm}' is not online (status={_st}). Start it: "
-                         f"globus-compute-endpoint start {_nm} --detach")
-            problems.append(f"Globus Compute endpoint '{_nm}' ({tools.ENDPOINT_ID}) is not online "
-                            f"(status={_st}); start it: globus-compute-endpoint start {_nm} --detach")
-    except Exception as e:
-        print(f"[preflight] WARNING: could not query endpoint status ({tools.ENDPOINT_ID}): {e}", flush=True)
+    # submit fails with ENDPOINT_NOT_ONLINE and the run does nothing. Skipped for
+    # local-only systems that don't use Globus Compute.
+    if not tools.IS_LOCAL_SYSTEM:
+        try:
+            import globus_compute_sdk as _gc
+            _c = _gc.Client()
+            _st = _c.get_endpoint_status(tools.ENDPOINT_ID).get("status")
+            if _st != "online":
+                try:
+                    _nm = _c.get_endpoint_metadata(tools.ENDPOINT_ID).get("name") or tools.ENDPOINT_ID
+                except Exception:
+                    _nm = tools.ENDPOINT_ID
+                slack_notify(f":rotating_light: Agent exiting -- {SYSTEM} ({ROLE}): Globus Compute "
+                             f"endpoint '{_nm}' is not online (status={_st}). Start it: "
+                             f"globus-compute-endpoint start {_nm} --detach")
+                problems.append(f"Globus Compute endpoint '{_nm}' ({tools.ENDPOINT_ID}) is not online "
+                                f"(status={_st}); start it: globus-compute-endpoint start {_nm} --detach")
+        except Exception as e:
+            print(f"[preflight] WARNING: could not query endpoint status ({tools.ENDPOINT_ID}): {e}", flush=True)
     try:
         os.makedirs(WORKSPACE_DIR, exist_ok=True)
         _t = os.path.join(WORKSPACE_DIR, ".preflight_write_test")
@@ -331,7 +334,8 @@ def preflight():
         for pr in problems:
             print(f"  - {pr}", flush=True)
         sys.exit(1)
-    print(f"preflight OK: task={tools.TASK_DIR}, SYSTEM.md, WORKSPACE_DIR, endpoint online.", flush=True)
+    backend = "local worker pool" if tools.IS_LOCAL_SYSTEM else "endpoint online"
+    print(f"preflight OK: task={tools.TASK_DIR}, SYSTEM.md, WORKSPACE_DIR, {backend}.", flush=True)
 
 
 async def drain_turn(client, round_num):
