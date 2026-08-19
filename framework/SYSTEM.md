@@ -7,14 +7,27 @@ campaign provides `submit_local` and `get_local_completed`; a remote campaign
 provides `submit_job` and `get_completed_jobs`. The system is selected by
 configuration; you do not name it.
 
-After submitting, end your turn. Jobs keep running and you are resumed when
-they finish.
+When you call a submit tool, the framework starts a job in the background and
+returns immediately with a `job_id`. After submitting, end your turn — jobs
+keep running and you are resumed when they finish. Use the corresponding
+collection tool to gather results before the next round.
 
-Check `results.jsonl` and jobs in flight before submitting, so each configuration runs
-once.
+Check `results.jsonl` and jobs in flight before submitting, so each configuration
+runs once.
 
-Resource values — endpoint, account, queue, node count, walltime, concurrency — live in
-`config.json` and are authoritative. Read them there when a value matters.
+Resource values — endpoint, account, queue, node count, walltime, concurrency —
+live in `config.json` and are authoritative. Read them there when a value matters.
+
+## File layout
+
+This agent runs in the lab root. Key paths you should read rather than search:
+
+- **Workspace (your read/write area):** `<WORKSPACE_DIR>` — contains `results.jsonl`,
+  `LOGBOOK.md`, `JOURNAL.md`, `claims.jsonl`, `ANNOUNCEMENTS.md`.
+- **Campaign files:** in `<CAMPAIGN_DIR>` (`campaigns/<name>/`) — `task.py`,
+  `campaign.json`, `prompt.md`, `user_prompt.md`. The dataset and tools live here too.
+- **Framework:** in `framework/` — `agent.py` (the loop), `tools.py` (your tools),
+  `SYSTEM.md` (this file). Do not modify these.
 
 ## Results carry diagnostics
 

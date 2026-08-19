@@ -675,11 +675,16 @@ def openai_tool_specs():
     return specs
 
 
+def _unwrap(fn):
+    """Extract the underlying async function from an SdkMcpTool (if decorated)."""
+    return getattr(fn, "handler", fn)
+
+
 def openai_tool_functions():
     """Map OpenAI function names to the existing framework implementations."""
-    result = {"submit_job": submit_job, "get_completed_jobs": get_completed_jobs,
-              "release_claim": release_claim, "notify": notify,
-              "check_backend": check_backend}
+    result = {"submit_job": _unwrap(submit_job), "get_completed_jobs": _unwrap(get_completed_jobs),
+              "release_claim": _unwrap(release_claim), "notify": _unwrap(notify),
+              "check_backend": _unwrap(check_backend)}
     if HAS_LOCAL:
-        result.update({"submit_local": submit_local, "get_local_completed": get_local_completed})
+        result.update({"submit_local": _unwrap(submit_local), "get_local_completed": _unwrap(get_local_completed)})
     return result
