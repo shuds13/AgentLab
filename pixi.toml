@@ -1,0 +1,15 @@
+[workspace]
+authors = ["shuds13 <shudson@anl.gov>"]
+channels = ["conda-forge"]
+name = "AgentLab"
+platforms = ["osx-arm64", "linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+pip = ">=26.2.1,<27"
+python = ">=3.14.6,<3.15"
+openai = ">=3.3.0,<4"
+claude-agent-sdk = ">=0.2.142,<0.3"
+globus-compute-sdk = ">=4.15.0,<5"
