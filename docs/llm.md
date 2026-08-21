@@ -30,20 +30,29 @@ SDK's, unchanged.
 format and routes it to any provider it supports. Running it in front of an
 OpenAI-style backend lets a campaign run on that backend through the same SDK path.
 
-Install it in its own environment, since its proxy extra pulls in a large dependency
-set:
+The repository's pixi environment includes LiteLLM, its proxy dependencies, PostgreSQL,
+and Prisma. From the repository root, start the proxy and its local database with:
 
 ```
-python -m venv ~/venvs/litellm && ~/venvs/litellm/bin/pip install "litellm[proxy]" "fastapi<0.140.7"
+pixi install
+pixi run litellm-proxy-start
 ```
 
-The FastAPI cap is needed as of LiteLLM 1.97.0. LiteLLM imports
-`fastapi.dependencies.utils.get_flat_dependant`, which FastAPI removed in 0.140.7, and
-LiteLLM declares `fastapi>=0.136.3,<1.0` — no upper bound below the removal — so an
-uncapped install takes a FastAPI the proxy cannot import. The working range is 0.136.3
-to 0.140.6. Drop the cap once a LiteLLM release no longer needs it; keep it inside that
-range rather than pinning further back, since below 0.136.3 is outside what LiteLLM
-supports.
+This initializes PostgreSQL under `scratch/litellm-postgres`, uses TCP port 5433 for the
+database, and serves the proxy on port 4000. The database is local and gitignored. 
+The first start generates LiteLLM's Prisma client and runs
+its migrations. Stop the proxy cleanly with Ctrl-C in the foreground terminal. The launcher stops
+LiteLLM first and PostgreSQL second. You can also stop both services from another
+terminal with:
+
+```
+pixi run litellm-proxy-stop
+```
+
+Set `LITELLM_MASTER_KEY` and `LITELLM_SALT_KEY` before starting when using this beyond
+local development. The defaults are intentionally only suitable for a local machine.
+Use `LITELLM_PORT`, `LITELLM_DB_PORT`, or `LITELLM_PGDATA` to change the proxy port,
+database port, or database directory.
 
 Write a config naming the upstream model, its endpoint, and the key to reach it:
 

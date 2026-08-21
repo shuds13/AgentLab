@@ -16,3 +16,6 @@ venv/
 
 # Local scratch: proxy configs, venvs, probes.
 scratch/
+# pixi environments
+.pixi/*
+!.pixi/config.toml
