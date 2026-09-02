@@ -133,6 +133,7 @@ Less often changed.
 | `TASK_DIR` | the campaign directory | where `task.py` is found |
 | `TASK_MODULE` | task | module name within `TASK_DIR` |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | directory holding the Claude Code `settings.json` that decides which LLM the agent uses. `docs/llm.md` |
+| `AGENT_MODEL` | unset | explicit model name passed to the Agent SDK; normally set to a proxy alias from `litellm/config.yaml`, otherwise Claude Code's configured model applies |
 | `CLAIM_STALE_SECONDS` | 21600 | before an unfinished claim can be taken over |
 | `ANNOUNCE_POLL` | 2 | seconds between announcement-board checks while waiting |
 

@@ -24,3 +24,8 @@ notifiers/*
 # This lab's own settings: what it runs, its models, its channels.
 lab.yaml
 litellm/config.yaml
+# This installation's own settings: gateways, credentials, what is available here.
+lab.env
+# pixi environments
+.pixi/*
+!.pixi/config.toml

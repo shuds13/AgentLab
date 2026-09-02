@@ -174,6 +174,54 @@ case to stop the agent if it has not met the users goal such as total tasks or c
 wallclock. `docs/settings.md` has every setting. If their files already indicate these,
 use that and tell them what you set. Otherwise ask, and offer the defaults.
 
+Then ask which model should run the agent. If it is an OpenAI GPT model, LiteLLM or
+another gateway that translates the Claude Agent SDK's Anthropic Messages API is
+required, even when the campaign's jobs run locally. If it is another non-Claude model
+behind LiteLLM, ask whether the proxy is already running or should this lab start it.
+LiteLLM is not needed for a local example when the agent uses Claude, unless they
+specifically want to test that integration. Ask about a critic separately: it is optional
+and does not determine whether the main agent uses LiteLLM.
+
+### LiteLLM proxy notes
+
+When LiteLLM fronts an OpenAI-compatible backend for the Claude Agent SDK:
+
+- The SDK sends Anthropic Messages API requests to `/v1/messages`. Set
+  `use_chat_completions_url_for_anthropic_messages: true` so LiteLLM translates them to
+  the backend's Chat Completions API.
+- Keep credentials separate. `LITELLM_MASTER_KEY` authenticates callers to the proxy;
+  `ARGO_API_KEY` (or the backend-specific secret) belongs in the proxy config as the
+  upstream `api_key`. Never commit either secret.
+- Ask which models the user wants campaigns to use. With the repository's current
+  configuration, each model needs a `model_list` entry in `litellm/config.yaml`; the
+  proxy exposes the entry's `model_name` as the name the SDK requests and maps it to the
+  backend `litellm_params.model`. Ask for the exact backend model IDs and choose stable,
+  readable aliases. Add one entry per model, reusing the endpoint and environment-backed
+  credential where appropriate; set the selected alias as `AGENT_MODEL` in the campaign's
+  `run.sh` or environment, and restart the proxy after changing the file.
+- A model not listed in `model_list` is not available through the normal configured proxy
+  route. LiteLLM has pass-through modes, but they are not enabled here because they make
+  model exposure and backend routing less explicit; do not rely on them during setup.
+- A user's `~/.claude/settings.json` can point the SDK directly at another gateway and
+  override the intended route. For a campaign that must use LiteLLM, set
+  `CLAUDE_CONFIG_DIR` in its `run.sh` and provide a campaign-local `claude/settings.json`
+  with the proxy URL and model.
+- Anthropic's `context_management` request field is server-side context-clearing control,
+  not context usage information consumed by the workflow. An OpenAI-compatible backend
+  cannot implement it. Drop only that field with the model's
+  `additional_drop_params: [context_management]`; do not enable global `drop_params`,
+  which can hide other incompatible SDK parameters. `client.get_context_usage()` is a
+  separate CLI query for token reporting and does not require `context_management`.
+- LiteLLM's packaged distribution may include `schema.prisma` without migration files.
+  The local Postgres database must be initialized with `prisma db push --schema=<schema>
+  --skip-generate` after `DATABASE_URL` is exported and before starting the proxy;
+  otherwise dashboard or key-management requests can fail with a missing relation such
+  as `LiteLLM_VerificationToken`.
+- The repository launcher owns this setup: use `pixi run litellm-proxy-start` and
+  `pixi run litellm-proxy-stop`. It uses Postgres port 5433, proxy port 4000, and binds
+  the proxy to `127.0.0.1` by default. Restart the proxy after changing
+  `litellm/config.yaml`.
+
 ### 5. The machine
 
 Ask which system. If `systems/<system>.json` exists you have its module line, proxy,

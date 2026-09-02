@@ -1,0 +1,25 @@
+[workspace]
+authors = ["shuds13 <shudson@anl.gov>"]
+channels = ["conda-forge"]
+name = "AgentLab"
+platforms = ["osx-arm64", "linux-64"]
+version = "0.1.0"
+
+[tasks]
+litellm-proxy-start = "./framework/run_litellm.sh start"
+litellm-proxy-stop = "./framework/run_litellm.sh stop"
+
+[dependencies]
+claude-agent-sdk = ">=0.2.143,<0.3"
+globus-compute-sdk = ">=4.15.0,<5"
+litellm = ">=1.82.6,<2"
+fastapi = ">=0.141.1,<0.142"
+backoff = ">=2.2.1,<3"
+orjson = ">=3.12.0,<4"
+apscheduler = ">=3.11.3,<4"
+boto3 = ">=1.43.74,<2"
+postgresql = ">=18.4,<19"
+
+[pypi-dependencies]
+fastapi-sso = ">=0.21.1, <0.22"
+prisma = ">=0.11.0, <0.12.0"

@@ -753,8 +753,11 @@ def _gateway_settings_file():
         return None
     os.makedirs(RUN_DIR, exist_ok=True)
     path = os.path.join(RUN_DIR, "gateway_settings.json")
+    env = {"ANTHROPIC_BASE_URL": GATEWAY_URL}
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        env["ANTHROPIC_API_KEY"] = os.environ["ANTHROPIC_API_KEY"]
     with open(path, "w") as f:
-        json.dump({"env": {"ANTHROPIC_BASE_URL": GATEWAY_URL}}, f)
+        json.dump({"env": env}, f)
     return path
 
 
