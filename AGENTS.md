@@ -219,27 +219,16 @@ Write `users/<their-username>/<system>.json`: endpoint UUID, account to charge, 
 writable directory on the compute system. Create that directory. This file is not
 tracked by git.
 
-### 8. Read the campaign back
+### 8. Check before the first job
 
-Offer to run `bin/review_campaign.sh <campaign>`. It reads the campaign's files
-and reports what would waste a machine or a budget -- setup paid once per job that
-could be paid once per batch, concurrency that serialises cheap work, a timeout longer
-than the allocation, a prompt that enumerates the search, results that will not support
-the conclusions. It takes a minute and answers "nothing worth flagging" when there is
-nothing.
-
-It writes what it found to `campaigns/<name>/EFFICIENCY-REVIEW.md` as well as printing
-it. This is the last point at which changing `task.py` is free: say what it found in a
-line, and fix what they agree with before the first job.
-
-### 9. One job
+Run `PREFLIGHT=true ./run.sh`. It checks the task contract, endpoint status and
+workspace writability, prints the tools and the model, and stops without submitting
+anything. Most misconfigurations fail with a message here.
 
 Ask before submitting anything — a single job can hold a node for a long time. With
-their agreement, run one. Preflight checks the task contract, endpoint status and
-workspace writability, so most misconfigurations fail with a message before anything is
-submitted.
+their agreement, run one.
 
-### 10. Slack (optional)
+### 9. Slack (optional)
 
 The campaign posts status, milestones and alerts as it goes, and they can message it
 back to steer it mid-run. Where the lab already has Slack, there is nothing to set up;
@@ -247,7 +236,7 @@ back to steer it mid-run. Where the lab already has Slack, there is nothing to s
 
 Otherwise the `Slack` section below is the procedure. It can be added at any time.
 
-### 11. Hand over
+### 10. Hand over
 
 The campaign is theirs to start. Show them the command, in tmux if needed:
 
@@ -257,15 +246,15 @@ cd campaigns/<name> && ./run.sh
 ```
 
 `PREFLIGHT=true ./run.sh` runs the checks, prints the tools and the model, and stops.
-Worth doing before a long run.
+Worth doing before a long run. `../../bin/review_campaign.sh <campaign>` runs an
+efficiency review of the campaign.
 
 Tell them what the stopping conditions are set to, and how to watch and stop it —
 `bin/list_agents.sh --all` and `bin/kill_agent.sh --drain <run_id>`.
 
-### 12. Globus Transfer (optional)
+### 11. Globus Transfer (optional)
 
-Only worth doing when the agent host and the compute system do **not** share a
-filesystem. It gives the agent a `transfer` tool -- `ls`, `get`, `put` -- for reading and
+Gives the agent a `transfer` tool -- `ls`, `get`, `put` -- for reading and
 writing files on the compute system: scripts and inputs it revises between jobs, and
 whatever the jobs produce. Not offered at all when unconfigured.
 Reference: `docs/globus_transfer.md`.
