@@ -41,8 +41,8 @@ Env:
     SLACK_READER_HEARTBEAT that reader's liveness file
 """
 
-import json
 import glob
+import json
 import os
 import sys
 import time
@@ -52,24 +52,34 @@ import urllib.request
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # One bridge serves the whole lab. WORKSPACE_ROOT holds one directory per campaign;
 # each campaign has its own ANNOUNCEMENTS.md that its agent reads between rounds.
-WORKSPACE_ROOT = os.path.abspath(os.environ.get(
-    "WORKSPACE_ROOT", os.path.join(SCRIPT_DIR, "..", "workspace")))
-STATE = (os.environ.get("SLACK_STATE")
-         or os.path.join(WORKSPACE_ROOT, "run", "slack_last_ts"))
-INBOX = os.environ.get("SLACK_INBOX") or os.path.join(WORKSPACE_ROOT, "run",
-                                                     "slack_inbox.md")
+WORKSPACE_ROOT = os.path.abspath(
+    os.environ.get("WORKSPACE_ROOT", os.path.join(SCRIPT_DIR, "..", "workspace"))
+)
+STATE = os.environ.get("SLACK_STATE") or os.path.join(
+    WORKSPACE_ROOT, "run", "slack_last_ts"
+)
+INBOX = os.environ.get("SLACK_INBOX") or os.path.join(
+    WORKSPACE_ROOT, "run", "slack_inbox.md"
+)
 HEARTBEAT = os.environ.get("SLACK_READER_HEARTBEAT") or os.path.join(
-    WORKSPACE_ROOT, "run", "secretary_heartbeat")
+    WORKSPACE_ROOT, "run", "secretary_heartbeat"
+)
 # s; a secretary heartbeat fresher than this means it is up and owns Slack questions.
 # It rewrites the file every poll (default 5s), so this tolerates many missed beats.
 SECRETARY_ALIVE_WITHIN = int(os.environ.get("SECRETARY_ALIVE_WITHIN", "60"))
 CHANNEL = os.environ.get("SLACK_CHANNEL", "")
-TOKEN_FILE = os.environ.get("SLACK_BOT_TOKEN_FILE",
-                            os.path.expanduser("~/.slack_bot_token"))
+TOKEN_FILE = os.environ.get(
+    "SLACK_BOT_TOKEN_FILE", os.path.expanduser("~/.slack_bot_token")
+)
 POLL = int(os.environ.get("SLACK_FETCH_POLL", "5"))
 # Plain-text fallback for a mention typed without Slack autocomplete.
 BOT_NAME = os.environ.get("SLACK_BOT_NAME", "@cas_agent")
-READ_ALL = os.environ.get("SLACK_READ_ALL", "").strip().lower() in ("1", "true", "yes", "on")
+READ_ALL = os.environ.get("SLACK_READ_ALL", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 
 def slack_get(method, token, **params):
@@ -114,7 +124,9 @@ def secretary_up():
     except FileNotFoundError:
         return False
     except Exception as e:
-        print(f"[slack] heartbeat read failed, assuming down (ignored): {e}", flush=True)
+        print(
+            f"[slack] heartbeat read failed, assuming down (ignored): {e}", flush=True
+        )
         return False
 
 
@@ -123,28 +135,34 @@ def forward(messages, me):
     up, to every campaign board if it is not."""
     lines = []
     read_all = READ_ALL and (DEDICATED or secretary_up())
-    for m in reversed(messages):          # Slack returns newest first
+    for m in reversed(messages):  # Slack returns newest first
         if m.get("bot_id") or m.get("subtype"):
-            continue                      # never echo bot posts back at the agents
+            continue  # never echo bot posts back at the agents
         text = m.get("text", "").strip()
         if not text:
             continue
         if ALLOW and m.get("user") not in ALLOW:
-            print(f"ignored, not on SLACK_ALLOW: <@{m.get('user')}>: {text}", flush=True)
+            print(
+                f"ignored, not on SLACK_ALLOW: <@{m.get('user')}>: {text}", flush=True
+            )
             continue
         addressed = f"<@{me}>" in text or BOT_NAME in text
         if not addressed and not read_all:
-            continue                      # not addressed to the agents
+            continue  # not addressed to the agents
         text = text.replace(f"<@{me}>", "").strip()
         # The author's Slack id travels with the message: it is what records who asked
         # for a run, and Slack renders it as their name when it is quoted back.
         who = f"<@{m['user']}>" if m.get("user") else "someone"
-        tag = ("reply with the notify tool" if addressed
-               else "overheard, not addressed to you")
+        tag = (
+            "reply with the notify tool"
+            if addressed
+            else "overheard, not addressed to you"
+        )
         # One reader, one channel: it is talking to whoever is there, so the author's
         # id is noise. The shared bridge needs it to say who asked for what.
-        lines.append(f"[from Slack -- {tag}] "
-                     + (text if DEDICATED else f"{who}: {text}"))
+        lines.append(
+            f"[from Slack -- {tag}] " + (text if DEDICATED else f"{who}: {text}")
+        )
     if not lines:
         return 0
     if DEDICATED or secretary_up():
@@ -155,23 +173,31 @@ def forward(messages, me):
         for line in lines:
             print(f"forwarded to {where}:", line, flush=True)
         return len(lines)
-    campaigns = sorted(d for d in glob.glob(os.path.join(WORKSPACE_ROOT, "*"))
-                       if os.path.isdir(d) and os.path.basename(d) != "run")
+    campaigns = sorted(
+        d
+        for d in glob.glob(os.path.join(WORKSPACE_ROOT, "*"))
+        if os.path.isdir(d) and os.path.basename(d) != "run"
+    )
     if not campaigns:
-        print(f"no campaigns under {WORKSPACE_ROOT}; dropping {len(lines)} message(s)",
-              flush=True)
+        print(
+            f"no campaigns under {WORKSPACE_ROOT}; dropping {len(lines)} message(s)",
+            flush=True,
+        )
         return 0
     delivered = 0
     for line in lines:
         # A message naming a campaign goes to that one; otherwise to all of them.
         named = [d for d in campaigns if os.path.basename(d).lower() in line.lower()]
-        for d in (named or campaigns):
+        for d in named or campaigns:
             os.makedirs(d, exist_ok=True)
             with open(os.path.join(d, "ANNOUNCEMENTS.md"), "a") as f:
                 f.write(line + "\n")
             delivered += 1
-        print(f"forwarded to {len(named) or len(campaigns)} campaign(s):", line,
-              flush=True)
+        print(
+            f"forwarded to {len(named) or len(campaigns)} campaign(s):",
+            line,
+            flush=True,
+        )
     return delivered
 
 
@@ -183,8 +209,9 @@ def check(token, me):
         write_state(now)
         print(f"first run -- starting from now ({now}); nothing forwarded", flush=True)
         return
-    resp = slack_get("conversations.history", token, channel=CHANNEL,
-                     oldest=oldest, limit=50)
+    resp = slack_get(
+        "conversations.history", token, channel=CHANNEL, oldest=oldest, limit=50
+    )
     if not resp.get("ok"):
         print(f"[slack] read failed (ignored): {resp.get('error')}", flush=True)
         return
@@ -209,8 +236,11 @@ def main():
     if not who.get("ok"):
         sys.exit(f"token rejected by Slack: {who.get('error')}")
     me = who["user_id"]
-    print(f"Watching Slack channel {CHANNEL} as {who.get('user')} ({me}); "
-          f"campaigns under {WORKSPACE_ROOT}", flush=True)
+    print(
+        f"Watching Slack channel {CHANNEL} as {who.get('user')} ({me}); "
+        f"campaigns under {WORKSPACE_ROOT}",
+        flush=True,
+    )
 
     once = "--once" in sys.argv
     while True:

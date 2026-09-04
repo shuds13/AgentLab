@@ -21,9 +21,9 @@ import http.server
 import json
 import os
 import re
+import sys
 import threading
 import time
-import sys
 import urllib.parse
 import webbrowser
 from datetime import datetime
@@ -32,11 +32,17 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LAB_DIR = os.path.abspath(os.environ.get("LAB_DIR", os.path.join(SCRIPT_DIR, "..")))
 # Files worth opening while a run is in flight. Anything else in the workspace is
 # listed but not offered as a tab: run directories, caches, figures.
-READABLE = ("LOGBOOK.md", "JOURNAL.md", "REVIEWS.md", "results.jsonl",
-            "ANNOUNCEMENTS.md", "jobs.jsonl")
-TAIL_BYTES = 400_000        # of a file view; the log is followed from an offset instead
+READABLE = (
+    "LOGBOOK.md",
+    "JOURNAL.md",
+    "REVIEWS.md",
+    "results.jsonl",
+    "ANNOUNCEMENTS.md",
+    "jobs.jsonl",
+)
+TAIL_BYTES = 400_000  # of a file view; the log is followed from an offset instead
 
-try:                        # in requirements.txt; without it records are plain text
+try:  # in requirements.txt; without it records are plain text
     import markdown as _markdown
 except Exception:
     _markdown = None
@@ -55,8 +61,11 @@ def newest_run(campaign):
     metas = glob.glob(os.path.join(workspace(campaign), "runs", "*", "meta.json"))
     if not metas:
         return None
-    live = [m for m in metas
-            if os.path.isfile(os.path.join(os.path.dirname(m), "heartbeat"))]
+    live = [
+        m
+        for m in metas
+        if os.path.isfile(os.path.join(os.path.dirname(m), "heartbeat"))
+    ]
     return os.path.dirname(max(live or metas, key=os.path.getmtime))
 
 
@@ -113,8 +122,9 @@ def status(campaign):
                 age = int(time.time() - float(f.read().strip()))
         except Exception:
             age = None
-    submits_total, submits_run, done_run = _submits(os.path.join(ws, "jobs.jsonl"),
-                                                    meta.get("run_id"))
+    submits_total, submits_run, done_run = _submits(
+        os.path.join(ws, "jobs.jsonl"), meta.get("run_id")
+    )
     # How long the run took, not how long ago it began: once it has ended, the clock
     # stops where it stopped.
     phase, phase_age = None, None
@@ -133,20 +143,31 @@ def status(campaign):
         except Exception:
             elapsed = None
     return {
-        "run": meta.get("run_id"), "handle": meta.get("handle"),
-        "campaign": campaign, "status": meta.get("status"),
-        "stop_reason": meta.get("stop_reason"), "model": meta.get("model"),
-        "critic": meta.get("critic"), "host": meta.get("host"),
+        "run": meta.get("run_id"),
+        "handle": meta.get("handle"),
+        "campaign": campaign,
+        "status": meta.get("status"),
+        "stop_reason": meta.get("stop_reason"),
+        "model": meta.get("model"),
+        "critic": meta.get("critic"),
+        "host": meta.get("host"),
         "context_tokens": meta.get("context_tokens"),
         "context_window": meta.get("context_window"),
         "context_pct": meta.get("context_pct"),
-        "started_at": started, "ended_at": meta.get("ended_at"),
-        "elapsed_s": elapsed, "heartbeat_age_s": age,
-        "phase": phase, "phase_age_s": phase_age,
+        "started_at": started,
+        "ended_at": meta.get("ended_at"),
+        "elapsed_s": elapsed,
+        "heartbeat_age_s": age,
+        "phase": phase,
+        "phase_age_s": phase_age,
         "results": _count_lines(os.path.join(ws, "results.jsonl")),
-        "jobs": submits_total, "jobs_run": submits_run, "jobs_done": done_run,
-        "reviews": _count_lines(os.path.join(ws, "REVIEWS.md")) and
-                   open(os.path.join(ws, "REVIEWS.md"), errors="replace").read().count("\n## "),
+        "jobs": submits_total,
+        "jobs_run": submits_run,
+        "jobs_done": done_run,
+        "reviews": _count_lines(os.path.join(ws, "REVIEWS.md"))
+        and open(os.path.join(ws, "REVIEWS.md"), errors="replace")
+        .read()
+        .count("\n## "),
         "max_submits": meta.get("max_submits"),
         "max_runtime_s": meta.get("max_runtime_s"),
         "max_rounds": meta.get("max_rounds"),
@@ -361,31 +382,40 @@ def _render(text):
         html_out = _markdown.markdown(text, extensions=["tables", "fenced_code"])
     except Exception:
         return "<pre>" + html.escape(text) + "</pre>"
+
     # Figures are referenced relative to the workspace, which only this server can read.
     def _img(m):
         src = urllib.parse.quote(m.group("src"))
         alt = m.group(0)
         alt = re.search(r'alt="([^"]*)"', alt)
-        return (f'<a href="/image?name={src}" target="_blank">'
-                f'<img src="/image?name={src}" alt="{alt.group(1) if alt else ""}"></a>')
+        return (
+            f'<a href="/image?name={src}" target="_blank">'
+            f'<img src="/image?name={src}" alt="{alt.group(1) if alt else ""}"></a>'
+        )
 
-    html_out = re.sub(r'<img[^>]*?src="(?!https?:|/)(?P<src>[^"]+)"[^>]*/?>', _img, html_out)
+    html_out = re.sub(
+        r'<img[^>]*?src="(?!https?:|/)(?P<src>[^"]+)"[^>]*/?>', _img, html_out
+    )
 
     # A record may link a figure rather than embed it. The link is relative to the
     # workspace, which only this server can read, so point it at the same route.
     return re.sub(
         r'<a href="(?!https?:|/)(?P<href>[^"]+\.(?:png|jpg|jpeg|gif|svg|webp))"',
-        lambda m: f'<a target="_blank" href="/image?name={urllib.parse.quote(m.group("href"))}"',
-        html_out, flags=re.I)
+        lambda m: (
+            f'<a target="_blank" href="/image?name={urllib.parse.quote(m.group("href"))}"'
+        ),
+        html_out,
+        flags=re.IGNORECASE,
+    )
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
     campaign = ""
 
-    last_request = 0.0      # for --exit-when-idle: a page open polls constantly
+    last_request = 0.0  # for --exit-when-idle: a page open polls constantly
 
     def log_message(self, *a):
-        pass            # a watcher that narrates its own requests is noise
+        pass  # a watcher that narrates its own requests is noise
 
     def handle_one_request(self):
         type(self).last_request = time.time()
@@ -403,19 +433,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
         url = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(url.query)
         if url.path == "/":
-            self._send(PAGE % {"campaign": html.escape(self.campaign),
-                               "campaign_json": json.dumps(self.campaign)},
-                       "text/html; charset=utf-8")
+            self._send(
+                PAGE
+                % {
+                    "campaign": html.escape(self.campaign),
+                    "campaign_json": json.dumps(self.campaign),
+                },
+                "text/html; charset=utf-8",
+            )
         elif url.path == "/log":
-            self._send(json.dumps(self._log_from(int(q.get("from", ["0"])[0]))),
-                       "application/json")
+            self._send(
+                json.dumps(self._log_from(int(q.get("from", ["0"])[0]))),
+                "application/json",
+            )
         elif url.path == "/status":
             self._send(json.dumps(status(self.campaign)), "application/json")
         elif url.path == "/files":
             ws = workspace(self.campaign)
-            self._send(json.dumps([f for f in READABLE
-                                   if os.path.isfile(os.path.join(ws, f))]),
-                       "application/json")
+            self._send(
+                json.dumps(
+                    [f for f in READABLE if os.path.isfile(os.path.join(ws, f))]
+                ),
+                "application/json",
+            )
         elif url.path == "/image":
             self._send_image(q.get("name", [""])[0])
         elif url.path == "/file":
@@ -428,7 +468,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
-    _serving = None            # the log file the page is currently being fed
+    _serving = None  # the log file the page is currently being fed
 
     def _log_from(self, offset):
         path = newest_log(self.campaign)
@@ -448,11 +488,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             text = f.read()
         run_dir = os.path.join(workspace(self.campaign), "runs")
         beating = glob.glob(os.path.join(run_dir, "*", "heartbeat"))
-        return {"text": text, "offset": size, "reset": reset,
-                "name": os.path.basename(path), "running": bool(beating)}
+        return {
+            "text": text,
+            "offset": size,
+            "reset": reset,
+            "name": os.path.basename(path),
+            "running": bool(beating),
+        }
 
-    IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                   ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp"}
+    IMAGE_TYPES = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".svg": "image/svg+xml",
+        ".webp": "image/webp",
+    }
 
     def _send_image(self, name):
         """Serve a figure the records point at. Confined to the campaign's workspace:
@@ -479,7 +530,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with open(path, errors="replace") as f:
                 if size > TAIL_BYTES:
                     f.seek(size - TAIL_BYTES)
-                    return f"[showing the last {TAIL_BYTES // 1000} KB of {size // 1000} KB]\n\n" + f.read()
+                    return (
+                        f"[showing the last {TAIL_BYTES // 1000} KB of {size // 1000} KB]\n\n"
+                        + f.read()
+                    )
                 return f.read()
         except OSError as e:
             return f"cannot read {name}: {e}"
@@ -510,8 +564,10 @@ def main():
     else:
         sys.exit(f"no free port between {port} and {port + 19}")
     url = f"http://127.0.0.1:{port}/"
-    print(f"watching {campaign} at {url}  (Ctrl-C to stop; the run is unaffected)",
-          flush=True)
+    print(
+        f"watching {campaign} at {url}  (Ctrl-C to stop; the run is unaffected)",
+        flush=True,
+    )
     if "--no-open" not in sys.argv:
         webbrowser.open(url)
     # An open page polls every second or so, so a long silence means nobody is looking.

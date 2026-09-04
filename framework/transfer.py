@@ -76,8 +76,9 @@ def configure(user_cfg, workspace_dir, campaign_dir=None, sys_cfg=None):
         # Writes to the compute system are confined to one subtree. Defaulting it to
         # work_dir means the tool cannot scribble outside the campaign's own directory
         # unless someone widens it deliberately.
-        "remote_write_root": str(g.get("remote_write_root")
-                                 or user_cfg.get("work_dir", "")).rstrip("/"),
+        "remote_write_root": str(
+            g.get("remote_write_root") or user_cfg.get("work_dir", "")
+        ).rstrip("/"),
         # Reads are unbounded by default: the usual job is fetching a log from a path
         # the campaign did not choose. Set it to confine reads to one subtree.
         "remote_read_root": str(g.get("remote_read_root") or "").rstrip("/"),
@@ -88,9 +89,15 @@ def configure(user_cfg, workspace_dir, campaign_dir=None, sys_cfg=None):
         # One or several prefixes: the same filesystem is often reachable by a short
         # mount path and a long one (/flare and /lus/flare/projects), and a work_dir may
         # be written either way. The first that matches is stripped.
-        "collection_root": [str(r).rstrip("/") for r in _as_list(
-            g.get("collection_root") if g.get("collection_root") is not None
-            else sys_cfg.get("globus_collection_root", "")) if str(r).strip()],
+        "collection_root": [
+            str(r).rstrip("/")
+            for r in _as_list(
+                g.get("collection_root")
+                if g.get("collection_root") is not None
+                else sys_cfg.get("globus_collection_root", "")
+            )
+            if str(r).strip()
+        ],
         "workspace_dir": workspace_dir,
         # The agent may send from, and fetch into, either the campaign's own directory
         # (task.py and the scripts a job runs) or its workspace (results and artefacts).
@@ -100,15 +107,16 @@ def configure(user_cfg, workspace_dir, campaign_dir=None, sys_cfg=None):
     }
 
 
-CFG = None          # set by tools.py at import; None disables the tools
+CFG = None  # set by tools.py at import; None disables the tools
 
 
 def _globus(*argv, timeout=_WAIT_SECONDS):
     """Run the globus CLI. It already holds the user's login, so this module never
     implements an auth flow of its own."""
     try:
-        p = subprocess.run(["globus", *argv], capture_output=True, text=True,
-                           timeout=timeout)
+        p = subprocess.run(
+            ["globus", *argv], capture_output=True, text=True, timeout=timeout
+        )
     except FileNotFoundError:
         return 127, "", "the 'globus' CLI is not on PATH (pip install globus-cli)"
     except subprocess.TimeoutExpired:
@@ -164,11 +172,11 @@ def _local_dest(rel, roots, must_exist=False):
 def _cpath(posix_path):
     """POSIX path -> the path this collection understands."""
     p = os.path.normpath(posix_path)
-    for root in (CFG.get("collection_root") or []):
+    for root in CFG.get("collection_root") or []:
         if p == root:
             return "/"
         if p.startswith(root + "/"):
-            return p[len(root):]
+            return p[len(root) :]
     # Already collection-relative, or outside the collection: pass it through and let
     # Globus reject it, rather than silently rewriting into the wrong place.
     return posix_path
@@ -192,8 +200,15 @@ def _under(path, root):
 
 
 def _wait(task_id):
-    rc, out, err = _globus("task", "wait", task_id, "--timeout", str(_WAIT_SECONDS),
-                           "--polling-interval", "2")
+    rc, out, err = _globus(
+        "task",
+        "wait",
+        task_id,
+        "--timeout",
+        str(_WAIT_SECONDS),
+        "--polling-interval",
+        "2",
+    )
     if rc != 0:
         return False, f"transfer {task_id} did not complete: {err or out}"
     return True, task_id
@@ -263,24 +278,38 @@ async def transfer(args):
         # and a staging hop only adds a second place for permissions to be wrong.
         if CFG["remote_read_root"] and not _under(path, CFG["remote_read_root"]):
             return _err(f"refusing to read outside {CFG['remote_read_root']}: {path}")
-        rel = local_path or os.path.join("scratch", "transfers",
-                                         os.path.basename(path.rstrip("/")))
+        rel = local_path or os.path.join(
+            "scratch", "transfers", os.path.basename(path.rstrip("/"))
+        )
         dest = _local_dest(rel, CFG["local_roots"])
         if dest is None:
-            return _err("refusing to write outside the campaign and workspace "
-                        f"directories: {local_path}")
+            return _err(
+                "refusing to write outside the campaign and workspace "
+                f"directories: {local_path}"
+            )
         recursive = _remote_is_dir(rc_coll, _cpath(path))
         os.makedirs(dest if recursive else os.path.dirname(dest), exist_ok=True)
-        cmd = ["transfer", f"{rc_coll}:{_cpath(path)}", f"{lc_coll}:{dest}",
-               "--label", "agentlab-get", "--notify", "off", "--format", "json"]
+        cmd = [
+            "transfer",
+            f"{rc_coll}:{_cpath(path)}",
+            f"{lc_coll}:{dest}",
+            "--label",
+            "agentlab-get",
+            "--notify",
+            "off",
+            "--format",
+            "json",
+        ]
         if recursive:
             cmd.insert(1, "--recursive")
         rc, out, err = _globus(*cmd, timeout=120)
         if rc != 0:
-            return _err(f"transfer submit failed: {err or out}\n"
-                        "If the local collection is not connected, start Globus Connect "
-                        "Personal. If the destination is refused, the workspace path is "
-                        "not writable in ~/.globusonline/lta/config-paths.")
+            return _err(
+                f"transfer submit failed: {err or out}\n"
+                "If the local collection is not connected, start Globus Connect "
+                "Personal. If the destination is refused, the workspace path is "
+                "not writable in ~/.globusonline/lta/config-paths."
+            )
         try:
             task_id = json.loads(out)["task_id"]
         except Exception:
@@ -300,10 +329,11 @@ async def transfer(args):
             if size > _HEAD_BYTES + _TAIL_BYTES:
                 f.seek(-_TAIL_BYTES, os.SEEK_END)
                 tail = f.read()
-                body = (head.decode("utf-8", "replace")
-                        + f"\n\n... [{size - _HEAD_BYTES - _TAIL_BYTES} bytes omitted;"
-                          f" full file at {dest}] ...\n\n"
-                        + tail.decode("utf-8", "replace"))
+                body = (
+                    head.decode("utf-8", "replace")
+                    + f"\n\n... [{size - _HEAD_BYTES - _TAIL_BYTES} bytes omitted;"
+                    f" full file at {dest}] ...\n\n" + tail.decode("utf-8", "replace")
+                )
             else:
                 body = (head + f.read()).decode("utf-8", "replace")
         return _ok(f"{path}\n  -> {dest} ({size} bytes)\n\n{body}")
@@ -312,17 +342,30 @@ async def transfer(args):
         if not path or not local_path:
             return _err("put needs both `local_path` and `path`.")
         if not _under(path, CFG["remote_write_root"]):
-            return _err(f"refusing to write outside {CFG['remote_write_root']}: {path}\n"
-                        "Widen remote_write_root in your user file if that is intended.")
+            return _err(
+                f"refusing to write outside {CFG['remote_write_root']}: {path}\n"
+                "Widen remote_write_root in your user file if that is intended."
+            )
         src = _local_dest(local_path, CFG["local_roots"], must_exist=True)
         if src is None:
-            return _err("refusing to send from outside the campaign and workspace "
-                        f"directories: {local_path}")
+            return _err(
+                "refusing to send from outside the campaign and workspace "
+                f"directories: {local_path}"
+            )
         if not os.path.exists(src):
             return _err(f"no such local path: {src}")
         recursive = os.path.isdir(src)
-        cmd = ["transfer", f"{lc_coll}:{src}", f"{rc_coll}:{_cpath(path)}",
-               "--label", "agentlab-put", "--notify", "off", "--format", "json"]
+        cmd = [
+            "transfer",
+            f"{lc_coll}:{src}",
+            f"{rc_coll}:{_cpath(path)}",
+            "--label",
+            "agentlab-put",
+            "--notify",
+            "off",
+            "--format",
+            "json",
+        ]
         if recursive:
             cmd.insert(1, "--recursive")
         rc, out, err = _globus(*cmd, timeout=120)

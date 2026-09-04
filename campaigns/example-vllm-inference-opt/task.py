@@ -112,26 +112,39 @@ def remote_fn(args, target):
     timeout = int(target.get("timeout", 5400))
 
     os.makedirs(work_dir, exist_ok=True)
-    tag = (f"{bench_mode}_in{input_len}_out{output_len}_tp{tp}_{dtype}"
-           f"_eager{int(enforce_eager)}_seqs{max_num_seqs}_{int(time.time())}")
+    tag = (
+        f"{bench_mode}_in{input_len}_out{output_len}_tp{tp}_{dtype}"
+        f"_eager{int(enforce_eager)}_seqs{max_num_seqs}_{int(time.time())}"
+    )
     log_path = os.path.join(work_dir, f"{tag}.log")
 
     # --- environment ---
     env = dict(os.environ)
     for k, v in (target.get("env") or {}).items():
         env[str(k)] = str(v)
-    for k, v in env_extra.items():          # agent's overrides win
+    for k, v in env_extra.items():  # agent's overrides win
         env[str(k)] = str(v)
 
     # --- build the vLLM command ---
-    cmd = ["vllm", "bench", bench_mode,
-           "--model", model,
-           "--input-len", str(input_len),
-           "--output-len", str(output_len),
-           "--dtype", dtype,
-           "--tensor-parallel-size", str(tp),
-           "--max-model-len", str(max_model_len),
-           "--max-num-seqs", str(max_num_seqs)]
+    cmd = [
+        "vllm",
+        "bench",
+        bench_mode,
+        "--model",
+        model,
+        "--input-len",
+        str(input_len),
+        "--output-len",
+        str(output_len),
+        "--dtype",
+        dtype,
+        "--tensor-parallel-size",
+        str(tp),
+        "--max-model-len",
+        str(max_model_len),
+        "--max-num-seqs",
+        str(max_num_seqs),
+    ]
     if bench_mode == "latency":
         cmd += ["--batch-size", "1", "--num-iters-warmup", "2", "--num-iters", "2"]
     else:
@@ -142,14 +155,24 @@ def remote_fn(args, target):
     # The module load has to happen in the same shell as vllm, so go through bash.
     setup = target.get("worker_setup", "")
     shell_cmd = (setup + " && " if setup else "") + " ".join(
-        "'" + c + "'" if " " in c else c for c in cmd)
+        "'" + c + "'" if " " in c else c for c in cmd
+    )
 
     started = time.time()
     try:
-        proc = subprocess.run(["bash", "-lc", shell_cmd], capture_output=True,
-                              text=True, timeout=timeout, env=env)
+        proc = subprocess.run(
+            ["bash", "-lc", shell_cmd],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+        )
     except Exception as e:
-        return {"error": f"{type(e).__name__}: {e}", "cmd": shell_cmd, "key_env": env_extra}
+        return {
+            "error": f"{type(e).__name__}: {e}",
+            "cmd": shell_cmd,
+            "key_env": env_extra,
+        }
 
     out = (proc.stdout or "") + "\n" + (proc.stderr or "")
 
@@ -157,42 +180,68 @@ def remote_fn(args, target):
     # startup banner is the most informative artefact available.
     try:
         with open(log_path, "w") as f:
-            f.write("$ " + shell_cmd + "\n\nENV_EXTRA: " + json.dumps(env_extra) + "\n\n" + out)
+            f.write(
+                "$ "
+                + shell_cmd
+                + "\n\nENV_EXTRA: "
+                + json.dumps(env_extra)
+                + "\n\n"
+                + out
+            )
     except Exception:
         pass
 
     # --- startup diagnostics: what did vLLM actually do? ---
     diagnostics = {}
     patterns = {
-        "platform":         r"[Pp]latform[:\s]+(\S+)",
+        "platform": r"[Pp]latform[:\s]+(\S+)",
         "attention_backend": r"[Uu]sing (\S+) backend",
-        "graph_capture":    r"(?i)(graph capturing finished|CUDA graphs|Capturing.*graph|enforce_eager)",
-        "kv_cache_blocks":  r"(?i)GPU KV cache size[:\s]+([\d,]+)",
-        "num_devices":      r"(?i)(?:world_size|tensor.parallel.size)[=:\s]+(\d+)",
-        "vllm_version":     r"(?i)vLLM (?:API server )?version[:\s]+(\S+)",
+        "graph_capture": r"(?i)(graph capturing finished|CUDA graphs|Capturing.*graph|enforce_eager)",
+        "kv_cache_blocks": r"(?i)GPU KV cache size[:\s]+([\d,]+)",
+        "num_devices": r"(?i)(?:world_size|tensor.parallel.size)[=:\s]+(\d+)",
+        "vllm_version": r"(?i)vLLM (?:API server )?version[:\s]+(\S+)",
     }
     for name, pat in patterns.items():
         m = re.search(pat, out)
         if m:
             diagnostics[name] = m.group(1) if m.groups() else m.group(0)
-    warn = [l.strip() for l in out.splitlines()
-            if re.search(r"(?i)\b(warning|fallback|not supported|disabled)\b", l)]
+    warn = [
+        l.strip()
+        for l in out.splitlines()
+        if re.search(r"(?i)\b(warning|fallback|not supported|disabled)\b", l)
+    ]
     if warn:
         diagnostics["warnings"] = warn[:15]
 
     if proc.returncode != 0:
-        return {"error": out[-3000:], "cmd": shell_cmd, "log": log_path,
-                "diagnostics": diagnostics, "key_env": env_extra}
+        return {
+            "error": out[-3000:],
+            "cmd": shell_cmd,
+            "log": log_path,
+            "diagnostics": diagnostics,
+            "key_env": env_extra,
+        }
 
     # --- metrics ---
-    result = {"bench_mode": bench_mode, "model": model, "input_len": input_len,
-              "output_len": output_len, "tensor_parallel_size": tp, "dtype": dtype,
-              "enforce_eager": enforce_eager, "max_num_seqs": max_num_seqs,
-              "max_model_len": max_model_len, "env_extra": env_extra,
-              "wall_seconds": round(time.time() - started, 1),
-              "log": log_path, "diagnostics": diagnostics}
+    result = {
+        "bench_mode": bench_mode,
+        "model": model,
+        "input_len": input_len,
+        "output_len": output_len,
+        "tensor_parallel_size": tp,
+        "dtype": dtype,
+        "enforce_eager": enforce_eager,
+        "max_num_seqs": max_num_seqs,
+        "max_model_len": max_model_len,
+        "env_extra": env_extra,
+        "wall_seconds": round(time.time() - started, 1),
+        "log": log_path,
+        "diagnostics": diagnostics,
+    }
 
-    m = re.search(r"Throughput:\s*([\d.]+)\s*requests/s,\s*([\d.]+)\s*(?:total\s+)?tokens/s", out)
+    m = re.search(
+        r"Throughput:\s*([\d.]+)\s*requests/s,\s*([\d.]+)\s*(?:total\s+)?tokens/s", out
+    )
     if m:
         result["requests_per_sec"] = float(m.group(1))
         result["throughput_tokens_per_sec"] = float(m.group(2))

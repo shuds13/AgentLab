@@ -12,8 +12,8 @@ Usage:
 import asyncio
 import glob
 import json
-import re
 import os
+import re
 import shutil
 import signal
 import socket
@@ -23,31 +23,42 @@ import time
 from datetime import datetime
 
 from claude_agent_sdk import (
-    ClaudeSDKClient,
-    ClaudeAgentOptions,
     AgentDefinition,
     AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
     ResultMessage,
 )
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Resolved and exported BEFORE importing tools: tools.py reads WORKSPACE_DIR at import
 # time and falls back to its own directory, which puts claims.jsonl, jobs.jsonl and
 # ANNOUNCEMENTS.md in framework/ instead of the campaign's workspace.
 WORKSPACE_DIR = os.environ.get("WORKSPACE_DIR") or (
-    os.path.join(os.path.abspath(os.environ.get("LAB_DIR",
-        os.path.join(SCRIPT_DIR, ".."))), "workspace", os.environ["CAMPAIGN"])
-    if os.environ.get("CAMPAIGN") else SCRIPT_DIR)
+    os.path.join(
+        os.path.abspath(os.environ.get("LAB_DIR", os.path.join(SCRIPT_DIR, ".."))),
+        "workspace",
+        os.environ["CAMPAIGN"],
+    )
+    if os.environ.get("CAMPAIGN")
+    else SCRIPT_DIR
+)
 os.environ["WORKSPACE_DIR"] = WORKSPACE_DIR
 
-import critic  # noqa: E402
-import tools  # noqa: E402
-from tools import create_server, shutdown_executor  # noqa: E402
+import critic
+import tools
+from tools import create_server, shutdown_executor
+
 # Campaign files (prompt.md, user prompt) live with the campaign, not the framework.
 LAB_DIR = os.path.abspath(os.environ.get("LAB_DIR", os.path.join(SCRIPT_DIR, "..")))
 CAMPAIGN = os.environ.get("CAMPAIGN", "")
-CAMPAIGN_DIR = os.path.abspath(os.environ.get(
-    "CAMPAIGN_DIR", os.path.join(LAB_DIR, "campaigns", CAMPAIGN) if CAMPAIGN else SCRIPT_DIR))
-SYSTEM = tools.SYSTEM          # from the campaign's campaign.json
+CAMPAIGN_DIR = os.path.abspath(
+    os.environ.get(
+        "CAMPAIGN_DIR",
+        os.path.join(LAB_DIR, "campaigns", CAMPAIGN) if CAMPAIGN else SCRIPT_DIR,
+    )
+)
+SYSTEM = tools.SYSTEM  # from the campaign's campaign.json
 ROLE = os.environ.get("ROLE", "both")
 # Roles only mean something when a campaign splits work between agents. Left unset,
 # they are noise in anything a person reads, so they are shown only when set.
@@ -61,18 +72,21 @@ USER_PROMPT_FILE = os.environ.get("USER_PROMPT_FILE", "user_prompt.md")
 RUN_STAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 RUN_ID = f"{SYSTEM}_{ROLE}_{RUN_STAMP}" if ROLE_SET else f"{SYSTEM}_{RUN_STAMP}"
 RUN_DIR = os.path.join(WORKSPACE_DIR, "runs", RUN_ID)
-os.environ["RUN_ID"] = RUN_ID      # tools stamps the job log with it
+os.environ["RUN_ID"] = RUN_ID  # tools stamps the job log with it
 LOG_PATH = os.path.join(LOG_DIR, f"run_{SYSTEM}_{RUN_STAMP}.log")
-HEARTBEAT_INTERVAL = 30   # s; minimum gap between heartbeat writes during a wait
-CRITIC_MODEL = None       # resolved in preflight()
+HEARTBEAT_INTERVAL = 30  # s; minimum gap between heartbeat writes during a wait
+CRITIC_MODEL = None  # resolved in preflight()
 CRITIC_LABEL = "no critic"
 # What a cycle gets written up in depends on the method: the standard one records to
 # LOGBOOK.md and writes JOURNAL.md only at the end, the research one keeps both as it
 # goes. The critic watches both and reviews whichever grew.
-CYCLE_RECORDS = [os.path.join(WORKSPACE_DIR, name)
-                 for name in ("LOGBOOK.md", "JOURNAL.md")]
+CYCLE_RECORDS = [
+    os.path.join(WORKSPACE_DIR, name) for name in ("LOGBOOK.md", "JOURNAL.md")
+]
 
-AGENT_ALIVE_WITHIN = int(os.environ.get("AGENT_ALIVE_WITHIN", "300"))  # s; fresher heartbeat = agent is up
+AGENT_ALIVE_WITHIN = int(
+    os.environ.get("AGENT_ALIVE_WITHIN", "300")
+)  # s; fresher heartbeat = agent is up
 
 
 def _live_handles():
@@ -81,7 +95,7 @@ def _live_handles():
     numbers are reused once a run ends."""
     out = []
     now = time.time()
-    root = os.path.dirname(WORKSPACE_DIR)      # workspace/, one dir per campaign
+    root = os.path.dirname(WORKSPACE_DIR)  # workspace/, one dir per campaign
     for hb in glob.glob(os.path.join(root, "*", "runs", "*", "heartbeat")):
         try:
             with open(hb) as f:
@@ -90,7 +104,7 @@ def _live_handles():
             with open(os.path.join(os.path.dirname(hb), "meta.json")) as f:
                 meta = json.load(f)
         except Exception:
-            continue          # unreadable run: treat its handle as free
+            continue  # unreadable run: treat its handle as free
         if meta.get("handle"):
             out.append((meta["handle"], meta.get("campaign", "")))
     return out
@@ -116,7 +130,7 @@ def _allocate_handle():
     slugs.append(name.replace("-", "").replace("_", "")[:12])
     for slug in slugs:
         if any(h.rstrip("0123456789") == slug and c != CAMPAIGN for h, c in live):
-            continue          # another campaign already answers to this slug
+            continue  # another campaign already answers to this slug
         for n in range(1, 100):
             cand = f"{slug}{n}"
             if cand not in {h for h, _ in live}:
@@ -148,45 +162,59 @@ def _prompt(name, default):
     return v if v else default
 
 
-CONTINUE_PROMPT = _prompt("CONTINUE_PROMPT",
+CONTINUE_PROMPT = _prompt(
+    "CONTINUE_PROMPT",
     f"One or more jobs have finished. Collect them with {_COMPLETED_TOOL}, "
-    "fit and log each, then continue: submit new jobs as needed."
+    "fit and log each, then continue: submit new jobs as needed.",
 )
 # What "more work" means belongs to the method, so this says only that the run has
 # capacity and asks for the next step from the records the method already keeps.
-EXPLORE_PROMPT = _prompt("EXPLORE_PROMPT",
+EXPLORE_PROMPT = _prompt(
+    "EXPLORE_PROMPT",
     "No jobs are running and there is budget left. From your own records, decide what "
     "the next step is and submit it. If the goal is met, or nothing further is worth "
-    "running, say so and stop rather than filling the budget."
+    "running, say so and stop rather than filling the budget.",
 )
-WINDDOWN_PROMPT = _prompt("WINDDOWN_PROMPT",
+WINDDOWN_PROMPT = _prompt(
+    "WINDDOWN_PROMPT",
     "Wind-down requested: this run is ending. Submit no new work -- the submit tools "
     "will refuse it. Collect and log the jobs already in flight as they finish. Once "
-    "everything is collected you get a final turn to write up the cycle."
+    "everything is collected you get a final turn to write up the cycle.",
 )
-FINALIZE_PROMPT = _prompt("FINALIZE_PROMPT",
+FINALIZE_PROMPT = _prompt(
+    "FINALIZE_PROMPT",
     # Which records a cycle is written up in is the method's business, not the
     # runner's: naming a file here produces one that the method never asked for.
     "All outstanding work is collected and this run is now ending. Close out the "
     "current cycle: write it up in the records your method keeps, and note anything a "
-    "later run needs to pick up where you left off. Submit no new work."
+    "later run needs to pick up where you left off. Submit no new work.",
 )
 # A session id to start from. Its whole conversation becomes this run's context, which
 # costs what it costs and brings any stale conclusions with it, so it is off by default.
 # The session must belong to this user on this machine.
 RESUME_SESSION = (os.environ.get("RESUME_SESSION") or "").strip()
-MAX_ROUNDS = 500          # backstop against a runaway loop
-MAX_EMPTY_ROUNDS = 3      # consecutive idle rounds (no work proposed) before giving up
-MAX_RUNTIME = int(os.environ["MAX_RUNTIME"]) if os.environ.get("MAX_RUNTIME") else None  # total agent wallclock (s); None = no time limit
-WAIT_TIMEOUT = 1800       # s between "still-alive" logs / backend-health checks during a wait
-ANNOUNCE_POLL = int(os.environ.get("ANNOUNCE_POLL", "2"))   # s between announcement-board checks during a job wait
-STALL_LIMIT = int(os.environ["STALL_LIMIT"]) if os.environ.get("STALL_LIMIT") else None  # None = wait indefinitely (HPC queues can take many hours); set seconds to cap (tests do)
+MAX_ROUNDS = 500  # backstop against a runaway loop
+MAX_EMPTY_ROUNDS = 3  # consecutive idle rounds (no work proposed) before giving up
+MAX_RUNTIME = (
+    int(os.environ["MAX_RUNTIME"]) if os.environ.get("MAX_RUNTIME") else None
+)  # total agent wallclock (s); None = no time limit
+WAIT_TIMEOUT = (
+    1800  # s between "still-alive" logs / backend-health checks during a wait
+)
+ANNOUNCE_POLL = int(
+    os.environ.get("ANNOUNCE_POLL", "2")
+)  # s between announcement-board checks during a job wait
+STALL_LIMIT = (
+    int(os.environ["STALL_LIMIT"]) if os.environ.get("STALL_LIMIT") else None
+)  # None = wait indefinitely (HPC queues can take many hours); set seconds to cap (tests do)
+
 
 # --- Slack notifications (optional; see SLACK_NOTIFY.md). Missing webhook/script
 # or a failed post is ignored so a run is never affected. ---
 def _bool_env(name, default=False):
     v = os.environ.get(name)
     return default if v is None else v.strip().lower() in ("1", "true", "yes", "on")
+
 
 # A browser view of this run: the log as it is written and the files it writes. Off
 # unless asked for, and it never affects the run -- it only reads the workspace.
@@ -195,21 +223,28 @@ WATCH_PORT = int(os.environ.get("WATCH_PORT", "8765"))
 # The viewer outlives the run -- the end of a run is when its records are worth reading
 # -- and stops itself once nobody has looked for this long.
 WATCH_IDLE = int(os.environ.get("WATCH_IDLE", "600"))
-_watcher = None           # the viewer process, stopped when the run ends
+_watcher = None  # the viewer process, stopped when the run ends
 
 NOTIFY_START = _bool_env("NOTIFY_START", False)
 NOTIFY_DAILY = _bool_env("NOTIFY_DAILY", True)
 NOTIFY_FINISH = _bool_env("NOTIFY_FINISH", True)
-DAILY_INTERVAL = int(os.environ.get("NOTIFY_DAILY_INTERVAL", "86400"))  # seconds between periodic summaries
-PROBLEM_GRACE = int(os.environ.get("NOTIFY_PROBLEM_GRACE", "1800"))     # shut down this long (s) after the agent flags an unresolved blocking problem
-NOTIFY_SCRIPT = os.environ.get("NOTIFY_SCRIPT") or os.path.join(SCRIPT_DIR, "slack_notify.sh")
+DAILY_INTERVAL = int(
+    os.environ.get("NOTIFY_DAILY_INTERVAL", "86400")
+)  # seconds between periodic summaries
+PROBLEM_GRACE = int(
+    os.environ.get("NOTIFY_PROBLEM_GRACE", "1800")
+)  # shut down this long (s) after the agent flags an unresolved blocking problem
+NOTIFY_SCRIPT = os.environ.get("NOTIFY_SCRIPT") or os.path.join(
+    SCRIPT_DIR, "slack_notify.sh"
+)
 
 # When a periodic summary is due, the runner asks the agent to write it (its own
 # words) via the notify tool, instead of a fixed harness string.
-REPORT_PROMPT = _prompt("REPORT_PROMPT",
+REPORT_PROMPT = _prompt(
+    "REPORT_PROMPT",
     "Before anything else this turn, post a brief (1-2 line) status summary to Slack "
     "with the notify tool: what you are currently working on, recent progress, and any "
-    "concern. Then continue as normal."
+    "concern. Then continue as normal.",
 )
 
 
@@ -217,8 +252,12 @@ def slack_notify(msg):
     if not os.path.isfile(NOTIFY_SCRIPT):
         return
     try:
-        subprocess.run(["bash", NOTIFY_SCRIPT, msg], timeout=30,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["bash", NOTIFY_SCRIPT, msg],
+            timeout=30,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     except Exception as e:
         print(f"[slack_notify] failed (ignored): {e}", flush=True)
 
@@ -252,7 +291,7 @@ async def _context_usage(client):
         return None
 
 
-_context_task = None        # the in-flight context lookup, if any
+_context_task = None  # the in-flight context lookup, if any
 
 
 def _refresh_context(client):
@@ -270,19 +309,27 @@ async def _record_context(client):
     if not ctx:
         return
     _last_context.update(ctx)
-    _write_meta(context_tokens=ctx["tokens"], context_window=ctx["window"],
-                context_pct=ctx["pct"], **({"model": ctx["model"]} if ctx["model"] else {}))
+    _write_meta(
+        context_tokens=ctx["tokens"],
+        context_window=ctx["window"],
+        context_pct=ctx["pct"],
+        **({"model": ctx["model"]} if ctx["model"] else {}),
+    )
 
 
 def _as_context(usage):
     """The /context answer in the shape the rest of the run records."""
     if not usage or usage.get("totalTokens") is None:
         return None
-    return {"tokens": usage.get("totalTokens"), "window": usage.get("rawMaxTokens"),
-            "pct": usage.get("percentage"), "model": usage.get("model")}
+    return {
+        "tokens": usage.get("totalTokens"),
+        "window": usage.get("rawMaxTokens"),
+        "pct": usage.get("percentage"),
+        "model": usage.get("model"),
+    }
 
 
-_last_context = {}          # tokens/window/pct/model, from the most recent turn
+_last_context = {}  # tokens/window/pct/model, from the most recent turn
 
 
 async def _post_scheduled_status(client, round_num, start_time):
@@ -290,12 +337,17 @@ async def _post_scheduled_status(client, round_num, start_time):
     u = _last_context
     model = u.get("model") or "?"
     tok, win, pct = u.get("tokens"), u.get("window"), u.get("pct")
-    ctx = (f"ctx ~{tok}/{win} (~{pct:.0f}%)"
-           if tok is not None and win and pct is not None else "ctx n/a")
-    slack_notify(f":calendar: Scheduled Status — {model}, "
-                 f"round {round_num} · {tools.submit_count()} remote / {tools.local_submit_count()} local "
-                 f"this session · {tools.jobs_in_flight()} in-flight · {ctx} · "
-                 f"uptime {_fmt_uptime(time.time() - start_time)}")
+    ctx = (
+        f"ctx ~{tok}/{win} (~{pct:.0f}%)"
+        if tok is not None and win and pct is not None
+        else "ctx n/a"
+    )
+    slack_notify(
+        f":calendar: Scheduled Status — {model}, "
+        f"round {round_num} · {tools.submit_count()} remote / {tools.local_submit_count()} local "
+        f"this session · {tools.jobs_in_flight()} in-flight · {ctx} · "
+        f"uptime {_fmt_uptime(time.time() - start_time)}"
+    )
 
 
 def _new_board_lines(seen, current):
@@ -304,8 +356,8 @@ def _new_board_lines(seen, current):
     part' then. Without this, any change re-sends every old message and the agent
     re-acts on things it already handled."""
     old, new = seen.splitlines(), current.splitlines()
-    if new[:len(old)] == old:
-        return "\n".join(new[len(old):]).strip()
+    if new[: len(old)] == old:
+        return "\n".join(new[len(old) :]).strip()
     return current
 
 
@@ -327,7 +379,7 @@ def _new_record_text(before, after):
     for path, text in after.items():
         old = before.get(path, "")
         if len(text) > len(old) and text.startswith(old):
-            chunk = text[len(old):].strip()
+            chunk = text[len(old) :].strip()
             if chunk:
                 added.append(f"--- new in {os.path.basename(path)} ---\n{chunk}")
     return "\n\n".join(added)
@@ -349,8 +401,11 @@ def _recent_results(budget=120000):
             break
         kept.append(row)
     kept.reverse()
-    head = (f"({len(rows)} rows recorded; all supplied)\n" if len(kept) == len(rows)
-            else f"({len(rows)} rows recorded, the {len(kept)} most recent supplied)\n")
+    head = (
+        f"({len(rows)} rows recorded; all supplied)\n"
+        if len(kept) == len(rows)
+        else f"({len(rows)} rows recorded, the {len(kept)} most recent supplied)\n"
+    )
     return head + "".join(kept)
 
 
@@ -359,8 +414,10 @@ def _append_review(reply):
     belong in the record, and a later reader can see what was checked."""
     try:
         with open(os.path.join(WORKSPACE_DIR, "REVIEWS.md"), "a") as f:
-            f.write(f"\n## {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
-                    f"-- {CRITIC_LABEL}, run {RUN_ID}\n\n{reply}\n")
+            f.write(
+                f"\n## {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+                f"-- {CRITIC_LABEL}, run {RUN_ID}\n\n{reply}\n"
+            )
     except Exception as e:
         print(f"[critic] could not record the review (ignored): {e}", flush=True)
 
@@ -370,26 +427,32 @@ def _critic_prompt(findings, reply, tail=""):
     a critic reading only the rows can be wrong about what the rows mean, and saying so
     with evidence is a legitimate answer."""
     listed = "\n".join(f"- {claim} ({verdict})" for claim, verdict in findings)
-    return (f"The critic ({CRITIC_LABEL}) reviewed your latest journal section and "
-            f"found claims it says the recorded results do not support:\n\n"
-            f"{listed}\n\nIts full review:\n\n{reply}\n\n"
-            "Deal with each one before continuing: correct the write-up, run what "
-            "would settle it, or answer the objection in the journal citing the rows "
-            "that support you.\n\n" + tail)
+    return (
+        f"The critic ({CRITIC_LABEL}) reviewed your latest journal section and "
+        f"found claims it says the recorded results do not support:\n\n"
+        f"{listed}\n\nIts full review:\n\n{reply}\n\n"
+        "Deal with each one before continuing: correct the write-up, run what "
+        "would settle it, or answer the objection in the journal citing the rows "
+        "that support you.\n\n" + tail
+    )
 
 
 def _announcements_prompt(text, tail=""):
     """Wrap NEW announcements-board lines as the next turn's prompt."""
-    body = ("New on the shared announcements board:\n" + text +
-            "\nAct on anything here that concerns you. Anything marked as already "
-            "answered by the secretary needs no reply from you. If it needs immediate "
-            "action, take it now; otherwise acknowledge it briefly and continue. "
-            "Pending jobs remain tracked.")
+    body = (
+        "New on the shared announcements board:\n"
+        + text
+        + "\nAct on anything here that concerns you. Anything marked as already "
+        "answered by the secretary needs no reply from you. If it needs immediate "
+        "action, take it now; otherwise acknowledge it briefly and continue. "
+        "Pending jobs remain tracked."
+    )
     return body + ("\n\n" + tail if tail else "")
 
 
 class Tee:
     """Write to both a file and the original stream."""
+
     def __init__(self, log_file, stream):
         self.log_file = log_file
         self.stream = stream
@@ -413,8 +476,11 @@ def method_path():
     into the campaign, so each campaign owns its own and can change it. The library
     default applies to a campaign created before this, or one whose copy is missing."""
     campaign_copy = os.path.join(CAMPAIGN_DIR, "method.md")
-    return (campaign_copy if os.path.isfile(campaign_copy)
-            else os.path.join(LAB_DIR, "methods", "standard.md"))
+    return (
+        campaign_copy
+        if os.path.isfile(campaign_copy)
+        else os.path.join(LAB_DIR, "methods", "standard.md")
+    )
 
 
 def load_method():
@@ -449,8 +515,17 @@ def load_user_prompt():
 # framework's bookkeeping. WebSearch is left out too: it runs on the API server rather
 # than here, so a gateway that does not carry server tools refuses it, and some sites
 # are behind one. AGENT_TOOLS changes this set.
-BASE_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash", "Skill",
-              "WebFetch", "Agent"]
+BASE_TOOLS = [
+    "Read",
+    "Write",
+    "Edit",
+    "Glob",
+    "Grep",
+    "Bash",
+    "Skill",
+    "WebFetch",
+    "Agent",
+]
 AGENT_TOOLS = os.environ.get("AGENT_TOOLS", "").strip()
 
 
@@ -467,8 +542,10 @@ def claude_tools():
         return list(BASE_TOOLS)
     signed = [e for e in entries if e[0] in "+-"]
     if signed and len(signed) != len(entries):
-        raise ValueError("AGENT_TOOLS mixes +/- adjustments with plain tool names; "
-                         "use one form or the other")
+        raise ValueError(
+            "AGENT_TOOLS mixes +/- adjustments with plain tool names; "
+            "use one form or the other"
+        )
     if not signed:
         return list(dict.fromkeys(entries))
     out = list(BASE_TOOLS)
@@ -497,7 +574,7 @@ def agent_tools():
 # campaign on a cheaper model before giving a machine to a long run. An alias
 # ('sonnet', 'opus') or a full model name; which ones work depends on the lab's gateway.
 AGENT_MODEL = os.environ.get("AGENT_MODEL", "").strip()
-RESOLVED_MODEL = ""      # what the agent will actually run as; filled in by preflight
+RESOLVED_MODEL = ""  # what the agent will actually run as; filled in by preflight
 
 
 # One worked example of delegating: a subagent that reads a long record and returns
@@ -535,8 +612,9 @@ def _parse_subagent(path):
         # can act on it. A background call returns a launch stub and the answer lands
         # some turns later.
         fields["background"] = meta["background"].lower() == "true"
-    return meta["name"], AgentDefinition(description=meta["description"],
-                                         prompt=body.strip(), **fields)
+    return meta["name"], AgentDefinition(
+        description=meta["description"], prompt=body.strip(), **fields
+    )
 
 
 def subagent_defs():
@@ -562,12 +640,20 @@ def subagent_defs():
 # What a tool call means for someone watching. The tool name says which function was
 # called; a phase says what the run is doing.
 _PHASES = {
-    "submit_job": "submitting jobs", "submit_local": "submitting jobs",
-    "get_completed_jobs": "collecting results", "get_local_completed": "collecting results",
-    "check_backend": "checking the backend", "release_claim": "releasing a claim",
-    "notify": "posting to Slack", "cycle_done": "closing the cycle",
-    "Read": "reading records", "Grep": "reading records", "Glob": "reading records",
-    "Write": "writing up", "Edit": "writing up", "NotebookEdit": "writing up",
+    "submit_job": "submitting jobs",
+    "submit_local": "submitting jobs",
+    "get_completed_jobs": "collecting results",
+    "get_local_completed": "collecting results",
+    "check_backend": "checking the backend",
+    "release_claim": "releasing a claim",
+    "notify": "posting to Slack",
+    "cycle_done": "closing the cycle",
+    "Read": "reading records",
+    "Grep": "reading records",
+    "Glob": "reading records",
+    "Write": "writing up",
+    "Edit": "writing up",
+    "NotebookEdit": "writing up",
     "Bash": "running analysis",
 }
 # Which subagent each Agent call started, keyed by the call's id, so a turn arriving
@@ -608,9 +694,18 @@ def _start_watcher():
         os.makedirs(RUN_DIR, exist_ok=True)
         watch_log = open(os.path.join(RUN_DIR, "watch.log"), "w")
         _watcher = subprocess.Popen(
-            [sys.executable, os.path.join(SCRIPT_DIR, "watch.py"), CAMPAIGN,
-             "--port", str(port), "--no-open", f"--exit-when-idle={WATCH_IDLE}"],
-            stdout=watch_log, stderr=subprocess.STDOUT)
+            [
+                sys.executable,
+                os.path.join(SCRIPT_DIR, "watch.py"),
+                CAMPAIGN,
+                "--port",
+                str(port),
+                "--no-open",
+                f"--exit-when-idle={WATCH_IDLE}",
+            ],
+            stdout=watch_log,
+            stderr=subprocess.STDOUT,
+        )
         print(f"watch: http://127.0.0.1:{port}/", flush=True)
     except Exception as e:
         print(f"[watch] could not start the viewer (ignored): {e}", flush=True)
@@ -662,8 +757,11 @@ _last_heartbeat = 0.0
 
 def _start_run_dir():
     os.makedirs(RUN_DIR, exist_ok=True)
-    for path in (os.path.join(CAMPAIGN_DIR, "prompt.md"), method_path(),
-                 os.path.join(CAMPAIGN_DIR, USER_PROMPT_FILE)):
+    for path in (
+        os.path.join(CAMPAIGN_DIR, "prompt.md"),
+        method_path(),
+        os.path.join(CAMPAIGN_DIR, USER_PROMPT_FILE),
+    ):
         name = os.path.basename(path)
         try:
             shutil.copy2(path, os.path.join(RUN_DIR, name))
@@ -672,15 +770,25 @@ def _start_run_dir():
     # The budgets this run stops at, recorded so anything reading the run -- a watcher,
     # a later reader -- can say how far through it is without knowing the environment
     # it was launched in.
-    _write_meta(max_submits=tools.MAX_SUBMITS, max_runtime_s=MAX_RUNTIME,
-                max_rounds=MAX_ROUNDS, critic=CRITIC_LABEL,
-                run_id=RUN_ID, handle=HANDLE, system=SYSTEM, role=ROLE,
-                started_by=os.environ.get("STARTED_BY", ""),
-                host=socket.gethostname(), pid=os.getpid(),
-                started_at=datetime.now().isoformat(timespec="seconds"),
-                user_prompt_file=USER_PROMPT_FILE,
-                campaign=CAMPAIGN,
-                shared_dir=WORKSPACE_DIR, log=LOG_PATH, status="running")
+    _write_meta(
+        max_submits=tools.MAX_SUBMITS,
+        max_runtime_s=MAX_RUNTIME,
+        max_rounds=MAX_ROUNDS,
+        critic=CRITIC_LABEL,
+        run_id=RUN_ID,
+        handle=HANDLE,
+        system=SYSTEM,
+        role=ROLE,
+        started_by=os.environ.get("STARTED_BY", ""),
+        host=socket.gethostname(),
+        pid=os.getpid(),
+        started_at=datetime.now().isoformat(timespec="seconds"),
+        user_prompt_file=USER_PROMPT_FILE,
+        campaign=CAMPAIGN,
+        shared_dir=WORKSPACE_DIR,
+        log=LOG_PATH,
+        status="running",
+    )
     _heartbeat()
     print(f"Run dir: {RUN_DIR}", flush=True)
 
@@ -704,11 +812,13 @@ def _stop_file_present():
 # not opened, so the last run's log survives, and no watcher or Slack post is made.
 # The environment variable is the form campaigns use, since it reaches here whatever a
 # run.sh looks like; --preflight is accepted too, for running this file directly.
-CHECK_ONLY = (os.environ.get("PREFLIGHT", "").lower() in ("1", "true", "yes")
-              or "--preflight" in sys.argv)
+CHECK_ONLY = (
+    os.environ.get("PREFLIGHT", "").lower() in ("1", "true", "yes")
+    or "--preflight" in sys.argv
+)
 
 
-GATEWAY_URL = None          # set when this run is routed through the lab's gateway
+GATEWAY_URL = None  # set when this run is routed through the lab's gateway
 
 
 def _on_lab_gateway():
@@ -737,7 +847,7 @@ def _route_to_gateway():
         return
     try:
         with open(conf) as f:
-            served = re.findall(r"^\s*-?\s*model_name:\s*(\S+)", f.read(), re.M)
+            served = re.findall(r"^\s*-?\s*model_name:\s*(\S+)", f.read(), re.MULTILINE)
     except OSError:
         return
     if AGENT_MODEL in served:
@@ -748,8 +858,10 @@ def _route_to_gateway():
         # The critic and the framework's own checks read this; the CLI does not, which
         # _gateway_settings_file handles.
         os.environ["ANTHROPIC_BASE_URL"] = url
-        print(f"gateway: {AGENT_MODEL} is served by {url} — routing the agent there",
-              flush=True)
+        print(
+            f"gateway: {AGENT_MODEL} is served by {url} — routing the agent there",
+            flush=True,
+        )
 
 
 def _gateway_settings_file():
@@ -779,7 +891,8 @@ def _probe_model():
     async def _ask():
         opts = ClaudeAgentOptions(
             cwd=SCRIPT_DIR,
-            **({"settings": _gateway_settings_file()} if GATEWAY_URL else {}))
+            **({"settings": _gateway_settings_file()} if GATEWAY_URL else {}),
+        )
         async with ClaudeSDKClient(options=opts) as c:
             return (await _context_usage(c) or {}).get("model")
 
@@ -803,12 +916,15 @@ def preflight():
     if tools.HAS_LOCAL:
         required += ["LOCAL_DESC", "LOCAL_SCHEMA", "local_fn"]
     if not required:
-        problems.append(f"task {tools.TASK_DIR} defines neither 'remote_fn' nor "
-                        f"'local_fn' (see AGENTS.md)")
+        problems.append(
+            f"task {tools.TASK_DIR} defines neither 'remote_fn' nor "
+            f"'local_fn' (see AGENTS.md)"
+        )
     for attr in required:
         if not hasattr(tools.task, attr):
-            problems.append(f"task {tools.TASK_DIR} is missing '{attr}' "
-                            f"(see AGENTS.md)")
+            problems.append(
+                f"task {tools.TASK_DIR} is missing '{attr}' (see AGENTS.md)"
+            )
     # A task may declare its own checks -- e.g. that its binary is where it expects.
     if hasattr(tools.task, "preflight"):
         try:
@@ -820,7 +936,9 @@ def preflight():
     except ValueError as e:
         problems.append(str(e))
     if not os.path.isfile(method_path()):
-        problems.append(f"method.md missing: {method_path()} (how-to-work prompt loaded into the agent)")
+        problems.append(
+            f"method.md missing: {method_path()} (how-to-work prompt loaded into the agent)"
+        )
     _fw = os.path.join(SCRIPT_DIR, "framework_prompt.md")
     if not os.path.isfile(_fw):
         problems.append(f"framework_prompt.md missing: {_fw}")
@@ -830,21 +948,32 @@ def preflight():
     if tools.HAS_REMOTE:
         try:
             import globus_compute_sdk as _gc
+
             _c = _gc.Client()
             _st = _c.get_endpoint_status(tools.ENDPOINT_ID).get("status")
             if _st != "online":
                 try:
-                    _nm = _c.get_endpoint_metadata(tools.ENDPOINT_ID).get("name") or tools.ENDPOINT_ID
+                    _nm = (
+                        _c.get_endpoint_metadata(tools.ENDPOINT_ID).get("name")
+                        or tools.ENDPOINT_ID
+                    )
                 except Exception:
                     _nm = tools.ENDPOINT_ID
                 if not CHECK_ONLY:
-                    slack_notify(f":rotating_light: Agent exiting -- Globus Compute "
-                                 f"endpoint '{_nm}' is not online (status={_st}). Start it: "
-                                 f"globus-compute-endpoint start {_nm} --detach")
-                problems.append(f"Globus Compute endpoint '{_nm}' ({tools.ENDPOINT_ID}) is not online "
-                                f"(status={_st}); start it: globus-compute-endpoint start {_nm} --detach")
+                    slack_notify(
+                        f":rotating_light: Agent exiting -- Globus Compute "
+                        f"endpoint '{_nm}' is not online (status={_st}). Start it: "
+                        f"globus-compute-endpoint start {_nm} --detach"
+                    )
+                problems.append(
+                    f"Globus Compute endpoint '{_nm}' ({tools.ENDPOINT_ID}) is not online "
+                    f"(status={_st}); start it: globus-compute-endpoint start {_nm} --detach"
+                )
         except Exception as e:
-            print(f"[preflight] WARNING: could not query endpoint status ({tools.ENDPOINT_ID}): {e}", flush=True)
+            print(
+                f"[preflight] WARNING: could not query endpoint status ({tools.ENDPOINT_ID}): {e}",
+                flush=True,
+            )
     try:
         os.makedirs(WORKSPACE_DIR, exist_ok=True)
         _t = os.path.join(WORKSPACE_DIR, ".preflight_write_test")
@@ -859,7 +988,10 @@ def preflight():
             print(f"  - {pr}", flush=True)
         sys.exit(1)
     backend = "endpoint online" if tools.HAS_REMOTE else "local execution only"
-    print(f"preflight OK: task_dir={tools.TASK_DIR}, method.md, WORKSPACE_DIR, {backend}.", flush=True)
+    print(
+        f"preflight OK: task_dir={tools.TASK_DIR}, method.md, WORKSPACE_DIR, {backend}.",
+        flush=True,
+    )
     # The gateway converts between the Messages API and a backend that does not speak
     # it. The agent needs it whenever it is pointed at one, whether or not there is a
     # critic: a run on a non-Anthropic model goes through the same proxy.
@@ -878,7 +1010,8 @@ def preflight():
         RESOLVED_MODEL = _probe_model()
     try:
         CRITIC_MODEL, CRITIC_LABEL = critic.resolve(
-            RESOLVED_MODEL or os.environ.get("ANTHROPIC_MODEL", ""))
+            RESOLVED_MODEL or os.environ.get("ANTHROPIC_MODEL", "")
+        )
     except critic.CriticUnavailable as e:
         print(f"preflight FAILED: {e}", flush=True)
         sys.exit(1)
@@ -892,15 +1025,19 @@ def preflight():
     print(f"job tools:    {' '.join(job)}", flush=True)
     print(f"claude tools: {' '.join(claude)}", flush=True)
     if RESOLVED_MODEL or CHECK_ONLY:
-        print(f"model:        {RESOLVED_MODEL or '(could not be determined)'}", flush=True)
+        print(
+            f"model:        {RESOLVED_MODEL or '(could not be determined)'}", flush=True
+        )
     print(f"critic:       {CRITIC_LABEL}", flush=True)
     # The budget and the resources a job asks for. They come from three files and the
     # environment, so the resolved values are the only honest way to show them -- and
     # they are what a run gets wrong most often.
     # Named as the environment variables that set them, so a value that looks wrong
     # can be searched for in run.sh without a translation step.
-    limits = [f"MAX_SUBMITS={tools.MAX_SUBMITS}",
-              f"MAX_CONCURRENT={tools.MAX_CONCURRENT}"]
+    limits = [
+        f"MAX_SUBMITS={tools.MAX_SUBMITS}",
+        f"MAX_CONCURRENT={tools.MAX_CONCURRENT}",
+    ]
     if MAX_RUNTIME:
         limits.append(f"MAX_RUNTIME={MAX_RUNTIME}s")
     print(f"budget:       {', '.join(limits)}", flush=True)
@@ -910,18 +1047,24 @@ def preflight():
         buckets = tools._SYS["buckets"]
         for name, b in buckets.items():
             res = b["user_config"]
-            shown = ", ".join(f"{k}={v}" for k, v in sorted(res.items())
-                              if v != "" and v is not None
-                              and k not in ("init_blocks", "min_blocks"))
+            shown = ", ".join(
+                f"{k}={v}"
+                for k, v in sorted(res.items())
+                if v != "" and v is not None and k not in ("init_blocks", "min_blocks")
+            )
             label = f"resources[{name}]" if len(buckets) > 1 else "resources"
-            marker = "  (default)" if name == tools._default_bucket and len(buckets) > 1 else ""
+            marker = (
+                "  (default)"
+                if name == tools._default_bucket and len(buckets) > 1
+                else ""
+            )
             print(f"{label}:    {shown}{marker}", flush=True)
         print(f"job timeout:  {tools.TARGET.get('timeout', '(unset)')}s", flush=True)
     if not CHECK_ONLY:
         _start_watcher()
 
 
-_session_id = None          # this run's Claude session, for reopening it later
+_session_id = None  # this run's Claude session, for reopening it later
 
 
 async def drain_turn(client, round_num):
@@ -946,8 +1089,9 @@ async def drain_turn(client, round_num):
                     sub = (getattr(block, "input", None) or {}).get("subagent_type")
                     if sub:
                         _DELEGATES[getattr(block, "id", None)] = sub
-                    _set_phase(f"round {round_num}: waiting on subagent "
-                               f"{sub or '(unnamed)'}")
+                    _set_phase(
+                        f"round {round_num}: waiting on subagent {sub or '(unnamed)'}"
+                    )
                 elif who:
                     _set_phase(f"round {round_num}: subagent {who} ({bare})")
                 else:
@@ -977,10 +1121,13 @@ async def main():
         at_once.append(f"local jobs running at once: {tools.LOCAL_MAX_CONCURRENT}")
     if MAX_RUNTIME:
         at_once.append(f"wall clock for this run: {MAX_RUNTIME}s")
-    system_prompt += ("\n\n# This run\n" + "\n".join(at_once)
-                      + "\n\nSubmitting more at once than that queues the rest, which "
-                        "tells you nothing sooner. Each submit answers with how much of "
-                        "the run's job budget it has used.")
+    system_prompt += (
+        "\n\n# This run\n"
+        + "\n".join(at_once)
+        + "\n\nSubmitting more at once than that queues the rest, which "
+        "tells you nothing sooner. Each submit answers with how much of "
+        "the run's job budget it has used."
+    )
     system_prompt += f"\n\n# This agent\nSYSTEM={SYSTEM}.{f'  ROLE={ROLE}.' if ROLE_SET else ''}\nThe shared files (results.jsonl, LOGBOOK.md, JOURNAL.md, claims.jsonl) live in {WORKSPACE_DIR} \u2014 always read and write them by full path there (e.g. {WORKSPACE_DIR}/results.jsonl). Follow the role rules in the Collaboration section of the prompt."
     server = create_server()
 
@@ -1020,8 +1167,9 @@ async def main():
     # several run at once. Removed on clean exit.
     run_dir = os.path.join(WORKSPACE_DIR, "run")
     os.makedirs(run_dir, exist_ok=True)
-    pid_file = os.path.join(run_dir, f"agent_{SYSTEM}_{ROLE}.pid" if ROLE_SET
-                            else f"agent_{SYSTEM}.pid")
+    pid_file = os.path.join(
+        run_dir, f"agent_{SYSTEM}_{ROLE}.pid" if ROLE_SET else f"agent_{SYSTEM}.pid"
+    )
     with open(pid_file, "w") as f:
         f.write(str(os.getpid()))
     _start_run_dir()
@@ -1030,11 +1178,13 @@ async def main():
     # and no finish ping fired. Cancel the main task instead so shutdown runs. SIGINT
     # (kill -INT / Ctrl-C) already unwinds via KeyboardInterrupt.
     main_task = asyncio.current_task()
+
     def _on_sigterm():
         nonlocal stop_reason
         stop_reason = "signal (SIGTERM)"
         print("SIGTERM received -- shutting down gracefully.", flush=True)
         main_task.cancel()
+
     try:
         loop.add_signal_handler(signal.SIGTERM, _on_sigterm)
     except (NotImplementedError, RuntimeError):
@@ -1050,15 +1200,19 @@ async def main():
             model = (start or {}).get("model") or RESOLVED_MODEL or AGENT_MODEL or "?"
             if start:
                 _last_context.update(start)
-                _write_meta(context_tokens=start["tokens"],
-                            context_window=start["window"],
-                            context_pct=start["pct"])
+                _write_meta(
+                    context_tokens=start["tokens"],
+                    context_window=start["window"],
+                    context_pct=start["pct"],
+                )
             print(f"Agent started -- {SYSTEM}{ROLE_NOTE} · model {model}", flush=True)
             _write_meta(model=model)
             if NOTIFY_START:
-                slack_notify(f":rocket: Agent {HANDLE} started — "
-                             f"{CAMPAIGN or 'no campaign'} on {SYSTEM}{ROLE_NOTE} · {model}"
-                             f" · critic {CRITIC_LABEL}.")
+                slack_notify(
+                    f":rocket: Agent {HANDLE} started — "
+                    f"{CAMPAIGN or 'no campaign'} on {SYSTEM}{ROLE_NOTE} · {model}"
+                    f" · critic {CRITIC_LABEL}."
+                )
             prompt = load_user_prompt()
             empty_rounds = 0
             last_daily = start_time
@@ -1074,7 +1228,7 @@ async def main():
             # Set while the agent is dealing with findings, so its answer to them is
             # not itself put up for review.
             answering_critic = False
-            stopping = None           # set to the reason once the run starts winding down
+            stopping = None  # set to the reason once the run starts winding down
             finalize_rounds = 0
             for round_num in range(1, MAX_ROUNDS + 1):
                 print(f"\n===== ROUND {round_num} =====", flush=True)
@@ -1084,7 +1238,10 @@ async def main():
                 # around and it has stayed unresolved past the grace period.
                 ps = tools.problem_since()
                 if ps is not None and time.time() - ps >= PROBLEM_GRACE:
-                    print(f"Agent-flagged problem unresolved for >{PROBLEM_GRACE}s -- stopping.", flush=True)
+                    print(
+                        f"Agent-flagged problem unresolved for >{PROBLEM_GRACE}s -- stopping.",
+                        flush=True,
+                    )
                     stop_reason = "agent-flagged problem unresolved past grace"
                     break
                 # Scheduled status: post the fixed-metrics line, then ask the agent to
@@ -1097,8 +1254,11 @@ async def main():
                 if stopping is None and _stop_file_present():
                     stopping = "stop requested"
                     tools.request_stop()
-                    print("Stop requested -- winding down: no new work, finishing "
-                          "what is in flight.", flush=True)
+                    print(
+                        "Stop requested -- winding down: no new work, finishing "
+                        "what is in flight.",
+                        flush=True,
+                    )
                     # Replace, not prepend: whatever was queued (CONTINUE/EXPLORE) tells
                     # the agent to submit the next region, which contradicts winding down.
                     prompt = WINDDOWN_PROMPT
@@ -1108,7 +1268,9 @@ async def main():
                     stopping = "goal met"
                     tools.request_stop()
                     _write_meta(goal_met=tools.goal_is_met())
-                    print(f"Goal met -- winding down: {tools.goal_is_met()}", flush=True)
+                    print(
+                        f"Goal met -- winding down: {tools.goal_is_met()}", flush=True
+                    )
                     prompt = WINDDOWN_PROMPT
                 # A cycle write-up is the trigger: the journal gains a section, so a
                 # longer journal than last round means there is something to review.
@@ -1125,23 +1287,35 @@ async def main():
                     new_section = _new_record_text(last_records, records)
                     if conclusion:
                         last_records = records
-                        new_section = (f"The agent's stated conclusion for this cycle:\n"
-                                       f"{conclusion}\n\n{new_section}")
-                        print(f"[critic] reviewing {len(new_section)} new chars "
-                              f"with {CRITIC_LABEL}", flush=True)
+                        new_section = (
+                            f"The agent's stated conclusion for this cycle:\n"
+                            f"{conclusion}\n\n{new_section}"
+                        )
+                        print(
+                            f"[critic] reviewing {len(new_section)} new chars "
+                            f"with {CRITIC_LABEL}",
+                            flush=True,
+                        )
                         if stopping:
                             # A review takes a couple of minutes. During a wind-down
                             # that silence looks like a hang, so say what it is waiting
                             # for.
-                            slack_notify(f":mag: Reviewing the last cycle with "
-                                         f"{CRITIC_LABEL} before exit.")
-                        _set_phase(f"round {round_num}: critic reviewing ({CRITIC_LABEL})")
-                        reply = critic.review(CRITIC_MODEL, new_section,
-                                              _recent_results())
+                            slack_notify(
+                                f":mag: Reviewing the last cycle with "
+                                f"{CRITIC_LABEL} before exit."
+                            )
+                        _set_phase(
+                            f"round {round_num}: critic reviewing ({CRITIC_LABEL})"
+                        )
+                        reply = critic.review(
+                            CRITIC_MODEL, new_section, _recent_results()
+                        )
                         if reply:
                             _append_review(reply)
                             found = critic.blocking(reply)
-                            print(f"[critic] {len(found)} blocking finding(s)", flush=True)
+                            print(
+                                f"[critic] {len(found)} blocking finding(s)", flush=True
+                            )
                             answering_critic = bool(found)
                             if found:
                                 prompt = _critic_prompt(found, reply, tail=prompt)
@@ -1162,20 +1336,34 @@ async def main():
                     tools.cycle_done_pending()
                     answering_critic = False
                 new_submits = tools.submit_count() - submits_before
-                print(f"[round {round_num}] new_submits={new_submits} "
-                      f"in_flight={tools.jobs_in_flight()} pending={tools.pending_count()}",
-                      flush=True)
+                print(
+                    f"[round {round_num}] new_submits={new_submits} "
+                    f"in_flight={tools.jobs_in_flight()} pending={tools.pending_count()}",
+                    flush=True,
+                )
 
                 # Start winding down when the budget is spent or time is up. Only the
                 # DECISION happens here -- outstanding work still drains below, so a
                 # run never orphans in-flight jobs. Finding a good result is NOT a
                 # stop condition; keep exploring new regions.
-                over_time = MAX_RUNTIME is not None and (time.time() - start_time) >= MAX_RUNTIME
-                if stopping is None and (tools.submit_count() >= tools.MAX_SUBMITS or over_time):
-                    stopping = "time limit" if over_time else f"budget ({tools.MAX_SUBMITS} submits)"
+                over_time = (
+                    MAX_RUNTIME is not None
+                    and (time.time() - start_time) >= MAX_RUNTIME
+                )
+                if stopping is None and (
+                    tools.submit_count() >= tools.MAX_SUBMITS or over_time
+                ):
+                    stopping = (
+                        "time limit"
+                        if over_time
+                        else f"budget ({tools.MAX_SUBMITS} submits)"
+                    )
                     tools.request_stop()
-                    print(f"{stopping} reached -- winding down: no new work, finishing "
-                          f"what is in flight.", flush=True)
+                    print(
+                        f"{stopping} reached -- winding down: no new work, finishing "
+                        f"what is in flight.",
+                        flush=True,
+                    )
                 # Everything collected and the run is ending: give the agent a turn (or
                 # two) to write the journal and LOGBOOK BEFORE exiting. Without this the
                 # loop would break the moment the last job landed and the write-up would
@@ -1183,11 +1371,17 @@ async def main():
                 if stopping is not None and tools.jobs_in_flight() == 0:
                     if finalize_rounds < MAX_FINALIZE_ROUNDS:
                         finalize_rounds += 1
-                        print(f"Drained -- finalize turn {finalize_rounds}/{MAX_FINALIZE_ROUNDS} "
-                              f"(write-up).", flush=True)
+                        print(
+                            f"Drained -- finalize turn {finalize_rounds}/{MAX_FINALIZE_ROUNDS} "
+                            f"(write-up).",
+                            flush=True,
+                        )
                         prompt = FINALIZE_PROMPT
                         continue
-                    print(f"{stopping}: drained and written up — run complete.", flush=True)
+                    print(
+                        f"{stopping}: drained and written up — run complete.",
+                        flush=True,
+                    )
                     stop_reason = stopping
                     break
                 # Idle round with budget left: re-prompt the agent to propose a NEW
@@ -1196,8 +1390,11 @@ async def main():
                 if tools.jobs_in_flight() == 0 and new_submits == 0:
                     empty_rounds += 1
                     if empty_rounds >= MAX_EMPTY_ROUNDS:
-                        print(f"No new work proposed for {MAX_EMPTY_ROUNDS} rounds — "
-                              f"stopping.", flush=True)
+                        print(
+                            f"No new work proposed for {MAX_EMPTY_ROUNDS} rounds — "
+                            f"stopping.",
+                            flush=True,
+                        )
                         stop_reason = f"no new work for {MAX_EMPTY_ROUNDS} rounds"
                         break
                     prompt = EXPLORE_PROMPT
@@ -1214,9 +1411,12 @@ async def main():
                 backend_problem = None
                 board_update = None
                 while tools.pending_count() > 0:
-                    _set_phase(f"round {round_num}: waiting for "
-                               f"{tools.pending_count()} job(s)")
-                    done = await loop.run_in_executor(None, tools.wait_for_any, ANNOUNCE_POLL)
+                    _set_phase(
+                        f"round {round_num}: waiting for {tools.pending_count()} job(s)"
+                    )
+                    done = await loop.run_in_executor(
+                        None, tools.wait_for_any, ANNOUNCE_POLL
+                    )
                     _heartbeat(force=False)
                     if done > 0:
                         break
@@ -1237,13 +1437,19 @@ async def main():
                         continue
                     since_tick = 0
                     stalled += WAIT_TIMEOUT
-                    print(f"[waiting] {tools.pending_count()} job(s) still queued/running "
-                          f"after {stalled // 60} min -- still alive.", flush=True)
+                    print(
+                        f"[waiting] {tools.pending_count()} job(s) still queued/running "
+                        f"after {stalled // 60} min -- still alive.",
+                        flush=True,
+                    )
                     # Catch a stuck/dead backend AT THIS TICK (not on the summary interval):
                     # if nothing is really running, break now and let the agent recover or alert.
                     backend_problem = tools.backend_trouble()
                     if backend_problem:
-                        print(f"[backend check] problem detected: {backend_problem}", flush=True)
+                        print(
+                            f"[backend check] problem detected: {backend_problem}",
+                            flush=True,
+                        )
                         break
                     # Periodic summary during a long queue wait: break to give the agent
                     # a turn to report in its own words, then resume waiting next round.
@@ -1251,24 +1457,31 @@ async def main():
                         report_due = True
                         break
                     if STALL_LIMIT is not None and stalled >= STALL_LIMIT:
-                        print(f"Stall cap ({STALL_LIMIT}s) reached; stopping. Pending jobs will "
-                              f"need recovery on restart.", flush=True)
+                        print(
+                            f"Stall cap ({STALL_LIMIT}s) reached; stopping. Pending jobs will "
+                            f"need recovery on restart.",
+                            flush=True,
+                        )
                         stop_reason = f"stall cap ({STALL_LIMIT}s)"
                         return
                 if board_update:
                     prompt = _announcements_prompt(board_update)
                 elif backend_problem:
-                    prompt = ("A backend health check during the wait found a problem: "
-                              f"{backend_problem}. Nothing is completing. Act now: if it is "
-                              "recoverable, resubmit the affected config(s); if not, call "
-                              "notify(blocking=true) with a clear one-line message so the run stops.")
+                    prompt = (
+                        "A backend health check during the wait found a problem: "
+                        f"{backend_problem}. Nothing is completing. Act now: if it is "
+                        "recoverable, resubmit the affected config(s); if not, call "
+                        "notify(blocking=true) with a clear one-line message so the run stops."
+                    )
                     backend_problem = None
                 elif report_due:
                     report_due = False
                     last_daily = time.time()
                     await _post_scheduled_status(client, round_num, start_time)
-                    prompt = (REPORT_PROMPT + " Nothing new has completed; just post the "
-                              "summary and take no other action.")
+                    prompt = (
+                        REPORT_PROMPT + " Nothing new has completed; just post the "
+                        "summary and take no other action."
+                    )
                 elif stopping is not None:
                     # CONTINUE asks for the next region, which is the one thing a run
                     # that is winding down must not do.
@@ -1286,21 +1499,26 @@ async def main():
         # down can block (a local job runs for as long as it runs), and if that
         # happens the run must still end up correctly recorded rather than frozen as
         # "running" forever. The run dir itself STAYS -- it is the run history.
-        _write_meta(status="stopped", stop_reason=stop_reason,
-                    ended_at=datetime.now().isoformat(timespec="seconds"),
-                    remote_submitted=tools.submit_count(),
-                    local_submitted=tools.local_submit_count(),
-                    uptime_s=int(time.time() - start_time))
+        _write_meta(
+            status="stopped",
+            stop_reason=stop_reason,
+            ended_at=datetime.now().isoformat(timespec="seconds"),
+            remote_submitted=tools.submit_count(),
+            local_submitted=tools.local_submit_count(),
+            uptime_s=int(time.time() - start_time),
+        )
         for path in (pid_file, os.path.join(RUN_DIR, "heartbeat")):
             try:
                 os.remove(path)
             except OSError:
                 pass
         if NOTIFY_FINISH:
-            slack_notify(f":checkered_flag: Agent stopped — "
-                         f"reason: {stop_reason} · {tools.submit_count()} remote / "
-                         f"{tools.local_submit_count()} local submitted · "
-                         f"uptime {_fmt_uptime(time.time() - start_time)}.")
+            slack_notify(
+                f":checkered_flag: Agent stopped — "
+                f"reason: {stop_reason} · {tools.submit_count()} remote / "
+                f"{tools.local_submit_count()} local submitted · "
+                f"uptime {_fmt_uptime(time.time() - start_time)}."
+            )
         shutdown_executor()
         print("Executor shut down.", flush=True)
         _stop_watcher()

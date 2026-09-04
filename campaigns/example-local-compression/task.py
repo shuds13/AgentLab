@@ -12,7 +12,8 @@ users/<you>/local.json. The framework offers the local job tools and nothing els
 BANDWIDTH_MB_S = 5.0
 CORPUS_MB = 8
 
-LOCAL_DESC = """
+LOCAL_DESC = (
+    """
 Compress the benchmark corpus with one zlib configuration and return its timings.
 
 Returns `total_seconds` -- encode time plus transmit time at
@@ -30,21 +31,45 @@ Parameters:
 
 Each run rebuilds the same corpus from a fixed seed, so results are comparable across
 jobs. A job takes a few seconds.
-""" % BANDWIDTH_MB_S
+"""
+    % BANDWIDTH_MB_S
+)
 
 LOCAL_SCHEMA = {"level": int, "strategy": str, "memlevel": int, "windowlog": int}
 
-_STRATEGIES = {"default": "Z_DEFAULT_STRATEGY", "filtered": "Z_FILTERED",
-               "huffman_only": "Z_HUFFMAN_ONLY", "rle": "Z_RLE", "fixed": "Z_FIXED"}
+_STRATEGIES = {
+    "default": "Z_DEFAULT_STRATEGY",
+    "filtered": "Z_FILTERED",
+    "huffman_only": "Z_HUFFMAN_ONLY",
+    "rle": "Z_RLE",
+    "fixed": "Z_FIXED",
+}
 
 
 def _corpus(mb):
     """Deterministic mixed-entropy corpus: mostly repeated vocabulary, some noise, so
     that both match-finding and entropy coding have something to do."""
     import random
+
     rnd = random.Random(1234)
-    words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta",
-             "run", "job", "node", "rank", "queue", "kernel", "buffer", "stride"]
+    words = [
+        "alpha",
+        "beta",
+        "gamma",
+        "delta",
+        "epsilon",
+        "zeta",
+        "eta",
+        "theta",
+        "run",
+        "job",
+        "node",
+        "rank",
+        "queue",
+        "kernel",
+        "buffer",
+        "stride",
+    ]
     out, size, target = [], 0, mb * 1024 * 1024
     while size < target:
         if rnd.random() < 0.75:
@@ -68,8 +93,10 @@ def local_fn(args):
     if not 1 <= level <= 9:
         return {"error": f"level must be 1-9, got {level}", "args": args}
     if strategy not in _STRATEGIES:
-        return {"error": f"strategy must be one of {sorted(_STRATEGIES)}, got {strategy!r}",
-                "args": args}
+        return {
+            "error": f"strategy must be one of {sorted(_STRATEGIES)}, got {strategy!r}",
+            "args": args,
+        }
     if not 1 <= memlevel <= 9:
         return {"error": f"memlevel must be 1-9, got {memlevel}", "args": args}
     if not 9 <= windowlog <= 15:
@@ -85,8 +112,12 @@ def local_fn(args):
 
     transmit_seconds = len(blob) / (BANDWIDTH_MB_S * 1024 * 1024)
     return {
-        "args": {"level": level, "strategy": strategy,
-                 "memlevel": memlevel, "windowlog": windowlog},
+        "args": {
+            "level": level,
+            "strategy": strategy,
+            "memlevel": memlevel,
+            "windowlog": windowlog,
+        },
         "total_seconds": round(encode_seconds + transmit_seconds, 4),
         "encode_seconds": round(encode_seconds, 4),
         "transmit_seconds": round(transmit_seconds, 4),
@@ -94,6 +125,9 @@ def local_fn(args):
         "encode_mb_s": round(len(data) / (1024 * 1024) / encode_seconds, 2),
         "raw_bytes": len(data),
         "compressed_bytes": len(blob),
-        "diagnostics": {"bandwidth_mb_s": BANDWIDTH_MB_S, "corpus_mb": CORPUS_MB,
-                        "zlib_version": zlib.ZLIB_VERSION},
+        "diagnostics": {
+            "bandwidth_mb_s": BANDWIDTH_MB_S,
+            "corpus_mb": CORPUS_MB,
+            "zlib_version": zlib.ZLIB_VERSION,
+        },
     }

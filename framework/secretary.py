@@ -52,8 +52,9 @@ BIN_DIR = os.path.join(os.path.dirname(SCRIPT_DIR), "bin")
 # One secretary serves the whole lab. WORKSPACE_ROOT holds one directory per campaign,
 # each with its own ANNOUNCEMENTS.md, results.jsonl, LOGBOOK.md and JOURNAL.md, plus
 # run/ for state that belongs to the lab rather than to any one campaign.
-WORKSPACE_ROOT = os.path.abspath(os.environ.get(
-    "WORKSPACE_ROOT", os.path.join(SCRIPT_DIR, "..", "workspace")))
+WORKSPACE_ROOT = os.path.abspath(
+    os.environ.get("WORKSPACE_ROOT", os.path.join(SCRIPT_DIR, "..", "workspace"))
+)
 # Slack questions land here while this process is alive. Separate from the boards on
 # purpose: a board is broadcast to a campaign's agents, this is a queue for one reader.
 INBOX = os.path.join(WORKSPACE_ROOT, "run", "slack_inbox.md")
@@ -61,9 +62,13 @@ STATE = os.path.join(WORKSPACE_ROOT, "run", "secretary_seen.txt")
 # Liveness, read by slack_to_board.py to decide where to deliver. Same convention as
 # the agents' runs/<run_id>/heartbeat: a recent timestamp means alive.
 HEARTBEAT = os.path.join(WORKSPACE_ROOT, "run", "secretary_heartbeat")
-POLL = int(os.environ.get("SECRETARY_POLL", "5"))           # s between inbox checks
-AGENT_ALIVE_WITHIN = int(os.environ.get("AGENT_ALIVE_WITHIN", "300"))  # s; fresher heartbeat = agent is up
-NOTIFY_SCRIPT = os.environ.get("NOTIFY_SCRIPT") or os.path.join(SCRIPT_DIR, "slack_notify.sh")
+POLL = int(os.environ.get("SECRETARY_POLL", "5"))  # s between inbox checks
+AGENT_ALIVE_WITHIN = int(
+    os.environ.get("AGENT_ALIVE_WITHIN", "300")
+)  # s; fresher heartbeat = agent is up
+NOTIFY_SCRIPT = os.environ.get("NOTIFY_SCRIPT") or os.path.join(
+    SCRIPT_DIR, "slack_notify.sh"
+)
 
 SYSTEM_PROMPT = f"""You are the secretary for a collaborative agentic search
 workflow. Research agents run on compute nodes and coordinate through shared files.
@@ -257,8 +262,8 @@ def new_lines(seen, current):
     """Lines added since the last look. Falls back to the whole inbox if it was
     edited rather than appended to, since there is no clean 'new part' then."""
     old, new = seen.splitlines(), current.splitlines()
-    if new[:len(old)] == old:
-        return "\n".join(new[len(old):]).strip()
+    if new[: len(old)] == old:
+        return "\n".join(new[len(old) :]).strip()
     return current
 
 
@@ -286,7 +291,7 @@ def live_agents():
     return sorted(out)
 
 
-_session_id = None          # this secretary's Claude session, for reopening it later
+_session_id = None  # this secretary's Claude session, for reopening it later
 
 
 async def answer(client, text, agents):
@@ -295,10 +300,14 @@ async def answer(client, text, agents):
     # here is re-sent with every question, so anything actionable becomes a standing
     # order -- which is how "relay if it needs live reasoning" turned into relaying
     # answers it had already given.
-    status = ("Research agents running:\n" + "\n".join(agents)
-              if agents else "No research agent is running.")
-    await client.query(status + "\n\nNew from Slack:\n\n" + text +
-                       "\n\nAnswer it, then stop.")
+    status = (
+        "Research agents running:\n" + "\n".join(agents)
+        if agents
+        else "No research agent is running."
+    )
+    await client.query(
+        status + "\n\nNew from Slack:\n\n" + text + "\n\nAnswer it, then stop."
+    )
     async for message in client.receive_response():
         if isinstance(message, AssistantMessage):
             for block in message.content:
@@ -310,20 +319,29 @@ async def answer(client, text, agents):
             if sid and sid != _session_id:
                 _session_id = sid
                 try:
-                    with open(os.path.join(WORKSPACE_ROOT, "run", "secretary_session"), "w") as f:
+                    with open(
+                        os.path.join(WORKSPACE_ROOT, "run", "secretary_session"), "w"
+                    ) as f:
                         f.write(f"{sid}\n{WORKSPACE_ROOT}\n")
                 except Exception as e:
-                    print(f"[secretary] session id not recorded (ignored): {e}", flush=True)
+                    print(
+                        f"[secretary] session id not recorded (ignored): {e}",
+                        flush=True,
+                    )
             print(f"[turn end] {message.subtype}", flush=True)
 
 
 async def main():
     once = "--once" in sys.argv
-    print(f"Secretary watching {INBOX} (poll {POLL}s)"
-          f"{' [once]' if once else ''}", flush=True)
+    print(
+        f"Secretary watching {INBOX} (poll {POLL}s){' [once]' if once else ''}",
+        flush=True,
+    )
     if not os.path.isfile(NOTIFY_SCRIPT):
-        print(f"[secretary] WARNING: {NOTIFY_SCRIPT} missing -- cannot post replies.",
-              flush=True)
+        print(
+            f"[secretary] WARNING: {NOTIFY_SCRIPT} missing -- cannot post replies.",
+            flush=True,
+        )
     options = ClaudeAgentOptions(
         system_prompt=SYSTEM_PROMPT,
         allowed_tools=["Read", "Grep", "Glob", "Bash"],
@@ -339,8 +357,11 @@ async def main():
             fresh = new_lines(read_seen(), inbox) if inbox else ""
             if fresh:
                 agents = live_agents()
-                print(f"\n--- answering ({', '.join(agents) or 'no agent running'}) "
-                      f"---\n{fresh}\n-------------------------", flush=True)
+                print(
+                    f"\n--- answering ({', '.join(agents) or 'no agent running'}) "
+                    f"---\n{fresh}\n-------------------------",
+                    flush=True,
+                )
                 # Record BEFORE answering, so a failure cannot loop on the same message.
                 write_seen(inbox)
                 try:

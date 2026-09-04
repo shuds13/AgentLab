@@ -28,8 +28,6 @@ Env:
 """
 
 import asyncio
-import glob
-import json
 import os
 import subprocess
 import sys
@@ -44,18 +42,21 @@ from claude_agent_sdk import (
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LAB_DIR = os.path.abspath(os.environ.get("LAB_DIR", os.path.join(SCRIPT_DIR, "..")))
-INBOX = os.environ.get("SLACK_INBOX") or os.path.join(LAB_DIR, "workspace", "run",
-                                                      "engineer_inbox.md")
+INBOX = os.environ.get("SLACK_INBOX") or os.path.join(
+    LAB_DIR, "workspace", "run", "engineer_inbox.md"
+)
 STATE = os.path.join(os.path.dirname(INBOX), "engineer_seen.txt")
-HEARTBEAT = (os.environ.get("ENGINEER_HEARTBEAT")
-             or os.path.join(os.path.dirname(INBOX), "engineer_heartbeat"))
+HEARTBEAT = os.environ.get("ENGINEER_HEARTBEAT") or os.path.join(
+    os.path.dirname(INBOX), "engineer_heartbeat"
+)
 SESSION_FILE = os.path.join(os.path.dirname(INBOX), "engineer_session")
 POLL = int(os.environ.get("ENGINEER_POLL", "5"))
 BRANCH = (os.environ.get("ENGINEER_BRANCH") or "").strip()
 RESUME_SESSION = (os.environ.get("RESUME_SESSION") or "").strip()
 COMPACT_FIRST = RESUME_SESSION.lower() == "compact"
-NOTIFY_SCRIPT = os.environ.get("NOTIFY_SCRIPT") or os.path.join(SCRIPT_DIR,
-                                                                "slack_notify.sh")
+NOTIFY_SCRIPT = os.environ.get("NOTIFY_SCRIPT") or os.path.join(
+    SCRIPT_DIR, "slack_notify.sh"
+)
 
 SYSTEM_PROMPT = f"""You are the engineer for AgentLab, the framework in {LAB_DIR}, and
 you work on it from a Slack channel. Someone types there; you answer, and change the
@@ -125,8 +126,8 @@ def beat():
 
 def new_lines(seen, current):
     old, new = seen.splitlines(), current.splitlines()
-    if new[:len(old)] == old:
-        return "\n".join(new[len(old):]).strip()
+    if new[: len(old)] == old:
+        return "\n".join(new[len(old) :]).strip()
     return current
 
 
@@ -135,7 +136,9 @@ def last_session():
     The record carries the checkout it belonged to, so a second lab on the same
     machine does not pick up this one's conversation."""
     lines = _read(SESSION_FILE).splitlines()
-    if len(lines) >= 2 and os.path.abspath(lines[1].strip()) == os.path.abspath(LAB_DIR):
+    if len(lines) >= 2 and os.path.abspath(lines[1].strip()) == os.path.abspath(
+        LAB_DIR
+    ):
         return lines[0].strip()
     return ""
 
@@ -176,13 +179,20 @@ def on_branch():
     if not BRANCH:
         return "wherever the repository already is"
     try:
-        current = subprocess.run(["git", "-C", LAB_DIR, "rev-parse", "--abbrev-ref",
-                                  "HEAD"], capture_output=True, text=True,
-                                 timeout=15).stdout.strip()
+        current = subprocess.run(
+            ["git", "-C", LAB_DIR, "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        ).stdout.strip()
         if current == BRANCH:
             return f"on {BRANCH}"
-        made = subprocess.run(["git", "-C", LAB_DIR, "checkout", "-B", BRANCH],
-                              capture_output=True, text=True, timeout=30)
+        made = subprocess.run(
+            ["git", "-C", LAB_DIR, "checkout", "-B", BRANCH],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
         if made.returncode != 0:
             return None
         return f"switched from {current} to {BRANCH}"
@@ -207,18 +217,28 @@ async def answer(client, text):
 async def main():
     once = "--once" in sys.argv
     branch = on_branch()
-    print(f"Engineer watching {INBOX} (poll {POLL}s)"
-          f"{' [once]' if once else ''}", flush=True)
-    print(f"branch: {branch or 'not a git repository -- commits will fail'}", flush=True)
+    print(
+        f"Engineer watching {INBOX} (poll {POLL}s){' [once]' if once else ''}",
+        flush=True,
+    )
+    print(
+        f"branch: {branch or 'not a git repository -- commits will fail'}", flush=True
+    )
     resume = resume_session()
     if RESUME_SESSION and not resume:
-        print(f"no earlier session recorded for {LAB_DIR} -- starting fresh", flush=True)
+        print(
+            f"no earlier session recorded for {LAB_DIR} -- starting fresh", flush=True
+        )
     elif resume:
-        print(f"resuming session {resume}"
-              + (", compacting first" if COMPACT_FIRST else ""), flush=True)
+        print(
+            f"resuming session {resume}"
+            + (", compacting first" if COMPACT_FIRST else ""),
+            flush=True,
+        )
     if not os.path.isfile(NOTIFY_SCRIPT):
-        print(f"[engineer] WARNING: {NOTIFY_SCRIPT} missing -- cannot reply.",
-              flush=True)
+        print(
+            f"[engineer] WARNING: {NOTIFY_SCRIPT} missing -- cannot reply.", flush=True
+        )
 
     options = ClaudeAgentOptions(
         system_prompt=SYSTEM_PROMPT,

@@ -16,11 +16,11 @@ import math
 
 # What the agent is looking for, and never sees. Kept here rather than hidden away so
 # whoever runs this can check the agent's conclusion against the truth afterwards.
-TRUE_OPTIMUM = 3.4          # where the response is genuinely lowest
-TRUE_FLOOR = 12.0           # the response there
-CURVATURE = 1.7             # how sharply it rises either side
-ASYMMETRY = 0.35            # rises faster above the optimum than below
-NOISE_SD = 0.6              # spread of one reading, so nearby settings overlap
+TRUE_OPTIMUM = 3.4  # where the response is genuinely lowest
+TRUE_FLOOR = 12.0  # the response there
+CURVATURE = 1.7  # how sharply it rises either side
+ASYMMETRY = 0.35  # rises faster above the optimum than below
+NOISE_SD = 0.6  # spread of one reading, so nearby settings overlap
 
 LOCAL_DESC = """
 Measure the response of the system at one setting.
@@ -46,7 +46,7 @@ def _response(setting, rnd):
     offset = setting - TRUE_OPTIMUM
     rise = CURVATURE * offset * offset
     if offset > 0:
-        rise += ASYMMETRY * offset * offset * offset      # steeper above the optimum
+        rise += ASYMMETRY * offset * offset * offset  # steeper above the optimum
     return TRUE_FLOOR + rise + rnd.gauss(0.0, NOISE_SD)
 
 
@@ -57,12 +57,17 @@ def local_fn(args):
     try:
         setting = float(args.get("setting"))
     except (TypeError, ValueError):
-        return {"error": f"setting must be a number, got {args.get('setting')!r}",
-                "args": args}
+        return {
+            "error": f"setting must be a number, got {args.get('setting')!r}",
+            "args": args,
+        }
     replicates = int(args.get("replicates", 1) or 1)
 
     if not 0.0 <= setting <= 10.0:
-        return {"error": f"setting must be between 0 and 10, got {setting}", "args": args}
+        return {
+            "error": f"setting must be between 0 and 10, got {setting}",
+            "args": args,
+        }
     if not 1 <= replicates <= 9:
         return {"error": f"replicates must be 1-9, got {replicates}", "args": args}
 
@@ -71,7 +76,7 @@ def local_fn(args):
     rnd = random.Random()
     readings = []
     for _ in range(replicates):
-        time.sleep(0.8)                       # a job is work, not an instant lookup
+        time.sleep(0.8)  # a job is work, not an instant lookup
         readings.append(round(_response(setting, rnd), 4))
 
     mean = sum(readings) / len(readings)
@@ -81,6 +86,5 @@ def local_fn(args):
         "response": round(mean, 4),
         "noise_sd": round(spread, 4),
         "readings": readings,
-        "diagnostics": {"replicates": replicates,
-                        "single_reading_sd": NOISE_SD},
+        "diagnostics": {"replicates": replicates, "single_reading_sd": NOISE_SD},
     }

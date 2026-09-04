@@ -40,22 +40,32 @@ import urllib.request
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_SETTING = (os.environ.get("CRITIC_MODEL") or "").strip()
-REQUIRED = (os.environ.get("CRITIC_REQUIRED", "").strip().lower()
-            in ("1", "true", "yes", "on"))
+REQUIRED = os.environ.get("CRITIC_REQUIRED", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 MAX_TOKENS = int(os.environ.get("CRITIC_MAX_TOKENS", "8000"))
 # Usually the agent's own gateway, with a different model on it. Separable because the
 # common arrangement is the reverse of that: the agent on Claude directly, and a proxy
 # standing alongside purely to reach a second family for review.
-BASE_URL = (os.environ.get("CRITIC_BASE_URL")
-            or os.environ.get("ANTHROPIC_BASE_URL")
-            or "https://api.anthropic.com").rstrip("/")
+BASE_URL = (
+    os.environ.get("CRITIC_BASE_URL")
+    or os.environ.get("ANTHROPIC_BASE_URL")
+    or "https://api.anthropic.com"
+).rstrip("/")
+
+
 def _claude_key():
     """Whatever Claude Code itself authenticates with. A lab reaching a second model
     usually reaches it through the same gateway the agent uses, with the same
     credential, and that credential is already configured -- asking a person to write
     it out again invites a second, staler copy of it."""
-    cfg = os.path.join(os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")),
-                       "settings.json")
+    cfg = os.path.join(
+        os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR", "~/.claude")),
+        "settings.json",
+    )
     try:
         with open(cfg) as f:
             settings = json.load(f)
@@ -67,8 +77,9 @@ def _claude_key():
     helper = settings.get("apiKeyHelper")
     if helper:
         try:
-            out = subprocess.run(helper, shell=True, capture_output=True, text=True,
-                                 timeout=15)
+            out = subprocess.run(
+                helper, shell=True, capture_output=True, text=True, timeout=15
+            )
             return out.stdout.strip()
         except Exception as e:
             print(f"[critic] apiKeyHelper failed (ignored): {e}", flush=True)
@@ -85,18 +96,24 @@ def _key():
             with open(os.path.expanduser(path)) as f:
                 return f.read().strip()
         except OSError as e:
-            print(f"[critic] cannot read CRITIC_API_KEY_FILE ({e}); "
-                  "falling back", flush=True)
-    return (os.environ.get("CRITIC_API_KEY")
-            or os.environ.get("ANTHROPIC_API_KEY")
-            or _claude_key())
+            print(
+                f"[critic] cannot read CRITIC_API_KEY_FILE ({e}); falling back",
+                flush=True,
+            )
+    return (
+        os.environ.get("CRITIC_API_KEY")
+        or os.environ.get("ANTHROPIC_API_KEY")
+        or _claude_key()
+    )
 
 
 API_KEY = _key()
 
 BLOCK_RE = re.compile(
     r"CLAIM:\s*(?P<claim>.+?)\n\s*VERDICT:\s*(?P<verdict>\w+).*?"
-    r"SEVERITY:\s*(?P<severity>\w+)", re.S | re.I)
+    r"SEVERITY:\s*(?P<severity>\w+)",
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 class CriticUnavailable(Exception):
@@ -107,14 +124,16 @@ def _prompt_text():
     """What the critic is asked to do. The level picks how much of a write-up is in
     scope: everything it asserts, or only what a recorded number can settle."""
     level = (os.environ.get("CRITIC_LEVEL") or "full").strip().lower()
-    path = (os.environ.get("CRITIC_PROMPT_FILE")
-            or os.path.join(SCRIPT_DIR, f"critic_prompt_{level}.md"))
+    path = os.environ.get("CRITIC_PROMPT_FILE") or os.path.join(
+        SCRIPT_DIR, f"critic_prompt_{level}.md"
+    )
     try:
         with open(path) as f:
             return f.read()
     except OSError as e:
         raise CriticUnavailable(
-            f"no critic prompt at {path} (CRITIC_LEVEL={level}): {e}")
+            f"no critic prompt at {path} (CRITIC_LEVEL={level}): {e}"
+        )
 
 
 def gateway_up():
@@ -142,24 +161,31 @@ def ensure_gateway(needed=False):
         return None
     wait = int(os.environ.get("CRITIC_GATEWAY_WAIT", "60"))
     try:
-        subprocess.Popen(shlex.split(start), start_new_session=True,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(
+            shlex.split(start),
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     except Exception as e:
         return f"could not start the model gateway (ignored): {e}"
     for _ in range(wait):
         time.sleep(1)
         if gateway_up():
             return f"started the model gateway at {BASE_URL}"
-    return (f"started the model gateway but {BASE_URL} did not answer within "
-            f"{wait}s; continuing without it")
+    return (
+        f"started the model gateway but {BASE_URL} did not answer within "
+        f"{wait}s; continuing without it"
+    )
 
 
 def _served_models():
     """Model names the gateway offers, with what each resolves to upstream. Empty when
     there is no gateway -- talking to Anthropic directly means Claude only."""
     try:
-        req = urllib.request.Request(BASE_URL + "/model/info",
-                                     headers={"x-api-key": API_KEY})
+        req = urllib.request.Request(
+            BASE_URL + "/model/info", headers={"x-api-key": API_KEY}
+        )
         with urllib.request.urlopen(req, timeout=10) as r:
             data = json.load(r).get("data", [])
     except Exception:
@@ -168,7 +194,9 @@ def _served_models():
     for m in data:
         name = m.get("model_name")
         if name:
-            out[name] = (m.get("litellm_params", {}).get("model", "") or "").split("/")[-1]
+            out[name] = (m.get("litellm_params", {}).get("model", "") or "").split("/")[
+                -1
+            ]
     return out
 
 
@@ -181,13 +209,15 @@ def resolve(agent_model=""):
         if served and MODEL_SETTING not in served:
             raise CriticUnavailable(
                 f"CRITIC_MODEL={MODEL_SETTING} is not served by {BASE_URL} "
-                f"(it has: {', '.join(sorted(served)) or 'nothing'})")
+                f"(it has: {', '.join(sorted(served)) or 'nothing'})"
+            )
         return MODEL_SETTING, served.get(MODEL_SETTING) or MODEL_SETTING
     if not served:
         if REQUIRED:
             raise CriticUnavailable(
                 f"CRITIC_MODEL=auto but {BASE_URL} lists no models, so there is nothing "
-                "to choose from")
+                "to choose from"
+            )
         return None, "none (asked for one, but no second model is reachable)"
     # A different family than the agent's own, where there is one.
     agent_family = (agent_model or "").split("-")[0].lower()
@@ -207,15 +237,29 @@ def review(model, write_up, evidence, prompt=None):
     if prompt is not None:
         prompt = prompt + "\n\n" + write_up
     else:
-        prompt = (_prompt_text()
-                  + "\n\n# The write-up\n\n" + write_up
-                  + "\n\n# The recorded results\n\n" + (evidence or "(no rows recorded)"))
-    body = json.dumps({"model": model, "max_tokens": MAX_TOKENS,
-                       "messages": [{"role": "user", "content": prompt}]}).encode()
+        prompt = (
+            _prompt_text()
+            + "\n\n# The write-up\n\n"
+            + write_up
+            + "\n\n# The recorded results\n\n"
+            + (evidence or "(no rows recorded)")
+        )
+    body = json.dumps(
+        {
+            "model": model,
+            "max_tokens": MAX_TOKENS,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+    ).encode()
     req = urllib.request.Request(
-        BASE_URL + "/v1/messages", data=body,
-        headers={"content-type": "application/json", "x-api-key": API_KEY,
-                 "anthropic-version": "2023-06-01"})
+        BASE_URL + "/v1/messages",
+        data=body,
+        headers={
+            "content-type": "application/json",
+            "x-api-key": API_KEY,
+            "anthropic-version": "2023-06-01",
+        },
+    )
     try:
         with urllib.request.urlopen(req, timeout=300) as r:
             reply = json.load(r)
@@ -223,8 +267,11 @@ def review(model, write_up, evidence, prompt=None):
         # A reasoning model can spend the whole budget thinking and return nothing.
         # Silence and truncation look identical from here, so say which it was.
         if not text and reply.get("stop_reason") == "max_tokens":
-            print(f"[critic] no review: the reply hit CRITIC_MAX_TOKENS "
-                  f"({MAX_TOKENS}) before writing anything", flush=True)
+            print(
+                f"[critic] no review: the reply hit CRITIC_MAX_TOKENS "
+                f"({MAX_TOKENS}) before writing anything",
+                flush=True,
+            )
         return text
     except Exception as e:
         print(f"[critic] review failed (ignored): {e}", flush=True)

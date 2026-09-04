@@ -71,13 +71,23 @@ so confirm it independently first:
 
 ```python
 from globus_compute_sdk import Executor
+
+
 def hello():
     import socket
+
     return f"ran on {socket.gethostname()}"
 
-ex = Executor(endpoint_id="your-uuid",
-              user_endpoint_config={"account": "MYPROJECT", "queue": "debug",
-                                    "num_nodes": 1, "walltime": "00:10:00"})
+
+ex = Executor(
+    endpoint_id="your-uuid",
+    user_endpoint_config={
+        "account": "MYPROJECT",
+        "queue": "debug",
+        "num_nodes": 1,
+        "walltime": "00:10:00",
+    },
+)
 print(ex.submit(hello).result())
 ```
 
