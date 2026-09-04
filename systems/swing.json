@@ -1,0 +1,21 @@
+{
+  "_comment": "Facts about LCRC Swing that are the same for everyone. Credentials and allocations go in users/<you>/swing.json; the endpoint template is systems/endpoints/swing_pbs/.",
+  "ppn": 1,
+  "max_concurrent": 1,
+  "target": {
+    "worker_setup": "module load nvhpc",
+    "env": {
+      "TMPDIR": "/tmp"
+    }
+  },
+  "bucket_defaults": {
+    "queue": "gpu",
+    "num_nodes": 1,
+    "gpus_per_node": 1,
+    "walltime": "01:00:00",
+    "init_blocks": 0,
+    "min_blocks": 0,
+    "max_blocks": 1,
+    "max_retries_on_system_failure": 0
+  }
+}

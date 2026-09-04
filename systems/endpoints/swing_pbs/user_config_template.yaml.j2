@@ -1,0 +1,51 @@
+# Globus Compute endpoint template -- LCRC Swing (PBS Pro, NVIDIA GPUs).
+#
+# Install on Swing at:
+#   ~/.globus_compute/<endpoint-name>/user_config_template.yaml.j2
+# The placeholders below are filled per job from the bucket's user_config block.
+#
+# EDIT before use: the application environment and, if needed, the GPU-to-CPU mapping below.
+# Swing requires an account (-A), a walltime, and at least one GPU per node.
+
+# Release the PBS allocation after roughly five minutes with no outstanding tasks.
+# idle_heartbeats_hard is intentionally unset because a queued task is not proof that
+# the endpoint is unhealthy.
+idle_heartbeats_soft: 10
+
+engine:
+  type: GlobusComputeEngine
+  max_workers_per_node: 1
+
+  provider:
+    type: PBSProProvider
+    launcher:
+      type: SimpleLauncher
+
+    account: {{ account }}
+    queue: {{ queue|default("gpu") }}
+    # Swing provides 128 CPUs and 8 GPUs per node. Public queues assign roughly one
+    # eighth of a node per GPU, so request 16 CPUs per requested GPU as well. The PBS
+    # provider adds nodes_per_block and ncpus to its select directive automatically.
+    cpus_per_node: {{ (gpus_per_node|default(1)) * 16 }}
+    select_options: "ngpus={{ gpus_per_node|default(1) }}"
+    walltime: {{ walltime|default("01:00:00") }}
+
+    nodes_per_block: {{ num_nodes|default(1) }}
+    init_blocks: {{ init_blocks|default(0) }}
+    min_blocks: {{ min_blocks|default(0) }}
+    max_blocks: {{ max_blocks|default(1) }}
+
+    # The worker starts in a bare shell. Add the environment containing the application
+    # here. For example, a user with Pixi might add:
+    #   export PATH="$HOME/.pixi/bin:$PATH"
+    # A different user may activate a venv, Conda environment, or site module instead.
+    worker_init: |
+      module purge
+      module load nvhpc
+      # EDIT: activate or expose the application environment here.
+      export TMPDIR=/tmp
+
+# Valid gpus_per_node values on the public queues are 1, 2, 4, and 8. The public
+# maximum walltime is 24 hours; the system default above deliberately starts at 1 hour.
+# SimpleLauncher gives one worker for the allocation. Use a per-device launcher only
+# after confirming that the task is serial and does not launch its own GPU work.
