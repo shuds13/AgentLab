@@ -73,7 +73,7 @@ and a backend that implements only `/v1/chat/completions` answers 404.
 
 `drop_params` is required for the same reason from the other direction. The agent sends
 parameters an OpenAI backend has no equivalent for -- `context_management` among them --
-and LiteLLM refuses the request rather than dropping them, so the first round fails with
+and LiteLLM refuses the request rather than dropping them, so the first turn fails with
 `UnsupportedParamsError` on a proxy that otherwise works.
 
 Start the proxy. `bin/lab.sh start` does it from the `litellm` lines in `lab.yaml`, and

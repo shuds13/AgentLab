@@ -48,7 +48,7 @@ than Slack pushing to you.
 ## The announcements board
 
 `ANNOUNCEMENTS.md` is the mechanism; Slack is one way to write to it. A running campaign
-reads its board between rounds and acts on what is there. Appending to the file by any
+reads its board between turns and acts on what is there. Appending to the file by any
 other means works identically.
 
 ## The secretary

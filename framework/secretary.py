@@ -77,7 +77,7 @@ Inside a campaign's directory:
 - `JOURNAL.md` -- written-up cycles, one section per cycle.
 - `runs/<run_id>/meta.json` -- per-run metadata: host, pid, model, status,
   stop_reason, and which prompt file the run used.
-- `ANNOUNCEMENTS.md` -- the board that campaign's agents read between rounds.
+- `ANNOUNCEMENTS.md` -- the board that campaign's agents read between turns.
 
 Each running agent has a short handle -- `vllm1`, `epez2` -- which is what it posts
 under in Slack and what people call it: "get a report from epez1". Handles are unique

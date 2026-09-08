@@ -32,7 +32,7 @@ export CRITIC_MODEL="${CRITIC_MODEL:-}"
 # Critic level. Only applies when there is a critic
 export CRITIC_LEVEL="${CRITIC_LEVEL:-light}"
 
-# Rounds here are seconds long, so context figures older than half a minute are not
+# Turns here are seconds long, so context figures older than half a minute are not
 # worth showing: the status pane says "no data" instead.
 export CONTEXT_TIMEOUT=30
 

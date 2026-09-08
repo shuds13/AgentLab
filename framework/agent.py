@@ -131,7 +131,7 @@ HANDLE = _allocate_handle()
 os.environ.setdefault("SLACK_PREFIX", HANDLE)
 # Turns given to the agent AFTER everything has drained, so it can write the
 # journal/LOGBOOK before the process exits.
-MAX_FINALIZE_ROUNDS = 2
+MAX_FINALIZE_TURNS = 2
 
 # The agent runs as ONE stateful conversation (ClaudeSDKClient), so it keeps all
 # prior context and reasoning across turns. Each turn it acts on whatever jobs
@@ -176,8 +176,8 @@ FINALIZE_PROMPT = _prompt("FINALIZE_PROMPT",
 # costs what it costs and brings any stale conclusions with it, so it is off by default.
 # The session must belong to this user on this machine.
 RESUME_SESSION = (os.environ.get("RESUME_SESSION") or "").strip()
-MAX_ROUNDS = 500          # backstop against a runaway loop
-MAX_EMPTY_ROUNDS = 3      # consecutive idle rounds (no work proposed) before giving up
+MAX_TURNS = 500           # backstop against a runaway loop
+MAX_EMPTY_TURNS = 3       # consecutive idle turns (no work proposed) before giving up
 MAX_RUNTIME = int(os.environ["MAX_RUNTIME"]) if os.environ.get("MAX_RUNTIME") else None  # total agent wallclock (s); None = no time limit
 WAIT_TIMEOUT = 1800       # s between "still-alive" logs / backend-health checks during a wait
 ANNOUNCE_POLL = int(os.environ.get("ANNOUNCE_POLL", "2"))   # s between announcement-board checks during a job wait
@@ -237,7 +237,7 @@ def _fmt_uptime(secs):
 
 
 # How long to let the context call run before giving up on it. A campaign with short
-# rounds can set a shorter one, so the figures are either current or absent.
+# turns can set a shorter one, so the figures are either current or absent.
 CONTEXT_TIMEOUT = float(os.environ.get("CONTEXT_TIMEOUT", "60"))
 
 
@@ -257,13 +257,13 @@ _context_task = None        # the in-flight context lookup, if any
 _context_tries = 0          # how many times the window has been asked for
 
 # The window is asked for until it is known. A CLI that never answers should not be
-# asked once a round for the length of the run.
+# asked once a turn for the length of the run.
 CONTEXT_TRIES = int(os.environ.get("CONTEXT_TRIES", "3"))
 
 
 def _refresh_context(client):
-    """Ask for the context figures without making the round wait for them. One lookup
-    at a time: while one is running, later rounds go without rather than queue."""
+    """Ask for the context figures without making the turn wait for them. One lookup
+    at a time: while one is running, later turns go without rather than queue."""
     global _context_task, _context_tries
     if _context_task is not None and not _context_task.done():
         return
@@ -313,7 +313,7 @@ def _note_turn_context(usage, model=None):
     _write_meta(context_tokens=tokens, **({"context_pct": pct} if pct is not None else {}))
 
 
-async def _post_scheduled_status(client, round_num, start_time):
+async def _post_scheduled_status(client, turn_num, start_time):
     """Post the fixed-metrics scheduled status line to Slack (harness-owned, deterministic)."""
     u = _last_context
     model = u.get("model") or "?"
@@ -321,7 +321,7 @@ async def _post_scheduled_status(client, round_num, start_time):
     ctx = (f"ctx ~{tok}/{win} (~{pct:.0f}%)"
            if tok is not None and win and pct is not None else "ctx n/a")
     slack_notify(f":calendar: Scheduled Status — {model}, "
-                 f"round {round_num} · {tools.submit_count()} remote / {tools.local_submit_count()} local "
+                 f"turn {turn_num} · {tools.submit_count()} remote / {tools.local_submit_count()} local "
                  f"this session · {tools.jobs_in_flight()} in-flight · {ctx} · "
                  f"uptime {_fmt_uptime(time.time() - start_time)}")
 
@@ -701,7 +701,7 @@ def _start_run_dir():
     # a later reader -- can say how far through it is without knowing the environment
     # it was launched in.
     _write_meta(max_submits=tools.MAX_SUBMITS, max_runtime_s=MAX_RUNTIME,
-                max_rounds=MAX_ROUNDS, critic=CRITIC_LABEL,
+                max_turns=MAX_TURNS, critic=CRITIC_LABEL,
                 run_id=RUN_ID, handle=HANDLE, system=SYSTEM, role=ROLE,
                 started_by=os.environ.get("STARTED_BY", ""),
                 host=socket.gethostname(), pid=os.getpid(),
@@ -714,7 +714,7 @@ def _start_run_dir():
 
 
 async def _heartbeat_loop():
-    """Write the heartbeat on a timer, independent of where the round loop is.
+    """Write the heartbeat on a timer, independent of where the turn loop is.
     Needed because a turn (client.query -> tool calls -> reply) can run for minutes
     with no natural place to beat, which would make a healthy agent look dead. The
     turn is awaited, so the event loop is free and this keeps ticking through it."""
@@ -917,7 +917,7 @@ def preflight():
     if note:
         print(f"gateway: {note}", flush=True)
     # The critic is resolved here rather than at first use: a campaign that needs its
-    # cycles reviewed should fail now, not in round twelve.
+    # cycles reviewed should fail now, not in turn twelve.
     global RESOLVED_MODEL
     RESOLVED_MODEL = _probe_model()
     try:
@@ -967,7 +967,7 @@ def preflight():
 _session_id = None          # this run's Claude session, for reopening it later
 
 
-async def drain_turn(client, round_num):
+async def drain_turn(client, turn_num):
     """Print the assistant's output for one turn (until its ResultMessage), and take
     the status pane's model and context figures off the turn's own messages."""
     turn_model, turn_usage = None, None
@@ -1000,12 +1000,12 @@ async def drain_turn(client, round_num):
                     sub = (getattr(block, "input", None) or {}).get("subagent_type")
                     if sub:
                         _DELEGATES[getattr(block, "id", None)] = sub
-                    _set_phase(f"round {round_num}: waiting on subagent "
+                    _set_phase(f"turn {turn_num}: waiting on subagent "
                                f"{sub or '(unnamed)'}")
                 elif who:
-                    _set_phase(f"round {round_num}: subagent {who} ({bare})")
+                    _set_phase(f"turn {turn_num}: subagent {who} ({bare})")
                 else:
-                    _set_phase(f"round {round_num}: {_PHASES.get(bare, bare)}")
+                    _set_phase(f"turn {turn_num}: {_PHASES.get(bare, bare)}")
         elif isinstance(message, ResultMessage):
             # The session id first becomes known here. Recorded once, so a finished run
             # can be reopened later with `claude -r <id>` for a postmortem.
@@ -1014,7 +1014,7 @@ async def drain_turn(client, round_num):
             if sid and sid != _session_id:
                 _session_id = sid
                 _write_meta(session_id=sid, session_cwd=SCRIPT_DIR)
-            print(f"\n[round {round_num} turn end] {message.subtype}", flush=True)
+            print(f"\n[turn {turn_num} end] {message.subtype}", flush=True)
     _note_turn_context(turn_usage, turn_model)
     # The window is the one figure a turn does not carry. Ask until it is known, then
     # stop asking: it does not change while the session does.
@@ -1072,7 +1072,7 @@ async def main():
     print("=" * 60, flush=True)
 
     start_time = time.time()
-    stop_reason = "ended (max rounds)"
+    stop_reason = "ended (max turns)"
 
     # PID file keyed by SYSTEM+ROLE so kill_agent.sh can target THIS agent when
     # several run at once. Removed on clean exit.
@@ -1115,7 +1115,7 @@ async def main():
                              f"{CAMPAIGN or 'no campaign'} on {SYSTEM}{ROLE_NOTE} · {model}"
                              f" · critic {CRITIC_LABEL}.")
             prompt = load_user_prompt()
-            empty_rounds = 0
+            empty_turns = 0
             last_daily = start_time
             report_due = False
             # Whatever is already on the board counts as seen: a fresh agent must not
@@ -1130,11 +1130,11 @@ async def main():
             # not itself put up for review.
             answering_critic = False
             stopping = None           # set to the reason once the run starts winding down
-            finalize_rounds = 0
-            for round_num in range(1, MAX_ROUNDS + 1):
-                print(f"\n===== ROUND {round_num} =====", flush=True)
+            finalize_turns = 0
+            for turn_num in range(1, MAX_TURNS + 1):
+                print(f"\n===== TURN {turn_num} =====", flush=True)
                 _heartbeat()
-                _set_phase(f"round {round_num}: reasoning")
+                _set_phase(f"turn {turn_num}: reasoning")
                 # Shut down if the agent flagged a blocking problem it could not get
                 # around and it has stayed unresolved past the grace period.
                 ps = tools.problem_since()
@@ -1145,7 +1145,7 @@ async def main():
                 # Scheduled status: post the fixed-metrics line, then ask the agent to
                 # add a short narrative in its own words.
                 if NOTIFY_DAILY and time.time() - last_daily >= DAILY_INTERVAL:
-                    await _post_scheduled_status(client, round_num, start_time)
+                    await _post_scheduled_status(client, turn_num, start_time)
                     prompt = REPORT_PROMPT + "\n\n" + prompt
                     last_daily = time.time()
                 # Operator asked this run to wind down (kill_agent.sh --drain).
@@ -1166,7 +1166,7 @@ async def main():
                     print(f"Goal met -- winding down: {tools.goal_is_met()}", flush=True)
                     prompt = WINDDOWN_PROMPT
                 # A cycle write-up is the trigger: the journal gains a section, so a
-                # longer journal than last round means there is something to review.
+                # longer journal than last turn means there is something to review.
                 # A cycle is the agent's own boundary, so the agent marks it: the
                 # runner reviews what was written since the last one, not an amount of
                 # text it guessed was enough to be a write-up.
@@ -1190,7 +1190,7 @@ async def main():
                             # for.
                             slack_notify(f":mag: Reviewing the last cycle with "
                                          f"{CRITIC_LABEL} before exit.")
-                        _set_phase(f"round {round_num}: critic reviewing ({CRITIC_LABEL})")
+                        _set_phase(f"turn {turn_num}: critic reviewing ({CRITIC_LABEL})")
                         reply = critic.review(CRITIC_MODEL, new_section,
                                               _recent_results())
                         if reply:
@@ -1200,7 +1200,7 @@ async def main():
                             answering_critic = bool(found)
                             if found:
                                 prompt = _critic_prompt(found, reply, tail=prompt)
-                # Announcements board changed between rounds -> surface it first.
+                # Announcements board changed between turns -> surface it first.
                 board = tools.read_announcements()
                 if board and board != last_announcements:
                     fresh = _new_board_lines(last_announcements, board)
@@ -1209,7 +1209,7 @@ async def main():
                 last_announcements = board
                 submits_before = tools.submit_count()
                 await client.query(prompt)
-                await drain_turn(client, round_num)
+                await drain_turn(client, turn_num)
                 if answering_critic:
                     # That turn was the answer; take its write-up as read and review
                     # what comes after it.
@@ -1217,7 +1217,7 @@ async def main():
                     tools.cycle_done_pending()
                     answering_critic = False
                 new_submits = tools.submit_count() - submits_before
-                print(f"[round {round_num}] new_submits={new_submits} "
+                print(f"[turn {turn_num}] new_submits={new_submits} "
                       f"in_flight={tools.jobs_in_flight()} pending={tools.pending_count()}",
                       flush=True)
 
@@ -1236,28 +1236,28 @@ async def main():
                 # loop would break the moment the last job landed and the write-up would
                 # be lost.
                 if stopping is not None and tools.jobs_in_flight() == 0:
-                    if finalize_rounds < MAX_FINALIZE_ROUNDS:
-                        finalize_rounds += 1
-                        print(f"Drained -- finalize turn {finalize_rounds}/{MAX_FINALIZE_ROUNDS} "
+                    if finalize_turns < MAX_FINALIZE_TURNS:
+                        finalize_turns += 1
+                        print(f"Drained -- finalize turn {finalize_turns}/{MAX_FINALIZE_TURNS} "
                               f"(write-up).", flush=True)
                         prompt = FINALIZE_PROMPT
                         continue
                     print(f"{stopping}: drained and written up — run complete.", flush=True)
                     stop_reason = stopping
                     break
-                # Idle round with budget left: re-prompt the agent to propose a NEW
+                # Idle turn with budget left: re-prompt the agent to propose a NEW
                 # region instead of exiting. A consecutive-empty cap stops a truly
                 # stuck agent.
                 if tools.jobs_in_flight() == 0 and new_submits == 0:
-                    empty_rounds += 1
-                    if empty_rounds >= MAX_EMPTY_ROUNDS:
-                        print(f"No new work proposed for {MAX_EMPTY_ROUNDS} rounds — "
+                    empty_turns += 1
+                    if empty_turns >= MAX_EMPTY_TURNS:
+                        print(f"No new work proposed for {MAX_EMPTY_TURNS} turns — "
                               f"stopping.", flush=True)
-                        stop_reason = f"no new work for {MAX_EMPTY_ROUNDS} rounds"
+                        stop_reason = f"no new work for {MAX_EMPTY_TURNS} turns"
                         break
                     prompt = EXPLORE_PROMPT
                     continue
-                empty_rounds = 0
+                empty_turns = 0
 
                 # Wait for a job to finish. Run the blocking wait in a thread so the
                 # open client stays serviced. A pending job may sit in the Polaris
@@ -1269,7 +1269,7 @@ async def main():
                 backend_problem = None
                 board_update = None
                 while tools.pending_count() > 0:
-                    _set_phase(f"round {round_num}: waiting for "
+                    _set_phase(f"turn {turn_num}: waiting for "
                                f"{tools.pending_count()} job(s)")
                     done = await loop.run_in_executor(None, tools.wait_for_any, ANNOUNCE_POLL)
                     _heartbeat(force=False)
@@ -1301,7 +1301,7 @@ async def main():
                         print(f"[backend check] problem detected: {backend_problem}", flush=True)
                         break
                     # Periodic summary during a long queue wait: break to give the agent
-                    # a turn to report in its own words, then resume waiting next round.
+                    # a turn to report in its own words, then resume waiting next turn.
                     if NOTIFY_DAILY and time.time() - last_daily >= DAILY_INTERVAL:
                         report_due = True
                         break
@@ -1321,7 +1321,7 @@ async def main():
                 elif report_due:
                     report_due = False
                     last_daily = time.time()
-                    await _post_scheduled_status(client, round_num, start_time)
+                    await _post_scheduled_status(client, turn_num, start_time)
                     prompt = (REPORT_PROMPT + " Nothing new has completed; just post the "
                               "summary and take no other action.")
                 elif stopping is not None:

@@ -51,7 +51,7 @@ import urllib.request
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # One bridge serves the whole lab. WORKSPACE_ROOT holds one directory per campaign;
-# each campaign has its own ANNOUNCEMENTS.md that its agent reads between rounds.
+# each campaign has its own ANNOUNCEMENTS.md that its agent reads between turns.
 WORKSPACE_ROOT = os.path.abspath(os.environ.get(
     "WORKSPACE_ROOT", os.path.join(SCRIPT_DIR, "..", "workspace")))
 STATE = (os.environ.get("SLACK_STATE")

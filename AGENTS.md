@@ -139,7 +139,7 @@ its own and can be changed without affecting any other:
 | | |
 |---|---|
 | `methods/quick.md` | a few jobs, a few lines per cycle in `LOGBOOK.md` |
-| `methods/standard.md` | runs jobs in rounds, keeps `results.jsonl` and `LOGBOOK.md` |
+| `methods/standard.md` | runs jobs in turns, keeps `results.jsonl` and `LOGBOOK.md` |
 | `methods/research.md` | five-step cycles, and a `JOURNAL.md`/`JOURNAL.tex` write-up per cycle with figures |
 
 Choose from what they described. Take `standard.md` unless they are investigating why
@@ -419,7 +419,7 @@ with its default, is in `docs/settings.md`.
 Campaign output goes to `workspace/<campaign>/`, untracked: `results.jsonl`,
 `LOGBOOK.md`, `JOURNAL.md`, `SKILL.md`, run directories and logs.
 
-`ANNOUNCEMENTS.md` in that directory reaches a running agent between rounds. Write to
+`ANNOUNCEMENTS.md` in that directory reaches a running agent between turns. Write to
 it to correct a wrong conclusion or supply information the agent has no way to obtain.
 
 ## Failure signatures

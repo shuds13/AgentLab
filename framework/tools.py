@@ -294,7 +294,7 @@ def _release_claim(key):
         pass
 
 
-# --- round bookkeeping for agent.py's outer loop --------------------------------
+# --- turn bookkeeping for agent.py's outer loop ---------------------------------
 def request_stop():
     """Wind this run down: refuse NEW work so outstanding jobs can drain. Set by
     agent.py on a stop request, spent budget, or time limit. Collecting is unaffected."""
@@ -337,7 +337,7 @@ def pending_count():
 
 def wait_for_any(timeout=1800):
     """Block until at least one in-flight future completes, or timeout; return how many
-    finished. Lets agent.py wait between rounds without spinning or holding the LLM open."""
+    finished. Lets agent.py wait between turns without spinning or holding the LLM open."""
     futs = [j["future"] for j in _jobs.values() if not j["future"].done()]
     futs += [j["future"] for j in _local_jobs.values() if not j["future"].done()]
     if not futs:

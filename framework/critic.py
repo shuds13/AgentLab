@@ -13,7 +13,7 @@ family than the agent's own, because two instances of one model share their blin
 With no gateway there is only Claude, and a Claude critic still helps: no memory of the
 reasoning, a different prompt, and only the rows to go on.
 
-Resolved once at startup, never mid-run: a critic that vanishes between rounds is worse
+Resolved once at startup, never mid-run: a critic that vanishes between turns is worse
 than one you knew you did not have.
 
 Env:

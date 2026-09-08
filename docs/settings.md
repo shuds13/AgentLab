@@ -154,7 +154,7 @@ in `run.sh` to replace the default outright.
 `EXPLORE_PROMPT` is the one to look at if a run does not stop when it should. It fires
 only when the agent is genuinely idle -- being blocked at capacity does not count, since
 jobs are then in flight. An agent that has finished but did not call `goal_met` is nudged
-`MAX_EMPTY_ROUNDS` (3) times before the runner gives up, and each nudge is a full turn.
+`MAX_EMPTY_TURNS` (3) times before the runner gives up, and each nudge is a full turn.
 Calling `goal_met` exits immediately instead.
 
 ## Environment — Slack bridge and secretary

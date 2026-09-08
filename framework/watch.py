@@ -149,7 +149,7 @@ def status(campaign):
                    open(os.path.join(ws, "REVIEWS.md"), errors="replace").read().count("\n## "),
         "max_submits": meta.get("max_submits"),
         "max_runtime_s": meta.get("max_runtime_s"),
-        "max_rounds": meta.get("max_rounds"),
+        "max_turns": meta.get("max_turns"),
     }
 
 
