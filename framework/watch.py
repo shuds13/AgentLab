@@ -282,8 +282,10 @@ function renderStatus(s) {
     ["results recorded", String(s.results)],
     ["reviews", String(s.reviews || 0)],
     ["elapsed", bar(s.elapsed_s, s.max_runtime_s, hms)],
-    ["model", `${s.model || "\u2014"} \u00b7 context ` + (s.context_pct == null
+    ["model", `${s.model || "\u2014"} \u00b7 context ` + (s.context_tokens == null
         ? "no data"
+        : s.context_pct == null
+        ? `${short(s.context_tokens)} (window not known yet)`
         : `${short(s.context_tokens)}/${short(s.context_window)} (${Math.round(s.context_pct)}%%)`)],
     ["critic", s.critic || "\u2014"],
     ["host", s.host || "\u2014"],

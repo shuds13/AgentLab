@@ -307,6 +307,8 @@ def _note_turn_context(usage, model=None):
               + usage.get("cache_creation_input_tokens", 0))
     if not tokens:
         return
+    if tokens == _last_context.get("tokens"):
+        return
     window = _last_context.get("window")
     pct = 100.0 * tokens / window if window else None
     _last_context.update(tokens=tokens, pct=pct)
@@ -967,6 +969,16 @@ def preflight():
 _session_id = None          # this run's Claude session, for reopening it later
 
 
+def _note_session(sid):
+    """Record the session once, from whichever message first carries it. The init
+    message has it seconds into the first turn, so a run that is stopped before a turn
+    ends can still be reopened with `claude -r <id>`."""
+    global _session_id
+    if sid and sid != _session_id:
+        _session_id = sid
+        _write_meta(session_id=sid, session_cwd=SCRIPT_DIR)
+
+
 async def drain_turn(client, turn_num):
     """Print the assistant's output for one turn (until its ResultMessage), and take
     the status pane's model and context figures off the turn's own messages."""
@@ -978,6 +990,7 @@ async def drain_turn(client, turn_num):
             turn_model = message.data.get("model") or None
             if turn_model and turn_model != _last_context.get("model"):
                 _write_meta(model=turn_model)
+            _note_session(message.data.get("session_id"))
         elif isinstance(message, AssistantMessage):
             # A subagent's own turns arrive on this stream as well, carrying the id of
             # the Agent call that started them. Name that subagent in the phase, so a
@@ -986,9 +999,12 @@ async def drain_turn(client, turn_num):
             parent = getattr(message, "parent_tool_use_id", None)
             who = _DELEGATES.get(parent) if parent else None
             # Each request in the turn reports the context it ran on, and a subagent
-            # reports its own. The agent's last one is the context the turn ends with.
+            # reports its own. Recorded as they arrive, so the status pane follows a
+            # long turn rather than waiting for it to end.
             if parent is None:
                 turn_usage = message.usage
+                _note_session(getattr(message, "session_id", None))
+                _note_turn_context(message.usage)
             for block in message.content:
                 if hasattr(block, "text"):
                     print(block.text, flush=True)
@@ -1007,13 +1023,7 @@ async def drain_turn(client, turn_num):
                 else:
                     _set_phase(f"turn {turn_num}: {_PHASES.get(bare, bare)}")
         elif isinstance(message, ResultMessage):
-            # The session id first becomes known here. Recorded once, so a finished run
-            # can be reopened later with `claude -r <id>` for a postmortem.
-            global _session_id
-            sid = getattr(message, "session_id", None)
-            if sid and sid != _session_id:
-                _session_id = sid
-                _write_meta(session_id=sid, session_cwd=SCRIPT_DIR)
+            _note_session(getattr(message, "session_id", None))
             print(f"\n[turn {turn_num} end] {message.subtype}", flush=True)
     _note_turn_context(turn_usage, turn_model)
     # The window is the one figure a turn does not carry. Ask until it is known, then
@@ -1102,10 +1112,10 @@ async def main():
 
     try:
         async with ClaudeSDKClient(options=options) as client:
-            # What the prompt, the tools and the memory files already cost, which is
-            # where every run starts from. Asked for in the background: the figures are
-            # for the status pane and the run has no reason to wait on them.
-            _refresh_context(client)
+            # The window is asked for once the first turn has drained -- the lookup is
+            # a control request, and one issued before the session has answered anything
+            # waits on the turn. Token counts do not wait on it: they come off the
+            # turn's own messages as it streams.
             model = RESOLVED_MODEL or AGENT_MODEL or "?"
             _last_context["model"] = model
             print(f"Agent started -- {SYSTEM}{ROLE_NOTE} · model {model}", flush=True)
