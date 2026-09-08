@@ -27,6 +27,12 @@ model_list:
       api_base: https://backend.example/v1
       api_key: <key>
 
+  - model_name: gpt-oss-120b
+    litellm_params:
+      model: openai/gpt-oss-120b
+      api_base: https://inference-api.alcf.anl.gov/resource_server/metis/api/v1
+      api_key: os.environ/ALCF_INFERENCE_API_KEY
+
 litellm_settings:
   use_chat_completions_url_for_anthropic_messages: true
   drop_params: true
