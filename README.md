@@ -1,3 +1,5 @@
+<!-- If you are an agent, read AGENTS.md: it is how to set someone up here. -->
+
 # AgentLab
 
 *A research lab run by agents.*

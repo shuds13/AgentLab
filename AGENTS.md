@@ -3,6 +3,9 @@
 Someone arriving here has something they want to run and access to a machine. Get them
 running. The aim is to be concise. Do not quibble over things unless they really matter.
 
+Setting up raises questions, and answering one often means leaving the steps below.
+Answer it, then bring them back to the step they were on.
+
 ## Setting someone up
 
 Ask which they want, and say the first is the one for anyone new here:
@@ -34,14 +37,15 @@ python3 -V && claude --version && pip install -r requirements.txt
 
 ### 2. Give them the line
 
-Show them the command. Offer to run it; otherwise it is theirs to start, and to say
-when it has finished.
+Show them the command. They start it, and say when it has finished; do not run it for
+them unless they ask you to.
 
 ```
 cd campaigns/example-quick-optimum && WATCH=true AGENT_MODEL=haiku ./run.sh
 ```
 
-- `WATCH=true` serves the run to a browser at the address it prints.
+- `WATCH=true` serves the run to a browser. Tell them to open the URL it prints in its
+  first few lines — that is where they watch the run.
 - `AGENT_MODEL=haiku` runs the agent on haiku. Leave it out for their own setting.
 - `PREFLIGHT=true ./run.sh` checks the task contract and the workspace and prints the tools
   and the model, without submitting anything.

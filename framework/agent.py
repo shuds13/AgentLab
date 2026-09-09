@@ -653,7 +653,9 @@ def _start_watcher():
             [sys.executable, os.path.join(SCRIPT_DIR, "watch.py"), CAMPAIGN,
              "--port", str(port), "--no-open", f"--exit-when-idle={WATCH_IDLE}"],
             stdout=watch_log, stderr=subprocess.STDOUT)
-        print(f"watch: http://127.0.0.1:{port}/", flush=True)
+        bar = "*" * 60
+        print(f"\n{bar}\n*  Watch this run at  http://127.0.0.1:{port}/\n{bar}\n",
+              flush=True)
     except Exception as e:
         print(f"[watch] could not start the viewer (ignored): {e}", flush=True)
 
@@ -857,6 +859,10 @@ def _probe_model():
 def preflight():
     """Verify everything this run needs BEFORE starting. Fail fast with a clear
     message instead of discovering a missing piece mid-run and spinning."""
+    # First, so its address is at the top of the output rather than below the settings:
+    # the address is what someone needs, and a run prints a screenful before it starts.
+    if not CHECK_ONLY:
+        _start_watcher()
     problems = []
     # The task plug-in must satisfy the contract before anything else is tried. A task
     # supplies remote jobs, local jobs, or both, so each set is required only when the
@@ -982,8 +988,6 @@ def preflight():
             marker = "  (default)" if name == tools._default_bucket and len(buckets) > 1 else ""
             print(f"{label}:    {shown}{marker}", flush=True)
         print(f"job timeout:  {tools.TARGET.get('timeout', '(unset)')}s", flush=True)
-    if not CHECK_ONLY:
-        _start_watcher()
 
 
 _session_id = None          # this run's Claude session, for reopening it later
