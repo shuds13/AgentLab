@@ -325,7 +325,7 @@ async def _post_scheduled_status(client, turn_num, start_time):
     tok, win, pct = u.get("tokens"), u.get("window"), u.get("pct")
     ctx = (f"ctx ~{tok}/{win} (~{pct:.0f}%)"
            if tok is not None and win and pct is not None else "ctx n/a")
-    slack_notify(f":calendar: Scheduled Status — {model}, "
+    slack_notify(f"📅 Scheduled Status — {model}, "
                  f"turn {turn_num} · {tools.submit_count()} remote / {tools.local_submit_count()} local "
                  f"this session · {tools.jobs_in_flight()} in-flight · {ctx} · "
                  f"uptime {_fmt_uptime(time.time() - start_time)}")
@@ -717,6 +717,8 @@ def _start_run_dir():
     _write_meta(max_submits=tools.MAX_SUBMITS, max_runtime_s=MAX_RUNTIME,
                 max_turns=MAX_TURNS, critic=CRITIC_LABEL,
                 run_id=RUN_ID, handle=HANDLE, system=SYSTEM, role=ROLE,
+                endpoint=tools.ENDPOINT_ID if tools.HAS_REMOTE else "",
+                has_local=tools.HAS_LOCAL,
                 started_by=os.environ.get("STARTED_BY", ""),
                 host=socket.gethostname(), pid=os.getpid(),
                 started_at=datetime.now().isoformat(timespec="seconds"),
@@ -900,7 +902,7 @@ def preflight():
                 except Exception:
                     _nm = tools.ENDPOINT_ID
                 if not CHECK_ONLY:
-                    slack_notify(f":rotating_light: Agent exiting -- Globus Compute "
+                    slack_notify(f"🚨 Agent exiting -- Globus Compute "
                                  f"endpoint '{_nm}' is not online (status={_st}). Start it: "
                                  f"globus-compute-endpoint start {_nm} --detach")
                 problems.append(f"Globus Compute endpoint '{_nm}' ({tools.ENDPOINT_ID}) is not online "
@@ -920,7 +922,8 @@ def preflight():
         for pr in problems:
             print(f"  - {pr}", flush=True)
         sys.exit(1)
-    backend = "endpoint online" if tools.HAS_REMOTE else "local execution only"
+    backend = (f"endpoint online ({SYSTEM} {tools.ENDPOINT_ID})" if tools.HAS_REMOTE
+               else "local execution only")
     print(f"preflight OK: task_dir={tools.TASK_DIR}, method.md, WORKSPACE_DIR, {backend}.", flush=True)
     # The gateway converts between the Messages API and a backend that does not speak
     # it. The agent needs it whenever it is pointed at one, whether or not there is a
@@ -1063,7 +1066,7 @@ async def main():
     if MAX_RUNTIME:
         at_once.append(f"wall clock for this run: {MAX_RUNTIME}s")
     system_prompt += "\n\n# This run\n" + "\n".join(at_once)
-    system_prompt += f"\n\n# This agent\nSYSTEM={SYSTEM}.{f'  ROLE={ROLE}.' if ROLE_SET else ''}\nThe shared files (results.jsonl, LOGBOOK.md, JOURNAL.md, claims.jsonl) live in {WORKSPACE_DIR} \u2014 always read and write them by full path there (e.g. {WORKSPACE_DIR}/results.jsonl). Follow the role rules in the Collaboration section of the prompt."
+    system_prompt += f"\n\n# This agent\nSYSTEM={SYSTEM}.{f'  ROLE={ROLE}.' if ROLE_SET else ''}\nEverything this run reads and writes lives in {WORKSPACE_DIR}: results.jsonl, LOGBOOK.md, JOURNAL.md and claims.jsonl at the top of it, figures/ and scratch/ beneath. Use full paths (e.g. {WORKSPACE_DIR}/results.jsonl, {WORKSPACE_DIR}/figures/). Follow the role rules in the Collaboration section of the prompt."
     server = create_server()
 
     options = ClaudeAgentOptions(
@@ -1135,7 +1138,7 @@ async def main():
             print(f"Agent started -- {SYSTEM}{ROLE_NOTE} · model {model}", flush=True)
             _write_meta(model=model)
             if NOTIFY_START:
-                slack_notify(f":rocket: Agent {HANDLE} started — "
+                slack_notify(f"🚀 Agent {HANDLE} started — "
                              f"{CAMPAIGN or 'no campaign'} on {SYSTEM}{ROLE_NOTE} · {model}"
                              f" · critic {CRITIC_LABEL}.")
             prompt = load_user_prompt()
@@ -1221,7 +1224,7 @@ async def main():
                             # A review takes a couple of minutes. During a wind-down
                             # that silence looks like a hang, so say what it is waiting
                             # for.
-                            slack_notify(f":mag: Reviewing the last cycle with "
+                            slack_notify(f"🔍 Reviewing the last cycle with "
                                          f"{CRITIC_LABEL} before exit.")
                         _set_phase(f"turn {turn_num}: critic reviewing ({CRITIC_LABEL})")
                         reply = critic.review(CRITIC_MODEL, new_section,
@@ -1385,7 +1388,7 @@ async def main():
             except OSError:
                 pass
         if NOTIFY_FINISH:
-            slack_notify(f":checkered_flag: Agent stopped — "
+            slack_notify(f"🏁 Agent stopped — "
                          f"reason: {stop_reason} · {tools.submit_count()} remote / "
                          f"{tools.local_submit_count()} local submitted · "
                          f"uptime {_fmt_uptime(time.time() - start_time)}.")

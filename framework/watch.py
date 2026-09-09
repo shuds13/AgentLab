@@ -71,9 +71,11 @@ def _count_lines(path):
 
 def _submits(path, run_id):
     """Jobs fired, in total and by this run, and how many of this run's have come back.
-    The log spans every run of the campaign, so a budget only means something against
-    the run's own count."""
-    total = this_run = done = 0
+    This run's counts are split by where the work ran. The log spans every run of the
+    campaign, so a budget only means something against the run's own count."""
+    total = 0
+    this_run = {"remote": 0, "local": 0}
+    done = {"remote": 0, "local": 0}
     try:
         with open(path, errors="replace") as f:
             for line in f:
@@ -83,13 +85,16 @@ def _submits(path, run_id):
                     continue
                 event = str(row.get("event", ""))
                 mine = bool(run_id) and row.get("run") == run_id
+                # Remote and local jobs are logged to the same file and are different
+                # work: one went to a compute system, the other ran here.
+                where = "local" if event.startswith("local_") else "remote"
                 if event.endswith("completed"):
-                    done += mine
+                    done[where] += mine
                     continue
                 if not event.endswith("submit"):
                     continue
                 total += 1
-                this_run += mine
+                this_run[where] += mine
     except OSError:
         pass
     return total, this_run, done
@@ -116,6 +121,7 @@ def status(campaign):
             age = None
     submits_total, submits_run, done_run = _submits(os.path.join(ws, "jobs.jsonl"),
                                                     meta.get("run_id"))
+    ran_here = sum(submits_run.values())
     # How long the run took, not how long ago it began: once it has ended, the clock
     # stops where it stopped.
     phase, phase_age = None, None
@@ -138,6 +144,7 @@ def status(campaign):
         "campaign": campaign, "status": meta.get("status"),
         "stop_reason": meta.get("stop_reason"), "model": meta.get("model"),
         "critic": meta.get("critic"), "host": meta.get("host"),
+        "system": meta.get("system"),
         "session_id": meta.get("session_id"), "session_cwd": meta.get("session_cwd"),
         "context_tokens": meta.get("context_tokens"),
         "context_window": meta.get("context_window"),
@@ -146,7 +153,11 @@ def status(campaign):
         "elapsed_s": elapsed, "heartbeat_age_s": age,
         "phase": phase, "phase_age_s": phase_age,
         "results": _count_lines(os.path.join(ws, "results.jsonl")),
-        "jobs": submits_total, "jobs_run": submits_run, "jobs_done": done_run,
+        "jobs": submits_total, "jobs_run": ran_here,
+        "jobs_done": sum(done_run.values()),
+        "jobs_remote": submits_run["remote"], "jobs_local": submits_run["local"],
+        "done_remote": done_run["remote"], "done_local": done_run["local"],
+        "endpoint": meta.get("endpoint"), "has_local": meta.get("has_local"),
         "reviews": _count_lines(os.path.join(ws, "REVIEWS.md")) and
                    open(os.path.join(ws, "REVIEWS.md"), errors="replace").read().count("\n## "),
         "max_submits": meta.get("max_submits"),
@@ -306,7 +317,15 @@ function renderStatus(s) {
         : `${s.status} \u00b7 ${s.stop_reason || ""}`],
     ["doing", s.status === "running" && s.phase
         ? `${s.phase} \u00b7 ${hms(s.phase_age_s)}` : "\u2014"],
-    ["jobs submitted", bar(s.jobs_run, s.max_submits)],
+    // Where the work ran, next to the counts of it. A campaign whose task defines both
+    // kinds of job splits the counts, since they did not run in the same place.
+    ["jobs run on", s.endpoint
+        ? `${s.system || "?"} (${s.endpoint})` + (s.has_local ? ", this machine" : "")
+        : "this machine"],
+    ["jobs submitted", bar(s.jobs_run, s.max_submits)
+        + (s.endpoint && s.has_local
+           ? ` <span style="color:#777">(${s.jobs_remote} on ${s.system || "endpoint"}, `
+             + `${s.jobs_local} here)</span>` : "")],
     ["in flight", `${s.jobs_run - s.jobs_done} \u00b7 ${s.jobs_done} returned`],
     ["jobs, all runs", String(s.jobs)],
     ["results recorded", String(s.results)],
