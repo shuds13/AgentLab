@@ -447,9 +447,19 @@ def method_path():
             else os.path.join(LAB_DIR, "methods", "standard.md"))
 
 
+# Values a method may name rather than repeat, so a method written against a capacity
+# cannot go stale when the capacity changes.
+def _method_values():
+    return {"jobs_at_once": tools.LOCAL_MAX_CONCURRENT if tools.HAS_LOCAL
+            else tools.MAX_CONCURRENT}
+
+
 def load_method():
     with open(method_path()) as f:
-        return f.read()
+        text = f.read()
+    for name, value in _method_values().items():
+        text = text.replace("{" + name + "}", str(value))
+    return text
 
 
 def load_framework():
@@ -944,11 +954,16 @@ def preflight():
     # they are what a run gets wrong most often.
     # Named as the environment variables that set them, so a value that looks wrong
     # can be searched for in run.sh without a translation step.
-    limits = [f"MAX_SUBMITS={tools.MAX_SUBMITS}",
-              f"MAX_CONCURRENT={tools.MAX_CONCURRENT}"]
+    limits = [f"MAX_SUBMITS={tools.MAX_SUBMITS}"]
+    if tools.HAS_REMOTE:
+        limits.append(f"MAX_CONCURRENT={tools.MAX_CONCURRENT}")
+    if tools.HAS_LOCAL:
+        limits.append(f"LOCAL_MAX_CONCURRENT={tools.LOCAL_MAX_CONCURRENT}")
     if MAX_RUNTIME:
         limits.append(f"MAX_RUNTIME={MAX_RUNTIME}s")
     print(f"budget:       {', '.join(limits)}", flush=True)
+    print(f"waiting:      BATCH_MODE={'true' if tools.BATCH_MODE else 'false'} "
+          f"({'all jobs' if tools.BATCH_MODE else 'first job'} to finish)", flush=True)
     if tools.HAS_REMOTE:
         # One line per bucket. A bucket is a resource shape -- queue, walltime, nodes --
         # and a system can define several, so they cannot share a line.
@@ -1045,10 +1060,7 @@ async def main():
         at_once.append(f"local jobs running at once: {tools.LOCAL_MAX_CONCURRENT}")
     if MAX_RUNTIME:
         at_once.append(f"wall clock for this run: {MAX_RUNTIME}s")
-    system_prompt += ("\n\n# This run\n" + "\n".join(at_once)
-                      + "\n\nSubmitting more at once than that queues the rest, which "
-                        "tells you nothing sooner. Each submit answers with how much of "
-                        "the run's job budget it has used.")
+    system_prompt += "\n\n# This run\n" + "\n".join(at_once)
     system_prompt += f"\n\n# This agent\nSYSTEM={SYSTEM}.{f'  ROLE={ROLE}.' if ROLE_SET else ''}\nThe shared files (results.jsonl, LOGBOOK.md, JOURNAL.md, claims.jsonl) live in {WORKSPACE_DIR} \u2014 always read and write them by full path there (e.g. {WORKSPACE_DIR}/results.jsonl). Follow the role rules in the Collaboration section of the prompt."
     server = create_server()
 

@@ -1,5 +1,5 @@
 {
-  "_comment": "Runs on this machine. The task defines local_fn only, so there is no endpoint or account to set. Its jobs are a second of sleep, so several can share the machine and a sweep costs one turn instead of one per point.",
   "system": "local",
-  "local_max_concurrent": 8
+  "local_max_concurrent": 8,
+  "batch_mode": true
 }

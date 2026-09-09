@@ -6,8 +6,9 @@ the work; this says what the runner gives you and what it does with what you han
 ## Submitting work
 
 `submit_job` sends work to a remote compute system through Globus Compute and returns a
-`job_id`; `submit_local` runs a job on this machine. Your campaign has one or both, and
-either returns immediately.
+`job_id`; `submit_local` runs a job on this machine, and `submit_local_batch` runs a
+whole batch of them where a run is configured that way. Your campaign has one or both,
+and either returns immediately.
 
 `get_completed_jobs` and `get_local_completed` collect whatever has finished. Call one
 near the start of a turn.

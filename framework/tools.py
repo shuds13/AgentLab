@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 import traceback
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
+from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED, ThreadPoolExecutor
 from concurrent.futures import wait as _futures_wait
 
 from claude_agent_sdk import tool, create_sdk_mcp_server
@@ -136,6 +136,20 @@ LOCAL_TIMEOUT = int(os.environ.get("LOCAL_JOB_TIMEOUT", "14400"))     # 4h
 LOCAL_MAX_CONCURRENT = int(os.environ.get("LOCAL_MAX_CONCURRENT",
                                           _cam.get("local_max_concurrent",
                                                    _sys_cfg.get("local_max_concurrent", 1))))
+
+# Whether a wait returns on the first job to finish or once they have all finished.
+# Jobs that take similar times are read together, so waking on the first spends a turn
+# on a fraction of the answer; jobs whose durations vary widely are read as they land.
+BATCH_MODE = str(os.environ.get("BATCH_MODE",
+                                _cam.get("batch_mode",
+                                         _sys_cfg.get("batch_mode", False)))).lower() \
+    in ("1", "true", "yes")
+# Jobs a batch submit fires in one call. The capacity by default: a batch that does not
+# fill the machine leaves slots idle for as long as the batch takes.
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE",
+                                _cam.get("batch_size",
+                                         _sys_cfg.get("batch_size",
+                                                      LOCAL_MAX_CONCURRENT))))
 
 # One Executor per bucket, created lazily and reused. Each distinct user_endpoint_config
 # gets its own block pool on the endpoint, so buckets can run concurrently.
@@ -336,13 +350,18 @@ def pending_count():
 
 
 def wait_for_any(timeout=1800):
-    """Block until at least one in-flight future completes, or timeout; return how many
-    finished. Lets agent.py wait between turns without spinning or holding the LLM open."""
+    """Block until in-flight futures complete, or timeout; return how many finished.
+    Lets agent.py wait between turns without spinning or holding the LLM open. Under
+    BATCH_MODE the wait returns once they have all finished."""
     futs = [j["future"] for j in _jobs.values() if not j["future"].done()]
     futs += [j["future"] for j in _local_jobs.values() if not j["future"].done()]
     if not futs:
         return 0
-    done, _ = _futures_wait(futs, timeout=timeout, return_when=FIRST_COMPLETED)
+    done, not_done = _futures_wait(futs, timeout=timeout,
+                                   return_when=ALL_COMPLETED if BATCH_MODE
+                                   else FIRST_COMPLETED)
+    if BATCH_MODE and not_done:
+        return 0                    # the timeout, not the batch: there is more to come
     return len(done)
 
 
@@ -517,14 +536,70 @@ async def submit_local(args):
                 f"submit refused: a local job is already running (max {LOCAL_MAX_CONCURRENT} "
                 f"at a time -- it uses the whole node). Collect it with get_local_completed "
                 f"before submitting more."}], "is_error": True}
+    job_id = _fire_local(args)
+    # As for submit_job. Where the task has remote work too, MAX_SUBMITS caps that and
+    # local jobs are uncapped, so there is a count to report and no allowance.
+    out = {"job_id": job_id, "args": args, "local_submits_used": _local_submit_count}
+    if not HAS_REMOTE:
+        out["submits_allowed"] = MAX_SUBMITS
+    return {"content": [{"type": "text", "text": json.dumps(out)}]}
+
+
+def _fire_local(args):
+    """Start one local job and record it. Returns its job_id."""
+    global _local_submit_count
     fut = get_local_executor().submit(task.local_fn, args)
     job_id = next(_local_counter)
     _local_submit_count += 1
     _local_jobs[job_id] = {"future": fut, "args": args}
     _append_jobs_log({"event": "local_submit", "job_id": job_id, "args": args})
-    # As for submit_job. Where the task has remote work too, MAX_SUBMITS caps that and
-    # local jobs are uncapped, so there is a count to report and no allowance.
-    out = {"job_id": job_id, "args": args, "local_submits_used": _local_submit_count}
+    return job_id
+
+
+# The task states one job's parameters; a batch takes a list of them. Built here rather
+# than asked of the task, so a task written for single submits needs no change.
+_JSON_TYPES = {float: "number", int: "integer", str: "string", bool: "boolean"}
+
+
+def _batch_schema():
+    props = {name: {"type": _JSON_TYPES.get(typ, "string")}
+             for name, typ in getattr(task, "LOCAL_SCHEMA", {}).items()}
+    return {"type": "object",
+            "properties": {"jobs": {"type": "array", "minItems": 1,
+                                    "maxItems": BATCH_SIZE,
+                                    "items": {"type": "object", "properties": props}}},
+            "required": ["jobs"]}
+
+
+BATCH_DESC = (getattr(task, "LOCAL_DESC", "") +
+              f"\n\nSubmit {BATCH_SIZE} jobs in one call, as `jobs`: a list of "
+              f"{BATCH_SIZE} parameter sets, each of the form above. They run at the "
+              f"same time and are collected together with get_local_completed.")
+
+
+@tool("submit_local_batch", BATCH_DESC, _batch_schema())
+async def submit_local_batch(args):
+    """Fire a whole batch of local jobs and return immediately with their job_ids."""
+    if _stop_requested:
+        return {"content": [{"type": "text", "text": _WINDDOWN_REFUSAL}], "is_error": True}
+    jobs = args.get("jobs") or []
+    if not isinstance(jobs, list) or not all(isinstance(j, dict) for j in jobs):
+        return {"content": [{"type": "text", "text":
+                "submit refused: `jobs` must be a list of parameter sets"}], "is_error": True}
+    room = LOCAL_MAX_CONCURRENT - _local_pending_count()
+    left = MAX_SUBMITS - _local_submit_count if not HAS_REMOTE else len(jobs)
+    wanted = min(BATCH_SIZE, room, left)
+    if wanted <= 0:
+        return {"content": [{"type": "text", "text":
+                f"submit refused: {_local_pending_count()} job(s) still running of "
+                f"{LOCAL_MAX_CONCURRENT}, {max(left, 0)} of {MAX_SUBMITS} submits left. "
+                f"Collect with get_local_completed."}], "is_error": True}
+    if len(jobs) != wanted:
+        return {"content": [{"type": "text", "text":
+                f"submit refused: this batch takes {wanted} jobs, got {len(jobs)}"}],
+                "is_error": True}
+    fired = [{"job_id": _fire_local(j), "args": j} for j in jobs]
+    out = {"submitted": fired, "local_submits_used": _local_submit_count}
     if not HAS_REMOTE:
         out["submits_allowed"] = MAX_SUBMITS
     return {"content": [{"type": "text", "text": json.dumps(out)}]}
@@ -688,7 +763,8 @@ def create_server():
     if HAS_REMOTE:
         tools += [submit_job, get_completed_jobs, release_claim]
     if HAS_LOCAL:
-        tools += [submit_local, get_local_completed]
+        tools += [submit_local_batch if BATCH_MODE else submit_local,
+                  get_local_completed]
     tools.append(notify)
     tools.append(cycle_done)
     tools.append(goal_met)
@@ -705,7 +781,8 @@ def tool_names():
     if HAS_REMOTE:
         names += ["submit_job", "get_completed_jobs", "release_claim"]
     if HAS_LOCAL:
-        names += ["submit_local", "get_local_completed"]
+        names += ["submit_local_batch" if BATCH_MODE else "submit_local",
+                  "get_local_completed"]
     names.append("notify")
     names.append("cycle_done")
     names.append("goal_met")
