@@ -1,5 +1,6 @@
 {
   "_comment": "Facts about LCRC Swing that are the same for everyone. Credentials and allocations go in users/<you>/swing.json; the endpoint template is systems/endpoints/swing_pbs/.",
+  "endpoint_template": "swing_pbs",
   "ppn": 1,
   "max_concurrent": 1,
   "target": {

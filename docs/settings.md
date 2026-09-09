@@ -189,7 +189,7 @@ Time limits that bound a job rather than a launch live here.
 | `framework/framework_prompt.md` | how a run works whatever its method: the tools, the records the runner reads, and the two ways a run ends. Given to every run alongside its `method.md` |
 | `litellm/config.yaml` | the non-Anthropic models this lab can reach, and the keys for them. Copy `litellm/config.yaml.template`; `docs/llm.md` explains the settings that matter |
 | `bin/review_campaign.sh <campaign>` | reads a campaign before it runs and reports what would waste a machine or a budget, appending to `campaigns/<name>/EFFICIENCY-REVIEW.md`; `framework/review_campaign_prompt.md` is what it asks |
-| `systems/<system>.json` | module line, proxy, cache paths, `ppn`, `max_concurrent`, and `bucket_defaults` including the batch allocation's `walltime` |
+| `systems/<system>.json` | module line, proxy, cache paths, `ppn`, `max_concurrent`, `endpoint_template` (which directory under `systems/endpoints/` its endpoint runs), and `bucket_defaults` including the batch allocation's `walltime`. `needs_account: false` for a machine with nothing to charge, `remote: false` for one that runs jobs in this process rather than through an endpoint |
 | `users/<you>/<system>.json` | endpoint UUID, account to charge, `work_dir` on the compute system |
 
 `bucket_defaults.walltime` bounds the batch allocation, which persists between jobs. An

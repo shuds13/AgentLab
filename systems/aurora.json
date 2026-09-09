@@ -1,5 +1,6 @@
 {
-  "_comment": "Aurora. Starting points only \u2014 a campaign overrides anything here that depends on what it runs, in campaign.json. Credentials go in users/<you>/aurora.json.",
+  "_comment": "Aurora. Starting points only — a campaign overrides anything here that depends on what it runs, in campaign.json. Credentials go in users/<you>/aurora.json.",
+  "endpoint_template": "aurora_pbs",
   "globus_collection": "f39a7a0f-5bfc-46ce-9615-ba9f8592814f",
   "globus_collection_name": "ALCF Flare",
   "globus_collection_root": [

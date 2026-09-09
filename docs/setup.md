@@ -44,9 +44,11 @@ Create the endpoint:
 globus-compute-endpoint configure my-endpoint
 ```
 
-Replace the generated template with the closest one from `systems/endpoints/`, editing
-the marked lines — account, filesystems, and the `worker_init` that activates your
-environment:
+Replace the generated template with the one from `systems/endpoints/` that your system
+names in `endpoint_template` — `systems/kkt.json` names `slurm`, so
+`systems/endpoints/slurm/`. A system with no file yet takes the closest template for its
+scheduler. Edit the marked lines — account, filesystems, and the `worker_init` that
+activates your environment:
 
 ```
 ~/.globus_compute/my-endpoint/user_config_template.yaml.j2
@@ -62,7 +64,12 @@ globus-compute-endpoint start my-endpoint && globus-compute-endpoint list
 ## 3. Describe the system
 
 `systems/<system>.json` holds what is true for everyone on that machine — module line,
-proxy, cache paths, queue defaults. One file per machine, shared by every campaign.
+proxy, cache paths, queue defaults, and `endpoint_template`, the directory under
+`systems/endpoints/` whose template that machine's endpoint runs. One file per machine,
+shared by every campaign.
+
+A machine with no batch system says `"needs_account": false`, since there is nothing to
+charge, and its `users/<you>/<system>.json` gives only the endpoint and `work_dir`.
 
 ## 4. Describe your access
 

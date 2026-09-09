@@ -1,0 +1,19 @@
+{
+  "_comment": "Facts about kkt that are the same for everyone. Credentials and allocations go in users/<you>/kkt.json; the endpoint template is systems/endpoints/slurm/.",
+  "endpoint_template": "slurm",
+  "ppn": 4,
+  "max_concurrent": 5,
+  "target": {
+    "env": {}
+  },
+  "bucket_defaults": {
+    "partition": "main",
+    "num_nodes": 1,
+    "nodes_per_block": 1,
+    "max_workers_per_node": 1,
+    "init_blocks": 0,
+    "min_blocks": 0,
+    "max_blocks": 1,
+    "max_retries_on_system_failure": 0
+  }
+}

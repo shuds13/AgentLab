@@ -1,7 +1,8 @@
 # Endpoint templates
 
-Working starting points for the Globus Compute endpoint that runs your jobs. Copy
-the closer one and edit the marked lines.
+Working starting points for the Globus Compute endpoint that runs your jobs. Each
+system names the one it uses in `endpoint_template` in its `systems/<name>.json`; for a
+system with no file yet, copy the closer one and edit the marked lines.
 
 | | Scheduler | Launcher | Tested on |
 |---|---|---|---|

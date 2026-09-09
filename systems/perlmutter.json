@@ -1,5 +1,6 @@
 {
   "_comment": "Facts about NERSC Perlmutter that are the same for everyone. Credentials and allocations go in users/<you>/perlmutter.json; what to run goes in the campaign.",
+  "endpoint_template": "perlmutter_slurm",
   "globus_collection": "9d6d994a-6d04-11e5-ba46-22000b92c6ec",
   "globus_collection_name": "NERSC DTN",
   "globus_collection_root": "",
