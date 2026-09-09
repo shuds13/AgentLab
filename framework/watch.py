@@ -138,6 +138,7 @@ def status(campaign):
         "campaign": campaign, "status": meta.get("status"),
         "stop_reason": meta.get("stop_reason"), "model": meta.get("model"),
         "critic": meta.get("critic"), "host": meta.get("host"),
+        "session_id": meta.get("session_id"), "session_cwd": meta.get("session_cwd"),
         "context_tokens": meta.get("context_tokens"),
         "context_window": meta.get("context_window"),
         "context_pct": meta.get("context_pct"),
@@ -217,6 +218,9 @@ PAGE = """<!doctype html>
               padding:5px 8px; font:inherit; }
  #say button { background:#222; color:#bbb; border:1px solid #333; padding:5px 14px;
                cursor:pointer; font:inherit; }
+ button.copy { background:#222; color:#999; border:1px solid #333; padding:0 6px;
+               margin-left:8px; cursor:pointer; font:inherit; font-size:11px; }
+ button.copy:hover { color:#fff; }
 </style></head><body>
 <header><b>AgentLab</b><span class="sep">/</span><b id="camp">%(campaign)s</b>\
 <span id="head">connecting\u2026</span></header>
@@ -310,6 +314,13 @@ function renderStatus(s) {
         ? `${short(s.context_tokens)} (window not known yet)`
         : `${short(s.context_tokens)}/${short(s.context_window)} (${Math.round(s.context_pct)}%%)`)],
     ["critic", s.critic || "\u2014"],
+    // The run's Claude session, to reopen afterwards with `claude -r`. Copying is
+    // offered once the run has stopped: opening a session the runner still holds puts
+    // a second client on it.
+    ["session", !s.session_id ? "\u2014"
+        : s.status === "running"
+        ? `<span style="color:#666">${s.session_id}</span>`
+        : `${s.session_id} <button class="copy" data-copy="${s.session_id}">copy</button>`],
     ["host", s.host || "\u2014"],
     ["started", s.started_at || "\u2014"],
   ];
@@ -394,6 +405,15 @@ async function chat() {
   }).join("");
   if (near) chatlog.scrollTop = chatlog.scrollHeight;
 }
+
+document.addEventListener("click", e => {
+  const b = e.target.closest("button.copy");
+  if (!b) return;
+  navigator.clipboard.writeText(b.dataset.copy).then(() => {
+    b.textContent = "copied";
+    setTimeout(() => { b.textContent = "copy"; }, 1500);
+  }, () => { b.textContent = "no clipboard"; });
+});
 
 async function files() {
   try { setTabs(await (await fetch("/files")).json()); } catch (e) {}
