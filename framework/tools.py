@@ -61,7 +61,7 @@ if not CAMPAIGN:
 _CAMPAIGN_DIR = os.path.join(LAB_DIR, "campaigns", CAMPAIGN)
 _cam = _read_json(os.path.join(_CAMPAIGN_DIR, "campaign.json"),
                   f"campaign '{CAMPAIGN}'", needs=("system",))
-SYSTEM = _cam["system"]
+SYSTEM = os.environ.get("SYSTEM") or _cam["system"]
 
 _sys_cfg = _read_json(os.path.join(LAB_DIR, "systems", f"{SYSTEM}.json"),
                       f"system '{SYSTEM}'")
@@ -79,15 +79,22 @@ if TASK_DIR not in sys.path:
     sys.path.insert(0, TASK_DIR)
 task = importlib.import_module(os.environ.get("TASK_MODULE", "task"))
 HAS_LOCAL = hasattr(task, "local_fn")
-HAS_REMOTE = hasattr(task, "remote_fn")
+# Remote work needs both halves: a task that defines the function, and a system that
+# sends work somewhere. A task with both functions runs either way, by the system it
+# is given.
+HAS_REMOTE = hasattr(task, "remote_fn") and _sys_cfg.get("remote", True)
 
 # Only remote jobs need a Globus endpoint and an account to charge, so a task that
 # defines local_fn alone runs without either -- and without a user file at all. Its
 # work_dir then defaults to the campaign workspace.
 _user_path = os.path.join(LAB_DIR, "users", USER_NAME, f"{SYSTEM}.json")
 if HAS_REMOTE:
-    _usr = _read_json(_user_path, f"your access to '{SYSTEM}'",
-                      needs=("endpoint", "account", "work_dir"))
+    # A system with no batch scheduler has nothing to charge, so it says so and the
+    # account is not asked for.
+    _needs = ("endpoint", "work_dir")
+    if _sys_cfg.get("needs_account", True):
+        _needs += ("account",)
+    _usr = _read_json(_user_path, f"your access to '{SYSTEM}'", needs=_needs)
 else:
     _usr = (_read_json(_user_path, f"your access to '{SYSTEM}'")
             if os.path.isfile(_user_path) else {})
