@@ -175,11 +175,13 @@ PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><title>%(campaign)s</title>
 <style>
  html,body { height:100%%; margin:0; }
+ /* The frame the run sits in: the header's blue carried round the page. */
  body { display:flex; flex-direction:column;
         font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;
-        background:#111; color:#ddd; }
- header { padding:8px 12px; background:#1b1b1b; border-bottom:1px solid #333;
-          display:flex; gap:16px; align-items:baseline; flex:none; }
+        background:#111; color:#ddd;
+        border:2px solid #3a4a5a; box-sizing:border-box; }
+ header { padding:8px 12px; background:#1b2836; border-bottom:2px solid #3a4a5a;
+          display:flex; gap:16px; align-items:baseline; flex:none; color:#cfe0f0; }
  header b { color:#fff; font-size:14px; }
  header .sep { color:#555; }
  header #head { margin-left:auto; }
@@ -189,6 +191,7 @@ PAGE = """<!doctype html>
  #tabs button { background:#222; color:#bbb; border:1px solid #333; padding:3px 10px;
                 cursor:pointer; font:inherit; }
  #tabs button.on { background:#2d4a2d; color:#fff; }
+ #tabs .div { align-self:stretch; border-left:1px solid #3a4a5a; margin:0 8px; }
  /* The pane scrolls, not the page, so the tabs stay put wherever you are in a file. */
  #pane { flex:1; overflow:auto; position:relative; }
  pre { margin:0; padding:12px; white-space:pre-wrap; word-break:break-word; }
@@ -205,6 +208,8 @@ PAGE = """<!doctype html>
  .doc blockquote { border-left:3px solid #333; margin:8px 0; padding-left:12px;
                    color:#aaa; }
  table { border-collapse:collapse; margin:12px; }
+ /* The run and the campaign are different spans of time, and their counts differ. */
+ tr.sec td { color:#6f8296; padding:14px 0 2px; border-bottom:1px solid #2b3946; }
  td { padding:3px 18px 3px 0; vertical-align:top; }
  td.k { color:#888; }
  .bar { display:inline-block; width:150px; height:9px; background:#222;
@@ -267,6 +272,14 @@ function setTabs(files) {
   t.dataset.key = key;
   t.innerHTML = "";
   for (const n of ["status", "log"].concat(files)) {
+    // The first two are this run; the files after them are the campaign's records,
+    // written by every run of it. Marked off, because the counts differ for the same
+    // reason.
+    if (n === files[0]) {
+      const d = document.createElement("span");
+      d.className = "div";
+      t.appendChild(d);
+    }
     const b = document.createElement("button");
     // The log is what the agent said and did; the file name is not the point.
     b.textContent = n === "log" ? "agent log" : n;
@@ -326,10 +339,8 @@ function renderStatus(s) {
         + (s.endpoint && s.has_local
            ? ` <span style="color:#777">(${s.jobs_remote} on ${s.system || "endpoint"}, `
              + `${s.jobs_local} here)</span>` : "")],
-    ["in flight", `${s.jobs_run - s.jobs_done} \u00b7 ${s.jobs_done} returned`],
-    ["jobs, all runs", String(s.jobs)],
-    ["results recorded", String(s.results)],
-    ["reviews", String(s.reviews || 0)],
+    ["still running", `${s.jobs_run - s.jobs_done} of ${s.jobs_run} submitted, `
+        + `${s.jobs_done} returned`],
     ["elapsed", bar(s.elapsed_s, s.max_runtime_s, hms)],
     ["model", `${s.model || "\u2014"} \u00b7 context ` + (s.context_tokens == null
         ? "no data"
@@ -348,8 +359,16 @@ function renderStatus(s) {
     ["started", s.started_at || "\u2014"],
   ];
   if (s.ended_at) rows.push(["ended", s.ended_at]);
+  // The campaign outlives the run: these count every run of it, which is why they can
+  // be larger than the numbers above.
+  rows.push(["campaign totals"],
+            ["jobs submitted", String(s.jobs)],
+            ["results recorded", String(s.results)],
+            ["critic reviews", String(s.reviews || 0)]);
   view.innerHTML = "<table>" + rows.map(
-    ([k, v]) => `<tr><td class="k">${k}</td><td>${v}</td></tr>`).join("") + "</table>";
+    r => r.length === 1
+      ? `<tr class="sec"><td colspan="2">${r[0]}</td></tr>`
+      : `<tr><td class="k">${r[0]}</td><td>${r[1]}</td></tr>`).join("") + "</table>";
 }
 
 const esc = t => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
