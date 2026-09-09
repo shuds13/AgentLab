@@ -14,10 +14,10 @@ export USER_NAME="${USER_NAME:-$USER}"
 
 # The system the jobs run on, overriding the campaign's own. Its endpoint and work_dir
 # are in users/$USER_NAME/$SYSTEM.json.
-export SYSTEM="${SYSTEM:-gce}"
+export SYSTEM=gce
 
 # The goal for this run, and which tools it reaches for.
-export USER_PROMPT_FILE="user_prompt_remote.md"
+export USER_PROMPT_FILE=user_prompt_remote.md
 
 # Three sweeps of eight: bracket, narrow, then repeat readings where they are close.
 export MAX_SUBMITS=24
