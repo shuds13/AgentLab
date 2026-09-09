@@ -199,22 +199,25 @@ PAGE = """<!doctype html>
  .bar { display:inline-block; width:150px; height:9px; background:#222;
         border:1px solid #333; vertical-align:middle; margin-right:8px; }
  .bar i { display:block; height:100%%; background:#3d7a3d; }
- #newest { position:fixed; right:18px; bottom:52px; display:none;
+ /* Clear of the chat panel, whichever of its height and its floor is in force. */
+ #newest { position:fixed; right:18px; bottom:calc(max(30vh, 120px) + 14px); display:none;
            background:#2d4a2d; color:#fff; border:1px solid #4a7a4a; padding:5px 12px;
            cursor:pointer; font:inherit; }
  /* The conversation with the run: what has been said, and where you say it. One
     section, because an input detached from its transcript reads as a search box. */
  #chat { flex:none; height:30vh; min-height:120px; display:flex; flex-direction:column;
-         background:#141414; border-top:1px solid #333; }
+         background:#0b0f14; border-top:2px solid #3a4a5a; }
+ #chathead { flex:none; padding:4px 12px; background:#1b2836; color:#cfe0f0;
+             border-bottom:1px solid #24313d; letter-spacing:.08em; }
  #chatlog { flex:1; overflow:auto; padding:8px 12px; }
  #chatlog .m { margin:0 0 7px; }
  #chatlog .t { color:#666; margin-right:8px; }
  #chatlog .who { color:#7aa87a; margin-right:6px; }
  #chatlog .who.you { color:#7a9ac8; }
  #chatlog .none { color:#666; }
- #say { display:flex; gap:6px; padding:8px 12px; background:#161616; flex:none;
-        border-top:1px solid #262626; }
- #say input { flex:1; background:#111; color:#ddd; border:1px solid #333;
+ #say { display:flex; gap:6px; padding:8px 12px; background:#101720; flex:none;
+        border-top:1px solid #24313d; }
+ #say input { flex:1; background:#0b0f14; color:#ddd; border:1px solid #2b3946;
               padding:5px 8px; font:inherit; }
  #say button { background:#222; color:#bbb; border:1px solid #333; padding:5px 14px;
                cursor:pointer; font:inherit; }
@@ -228,6 +231,7 @@ PAGE = """<!doctype html>
 <div id="pane"><pre id="view">loading\u2026</pre></div>
 <button id="newest">\u2193 newest</button>
 <div id="chat">
+  <div id="chathead">CHAT</div>
   <div id="chatlog" class="none">no messages yet</div>
   <div id="say"><input id="msg" autocomplete="off"
     placeholder="message the agent \u2014 it reads between turns"><button>send</button></div>
