@@ -9,6 +9,7 @@ the closer one and edit the marked lines.
 | `polaris_pbs/` | PBS Pro | SimpleLauncher | ALCF Polaris |
 | `perlmutter_slurm/` | Slurm | SimpleLauncher | NERSC Perlmutter GPU nodes |
 | `slurm/` | Slurm | SimpleLauncher | CPU nodes; GPU variant noted in the file |
+| `no_scheduler/` | none | — | a machine held directly: workstation, VM, cluster node |
 
 Perlmutter has its own file because NERSC selects nodes by `constraint` and the queue
 by `qos`, where the generic Slurm template uses `partition`.

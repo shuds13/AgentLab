@@ -1,0 +1,33 @@
+# Globus Compute endpoint template -- no scheduler.
+#
+# Lives on the machine that runs the work, at
+#   ~/.globus_compute/<endpoint-name>/user_config_template.yaml.j2
+# The placeholders below are filled per job from the "user_config" block of the
+# matching bucket in the system's JSON file.
+#
+# For a machine with no batch system: a workstation, a VM, a cluster node you hold
+# directly. LocalProvider starts the workers on the endpoint's own host, so a job
+# begins the moment it is submitted and there is no queue, no account and no
+# walltime. Everything the endpoint can run at once is running at once.
+#
+# EDIT: max_workers, worker_init.
+
+engine:
+  type: GlobusComputeEngine
+  # One worker per concurrent job. Match it to what the machine can carry, and set
+  # max_concurrent in the system's JSON file to the same number.
+  max_workers_per_node: {{ max_workers | default(1) }}
+
+  provider:
+    type: LocalProvider
+    # One pool of workers, started with the endpoint and never scaled: with no
+    # scheduler there is nothing to ask for more.
+    init_blocks: 1
+    min_blocks: 1
+    max_blocks: 1
+
+    # EDIT: activate the environment the job needs. The worker starts in a bare
+    # shell, so anything the job assumes must be set up here.
+    worker_init: |
+      # module load ...
+      # source ~/venvs/myenv/bin/activate

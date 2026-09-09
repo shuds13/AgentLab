@@ -1,0 +1,12 @@
+{
+  "_comment": "CELS GCE compute nodes. No batch system, so a job starts the moment it is submitted and there is nothing to charge. The endpoint UUID and work_dir go in users/<you>/gce.json; the endpoint template is systems/endpoints/no_scheduler/.",
+  "needs_account": false,
+  "ppn": 1,
+  "max_concurrent": 8,
+  "target": {
+    "env": {}
+  },
+  "bucket_defaults": {
+    "max_workers": 8
+  }
+}
