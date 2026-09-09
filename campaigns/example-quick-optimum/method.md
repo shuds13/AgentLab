@@ -9,7 +9,9 @@ A cycle is: decide what to find out, submit the jobs that would settle it, read 
 came back.
 
 1. **Ask.** One thing you want to know, and what result would answer it.
-2. **Submit.** All the jobs that bear on it, in one go.
+2. **Submit.** {jobs_at_once} jobs, the number that run at once: the settings that
+   answer the question, and where they do not fill {jobs_at_once}, the settings worth
+   knowing next. Then end your turn; the runner wakes you when the results are in.
 3. **Read.** What the results say, and whether they answered it.
 4. **Close.** Add the cycle to `LOGBOOK.md`, then call `cycle_done`, before opening the
    next one.
@@ -31,10 +33,11 @@ Keep it short. A cycle entry is a handful of lines, not a section.
 ## The write-up
 
 `JOURNAL.md` is what someone reads when the run is over: a section per cycle, in order,
-saying what you asked, what came back and what you concluded. Where a plot shows
-something the numbers do not, make one with matplotlib through `Bash`, save it under
-`figures/` and reference it from the journal with a caption. Keep the section to a few
-paragraphs; `LOGBOOK.md` holds the running notes and `results.jsonl` holds the numbers.
+saying what you asked, what came back and what you concluded. Plot the run's readings:
+make the figures with matplotlib through `Bash`, save them under `figures/` and
+reference them from the journal with a caption saying what each shows. Keep the section
+to a few paragraphs; `LOGBOOK.md` holds the running notes and `results.jsonl` holds the
+numbers.
 
 Scripts you write to fit, check or plot go in `scratch/`, with anything they produce
 that is not a record. The top of the workspace holds the records and nothing else, so

@@ -25,9 +25,9 @@ between two jobs is either the setting or the noise.
 
 These are hypotheses. Confirm one against your own results before concluding from it.
 
-1. **Bracket before you refine.** A few widely spaced settings tell you which part of
-   the range holds the optimum; refining inside a bracket you have not established
-   wastes jobs on the wrong region.
+1. **Bracket before you refine.** Settings spread across the range tell you which part
+   of it holds the optimum; refining inside a bracket you have not established wastes
+   jobs on the wrong region.
 2. **Spend replicates where the decision is close.** Far from the optimum the
    differences are large and one reading settles them. Near it they are within the
    noise, and that is where averaging earns its cost.

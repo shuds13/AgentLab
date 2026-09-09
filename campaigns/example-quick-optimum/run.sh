@@ -12,7 +12,8 @@ export CAMPAIGN="$(basename "$PWD")"
 export USER_NAME="${USER_NAME:-$USER}"
 
 # Jobs take about a second, so a run that proves the machinery works is minutes.
-export MAX_SUBMITS=16
+# Three sweeps of eight: bracket, narrow, then repeat readings where they are close.
+export MAX_SUBMITS=24
 export MAX_RUNTIME=900
 
 # Notifications if set up

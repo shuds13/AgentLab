@@ -31,9 +31,9 @@ Keep it short. A cycle entry is a handful of lines, not a section.
 ## The write-up
 
 `JOURNAL.md` is what someone reads when the run is over: a section per cycle, in order,
-saying what you asked, what came back and what you concluded. Where a plot shows
-something the numbers do not, make one with matplotlib through `Bash`, save it under
-`figures/` and reference it from the journal with a caption. Keep the section to a few
+saying what you asked, what came back and what you concluded. Make a figure where it
+helps. Plot with matplotlib through `Bash`, save it under `figures/` and reference it
+from the journal with a caption saying what it shows. Keep the section to a few
 paragraphs; `LOGBOOK.md` holds the running notes and `results.jsonl` holds the numbers.
 
 Scripts you write to fit, check or plot go in `scratch/`, with anything they produce
