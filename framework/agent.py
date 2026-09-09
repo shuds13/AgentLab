@@ -413,11 +413,9 @@ def _critic_prompt(findings, reply, tail=""):
 
 def _announcements_prompt(text, tail=""):
     """Wrap NEW announcements-board lines as the next turn's prompt."""
-    body = ("New on the shared announcements board:\n" + text +
-            "\nAct on anything here that concerns you, and answer with `notify` so "
-            "whoever wrote it sees your reply. Anything marked as already answered by "
-            "the secretary needs no reply from you. If it needs immediate action, take "
-            "it now; otherwise acknowledge it briefly and continue. Pending jobs remain "
+    quoted = "\n".join("> " + line for line in text.strip().splitlines())
+    body = ("A message for you on the announcements board:\n\n" + quoted +
+            "\n\nDo what it asks, and answer it with `notify`. Pending jobs remain "
             "tracked.")
     return body + ("\n\n" + tail if tail else "")
 
