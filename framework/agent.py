@@ -215,6 +215,9 @@ REPORT_PROMPT = _prompt("REPORT_PROMPT",
 
 
 def slack_notify(msg):
+    # The run's own conversation holds it whether or not a transport is configured, so
+    # a lab with no Slack still has the notifications somewhere.
+    tools.record_message("runner", msg)
     if not os.path.isfile(NOTIFY_SCRIPT):
         return
     try:
@@ -411,10 +414,11 @@ def _critic_prompt(findings, reply, tail=""):
 def _announcements_prompt(text, tail=""):
     """Wrap NEW announcements-board lines as the next turn's prompt."""
     body = ("New on the shared announcements board:\n" + text +
-            "\nAct on anything here that concerns you. Anything marked as already "
-            "answered by the secretary needs no reply from you. If it needs immediate "
-            "action, take it now; otherwise acknowledge it briefly and continue. "
-            "Pending jobs remain tracked.")
+            "\nAct on anything here that concerns you, and answer with `notify` so "
+            "whoever wrote it sees your reply. Anything marked as already answered by "
+            "the secretary needs no reply from you. If it needs immediate action, take "
+            "it now; otherwise acknowledge it briefly and continue. Pending jobs remain "
+            "tracked.")
     return body + ("\n\n" + tail if tail else "")
 
 
@@ -1186,6 +1190,15 @@ async def main():
                     tools.request_stop()
                     _write_meta(goal_met=tools.goal_is_met())
                     print(f"Goal met -- winding down: {tools.goal_is_met()}", flush=True)
+                    prompt = WINDDOWN_PROMPT
+                # The agent was asked to stop. The same wind-down, recorded as what it
+                # was: a run ended on request, with the goal wherever it had reached.
+                if stopping is None and tools.end_requested():
+                    stopping = "stop requested"
+                    tools.request_stop()
+                    _write_meta(end_requested=tools.end_requested())
+                    print(f"Stop requested -- winding down: {tools.end_requested()}",
+                          flush=True)
                     prompt = WINDDOWN_PROMPT
                 # A cycle write-up is the trigger: the journal gains a section, so a
                 # longer journal than last turn means there is something to review.

@@ -11,8 +11,9 @@ touching it.
 Usage:
     python watch.py <campaign> [--port 8765] [--no-open]
 
-Nothing here writes: it reads the campaign's workspace and serves what it finds. Stop it
-with Ctrl-C; the run is unaffected either way.
+It reads the campaign's workspace and serves what it finds. The one thing it writes is
+a message you type: that goes to the board the agent reads between turns. Stop it with
+Ctrl-C; the run is unaffected either way.
 """
 
 import glob
@@ -197,15 +198,36 @@ PAGE = """<!doctype html>
  .bar { display:inline-block; width:150px; height:9px; background:#222;
         border:1px solid #333; vertical-align:middle; margin-right:8px; }
  .bar i { display:block; height:100%%; background:#3d7a3d; }
- #newest { position:fixed; right:18px; bottom:14px; display:none;
+ #newest { position:fixed; right:18px; bottom:52px; display:none;
            background:#2d4a2d; color:#fff; border:1px solid #4a7a4a; padding:5px 12px;
            cursor:pointer; font:inherit; }
+ /* The conversation with the run: what has been said, and where you say it. One
+    section, because an input detached from its transcript reads as a search box. */
+ #chat { flex:none; height:30vh; min-height:120px; display:flex; flex-direction:column;
+         background:#141414; border-top:1px solid #333; }
+ #chatlog { flex:1; overflow:auto; padding:8px 12px; }
+ #chatlog .m { margin:0 0 7px; }
+ #chatlog .t { color:#666; margin-right:8px; }
+ #chatlog .who { color:#7aa87a; margin-right:6px; }
+ #chatlog .who.you { color:#7a9ac8; }
+ #chatlog .none { color:#666; }
+ #say { display:flex; gap:6px; padding:8px 12px; background:#161616; flex:none;
+        border-top:1px solid #262626; }
+ #say input { flex:1; background:#111; color:#ddd; border:1px solid #333;
+              padding:5px 8px; font:inherit; }
+ #say button { background:#222; color:#bbb; border:1px solid #333; padding:5px 14px;
+               cursor:pointer; font:inherit; }
 </style></head><body>
 <header><b>AgentLab</b><span class="sep">/</span><b id="camp">%(campaign)s</b>\
 <span id="head">connecting\u2026</span></header>
 <div id="tabs"></div>
 <div id="pane"><pre id="view">loading\u2026</pre></div>
 <button id="newest">\u2193 newest</button>
+<div id="chat">
+  <div id="chatlog" class="none">no messages yet</div>
+  <div id="say"><input id="msg" autocomplete="off"
+    placeholder="message the agent \u2014 it reads between turns"><button>send</button></div>
+</div>
 <script>
 let tab = "status", offset = 0, logText = "", rawMode = false;
 const view = document.getElementById("view"), pane = document.getElementById("pane");
@@ -329,9 +351,11 @@ async function refresh() {
       if (stick) { pane.scrollTop = pane.scrollHeight; newest.style.display = "none"; }
       else if (j.text) newest.style.display = "block";
     } else {
-      const md = tab.endsWith(".md") && !rawMode;
+      // The board is a list of lines, not a document: rendered as Markdown, consecutive
+      // messages run together into one paragraph.
+      const md = tab.endsWith(".md") && !rawMode && tab !== "ANNOUNCEMENTS.md";
       const body = await (await fetch(
-        "/file?name=" + encodeURIComponent(tab) + (rawMode ? "&raw=1" : ""))).text();
+        "/file?name=" + encodeURIComponent(tab) + (md ? "" : "&raw=1"))).text();
       if (body !== view.dataset.body) {                // keep where you were reading
         const at = pane.scrollTop;
         view.dataset.body = body;
@@ -345,12 +369,54 @@ async function refresh() {
   }
 }
 
+// The transcript: the runner's notices, the agent's replies and your own lines, in the
+// order they were said. Written as `HH:MM` **who** text, one message per paragraph.
+const chatlog = document.getElementById("chatlog");
+let chatText = "";
+
+async function chat() {
+  let body;
+  try { body = await (await fetch("/messages")).text(); }
+  catch (e) { return; }
+  if (body === chatText) return;
+  chatText = body;
+  const msgs = body.split(/\\n\\s*\\n/).map(m => m.trim()).filter(Boolean);
+  if (!msgs.length) { chatlog.className = "none";
+                      chatlog.textContent = "no messages yet"; return; }
+  const near = chatlog.scrollTop + chatlog.clientHeight > chatlog.scrollHeight - 40;
+  chatlog.className = "";
+  chatlog.innerHTML = msgs.map(m => {
+    const p = m.match(/^`(\\d\\d:\\d\\d)`\\s+\\*\\*(\\w+)\\*\\*\\s+([\\s\\S]*)$/);
+    if (!p) return `<div class="m">${esc(m)}</div>`;
+    const you = p[2] === "you" ? " you" : "";
+    return `<div class="m"><span class="t">${p[1]}</span>` +
+           `<span class="who${you}">${p[2]}</span>${esc(p[3])}</div>`;
+  }).join("");
+  if (near) chatlog.scrollTop = chatlog.scrollHeight;
+}
+
 async function files() {
   try { setTabs(await (await fetch("/files")).json()); } catch (e) {}
 }
-files(); refresh();
+// A message goes to the board the agent reads between turns, so it lands after the
+// turn in flight rather than interrupting it.
+async function say() {
+  const box = document.getElementById("msg"), text = box.value.trim();
+  if (!text) return;
+  box.value = "";
+  try { await fetch("/say", {method: "POST", body: text}); } catch (e) {}
+  // Show the conversation the message just joined, rather than leaving you on whatever
+  // you were reading with no sign it went anywhere.
+  chat();
+}
+document.querySelector("#say button").onclick = say;
+document.getElementById("msg").addEventListener(
+  "keydown", e => { if (e.key === "Enter") say(); });
+
+files(); refresh(); chat();
 setInterval(refresh, 1500);
 setInterval(files, 10000);
+setInterval(chat, 2000);
 </script></body></html>
 """
 
@@ -401,6 +467,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def do_POST(self):
+        """The one write: a message for the agent. It lands on the board the agent reads
+        between turns, and in the conversation the page shows."""
+        url = urllib.parse.urlparse(self.path)
+        if url.path != "/say":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        text = self.rfile.read(length).decode("utf-8", "replace").strip()
+        if not text:
+            self._send(json.dumps({"sent": False}), "application/json")
+            return
+        ws = workspace(self.campaign)
+        stamp = datetime.now().strftime("%H:%M")
+        try:
+            os.makedirs(ws, exist_ok=True)
+            with open(os.path.join(ws, "ANNOUNCEMENTS.md"), "a") as f:
+                f.write(text.replace("\n", " ") + "\n")
+            with open(os.path.join(ws, "MESSAGES.md"), "a") as f:
+                f.write(f"`{stamp}` **you** {text}\n\n")
+        except OSError as e:
+            self._send(json.dumps({"sent": False, "error": str(e)}), "application/json")
+            return
+        self._send(json.dumps({"sent": True}), "application/json")
+
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(url.query)
@@ -418,6 +509,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(json.dumps([f for f in READABLE
                                    if os.path.isfile(os.path.join(ws, f))]),
                        "application/json")
+        elif url.path == "/messages":
+            # The conversation, not a file tab: served whether or not it exists yet.
+            try:
+                with open(os.path.join(workspace(self.campaign), "MESSAGES.md"),
+                          errors="replace") as f:
+                    self._send(f.read())
+            except OSError:
+                self._send("")
         elif url.path == "/image":
             self._send_image(q.get("name", [""])[0])
         elif url.path == "/file":

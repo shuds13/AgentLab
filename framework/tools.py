@@ -175,10 +175,24 @@ JOBS_LOG = os.path.join(WORKSPACE_DIR, "jobs.jsonl")          # durable record o
 # One plain text file. Anyone (an operator, a Slack bridge) appends lines; every
 # agent reads it and decides what applies to it. No routing, no per-agent state.
 ANNOUNCEMENTS_FILE = os.path.join(WORKSPACE_DIR, "ANNOUNCEMENTS.md")
+# Both sides of the conversation with whoever is watching, in the order they were said.
+# The agent's own messages are written here whether or not a transport is configured, so
+# a lab with no Slack still has somewhere for notify to land.
+MESSAGES_FILE = os.path.join(WORKSPACE_DIR, "MESSAGES.md")
 
 NOTIFY_SCRIPT = os.environ.get("NOTIFY_SCRIPT") or os.path.join(SCRIPT_DIR, "slack_notify.sh")
 _last_success_time = None   # last non-error completion (real progress)
 _problem_since = None       # when the agent flagged a blocking problem (None = none)
+
+
+def record_message(who, msg):
+    """Add one line to the run's conversation. Best-effort: a record nobody can write
+    is not a reason to lose a message or fail a turn."""
+    try:
+        with open(MESSAGES_FILE, "a") as f:
+            f.write(f"`{time.strftime('%H:%M')}` **{who}** {msg.strip()}\n\n")
+    except Exception:
+        pass
 
 
 def _slack_post(msg):
@@ -662,6 +676,7 @@ async def notify(args):
     if blocking and _problem_since is None:
         _problem_since = time.time()
     _slack_post(args["message"])
+    record_message("agent", args["message"])
     note = " (blocking: shutdown grace started)" if blocking else ""
     return {"content": [{"type": "text", "text": "notified" + note}]}
 
@@ -719,6 +734,30 @@ async def goal_met(args):
                          "flight and write the cycle up"}]}
 
 
+END_RUN_DESC = (
+    "Call this when you have been asked to stop, rather than because the goal is met. "
+    "Pass who asked and what they asked for, in a line. The run stops taking new work, "
+    "finishes what is in flight, and gives you a turn to write up what it reached."
+)
+
+_end_requested = None   # what the agent was asked to stop for, or None
+
+
+def end_requested():
+    """What the agent said it was asked to stop for, or None."""
+    return _end_requested
+
+
+@tool("end_run", END_RUN_DESC, {"reason": str})
+async def end_run(args):
+    global _end_requested
+    _end_requested = (args.get("reason") or "").strip() or "(no reason given)"
+    request_stop()
+    return {"content": [{"type": "text", "text":
+                         "recorded; this run is winding down -- collect what is in "
+                         "flight and write the cycle up"}]}
+
+
 CHECK_BACKEND_DESC = (
     "Check backend health when nothing has completed for a long time and you are unsure "
     "whether your jobs are genuinely still queued or the backend is stuck. Returns the "
@@ -768,6 +807,7 @@ def create_server():
     tools.append(notify)
     tools.append(cycle_done)
     tools.append(goal_met)
+    tools.append(end_run)
     if HAS_REMOTE:
         tools.append(check_backend)
     if HAS_TRANSFER:
@@ -786,6 +826,7 @@ def tool_names():
     names.append("notify")
     names.append("cycle_done")
     names.append("goal_met")
+    names.append("end_run")
     if HAS_REMOTE:
         names.append("check_backend")
     if HAS_TRANSFER:

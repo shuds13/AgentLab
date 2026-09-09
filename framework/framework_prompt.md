@@ -57,3 +57,6 @@ You can also end the run yourself. When its goal is met to the standard it was s
 call `goal_met` with what settles it, and the same wind-down follows. A good result is
 not a met goal, and neither is having run out of ideas — write that up instead and let
 the run end on its own.
+
+When someone asks you to stop, call `end_run` with who asked and what for. That is a
+different ending from a met goal, and the run is recorded as the one that happened.
