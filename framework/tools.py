@@ -444,6 +444,54 @@ _WINDDOWN_REFUSAL = ("submit refused: this run is winding down. Collect and log 
                      "already in flight, but do not submit anything new.")
 
 
+# The task states one job's parameters; a batch takes a list of them. Built here rather
+# than asked of the task, so a task written for single submits needs no change.
+_JSON_TYPES = {float: "number", int: "integer", str: "string", bool: "boolean"}
+
+
+def _batch_schema(schema):
+    props = {name: {"type": _JSON_TYPES.get(typ, "string")}
+             for name, typ in (schema or {}).items()}
+    return {"type": "object",
+            "properties": {"jobs": {"type": "array", "minItems": 1,
+                                    "maxItems": BATCH_SIZE,
+                                    "items": {"type": "object", "properties": props}}},
+            "required": ["jobs"]}
+
+
+def _fire_remote(args):
+    """Claim one piece of remote work and start it. Returns {"job_id", "key"}, or
+    {"error"} for work already in flight, claimed elsewhere, or refused by the backend."""
+    global _submit_count
+    key = task.job_key(args)
+    # A fresh-context agent cannot remember what it already fired, so refuse a repeat.
+    for info in _jobs.values():
+        if info["key"] == key and not info["future"].done():
+            return {"error": f"submit refused: a job for {key} is already in flight. "
+                             f"Collect it with get_completed_jobs before re-submitting."}
+    ok, holder = _try_claim(key, stage=ROLE)
+    if not ok:
+        return {"error": f"submit skipped: {key} is already claimed by {holder}. "
+                         f"Pick different work."}
+
+    bucket = task.bucket_for(args) if hasattr(task, "bucket_for") else _default_bucket
+    target = dict(TARGET)
+    target["nranks"] = _SYS["buckets"][bucket].get("num_nodes", 1) * target["ppn"]
+    try:
+        fut = get_executor(bucket).submit(task.remote_fn, args, target)
+    except Exception as e:
+        _release_claim(key)
+        traceback.print_exc(file=sys.stderr)
+        return {"error": f"submit failed: {e}"}
+
+    job_id = next(_job_counter)
+    _submit_count += 1
+    _jobs[job_id] = {"future": fut, "args": args, "key": key, "bucket": bucket}
+    _append_jobs_log({"event": "submit", "job_id": job_id, "key": key, "args": args,
+                      "bucket": bucket, "task_id": getattr(fut, "task_id", None)})
+    return {"job_id": job_id, "key": key}
+
+
 @tool("submit_job", getattr(task, "JOB_DESC", ""), getattr(task, "JOB_SCHEMA", {}))
 async def submit_job(args):
     """Fire one remote job and return immediately with a job_id."""
@@ -460,41 +508,52 @@ async def submit_job(args):
                 f"max_concurrent={MAX_CONCURRENT}). Collect a finished job "
                 f"with get_completed_jobs before submitting more."}], "is_error": True}
 
-    key = task.job_key(args)
-    # A fresh-context agent cannot remember what it already fired, so refuse a repeat.
-    for info in _jobs.values():
-        if info["key"] == key and not info["future"].done():
-            return {"content": [{"type": "text", "text":
-                    f"submit refused: a job for {key} is already in flight. Collect it "
-                    f"with get_completed_jobs before re-submitting."}], "is_error": True}
-    ok, holder = _try_claim(key, stage=ROLE)
-    if not ok:
-        return {"content": [{"type": "text", "text":
-                f"submit skipped: {key} is already claimed by {holder}. Pick different work."}],
-                "is_error": True}
-
-    bucket = task.bucket_for(args) if hasattr(task, "bucket_for") else _default_bucket
-    target = dict(TARGET)
-    target["nranks"] = _SYS["buckets"][bucket].get("num_nodes", 1) * target["ppn"]
-    try:
-        fut = get_executor(bucket).submit(task.remote_fn, args, target)
-    except Exception as e:
-        _release_claim(key)
-        traceback.print_exc(file=sys.stderr)
-        return {"content": [{"type": "text", "text": f"submit failed: {e}"}], "is_error": True}
-
-    job_id = next(_job_counter)
-    _submit_count += 1
-    _jobs[job_id] = {"future": fut, "args": args, "key": key, "bucket": bucket}
-    _append_jobs_log({"event": "submit", "job_id": job_id, "key": key, "args": args,
-                      "bucket": bucket, "task_id": getattr(fut, "task_id", None)})
+    fired = _fire_remote(args)
+    if "error" in fired:
+        return {"content": [{"type": "text", "text": fired["error"]}], "is_error": True}
+    job_id, key = fired["job_id"], fired["key"]
     # The budget left, with the job that was just accepted counted. It changes as the
     # run goes, so it belongs in what a submit answers rather than in a prompt written
     # once at the start -- and it counts this run's submits, not the rows in a record
     # that outlives the run.
     return {"content": [{"type": "text", "text": json.dumps(
-        {"job_id": job_id, "key": key, "bucket": bucket,
+        {"job_id": job_id, "key": key,
          "submits_used": _submit_count, "submits_allowed": MAX_SUBMITS})}]}
+
+
+JOB_BATCH_DESC = (getattr(task, "JOB_DESC", "") +
+                  f"\n\nSubmit {BATCH_SIZE} jobs in one call, as `jobs`: a list of "
+                  f"{BATCH_SIZE} parameter sets, each of the form above. They run at "
+                  f"the same time and are collected together with get_completed_jobs.")
+
+
+@tool("submit_job_batch", JOB_BATCH_DESC,
+      _batch_schema(getattr(task, "JOB_SCHEMA", {})))
+async def submit_job_batch(args):
+    """Fire a whole batch of remote jobs and return immediately with their job_ids."""
+    if _stop_requested:
+        return {"content": [{"type": "text", "text": _WINDDOWN_REFUSAL}], "is_error": True}
+    jobs = args.get("jobs") or []
+    if not isinstance(jobs, list) or not all(isinstance(j, dict) for j in jobs):
+        return {"content": [{"type": "text", "text":
+                "submit refused: `jobs` must be a list of parameter sets"}], "is_error": True}
+    room = MAX_CONCURRENT - _remote_pending_count()
+    left = MAX_SUBMITS - _submit_count
+    wanted = min(BATCH_SIZE, room, left)
+    if wanted <= 0:
+        return {"content": [{"type": "text", "text":
+                f"submit refused: {_remote_pending_count()} job(s) running of "
+                f"{MAX_CONCURRENT}, {max(left, 0)} of {MAX_SUBMITS} submits left. "
+                f"Collect with get_completed_jobs."}], "is_error": True}
+    if len(jobs) != wanted:
+        return {"content": [{"type": "text", "text":
+                f"submit refused: this batch takes {wanted} jobs, got {len(jobs)}"}],
+                "is_error": True}
+    fired = [dict(_fire_remote(j), args=j) for j in jobs]
+    out = {"submitted": [f for f in fired if "error" not in f],
+           "refused": [f for f in fired if "error" in f],
+           "submits_used": _submit_count, "submits_allowed": MAX_SUBMITS}
+    return {"content": [{"type": "text", "text": json.dumps(out)}]}
 
 
 GET_COMPLETED_DESC = (
@@ -570,28 +629,14 @@ def _fire_local(args):
     return job_id
 
 
-# The task states one job's parameters; a batch takes a list of them. Built here rather
-# than asked of the task, so a task written for single submits needs no change.
-_JSON_TYPES = {float: "number", int: "integer", str: "string", bool: "boolean"}
-
-
-def _batch_schema():
-    props = {name: {"type": _JSON_TYPES.get(typ, "string")}
-             for name, typ in getattr(task, "LOCAL_SCHEMA", {}).items()}
-    return {"type": "object",
-            "properties": {"jobs": {"type": "array", "minItems": 1,
-                                    "maxItems": BATCH_SIZE,
-                                    "items": {"type": "object", "properties": props}}},
-            "required": ["jobs"]}
-
-
 BATCH_DESC = (getattr(task, "LOCAL_DESC", "") +
               f"\n\nSubmit {BATCH_SIZE} jobs in one call, as `jobs`: a list of "
               f"{BATCH_SIZE} parameter sets, each of the form above. They run at the "
               f"same time and are collected together with get_local_completed.")
 
 
-@tool("submit_local_batch", BATCH_DESC, _batch_schema())
+@tool("submit_local_batch", BATCH_DESC,
+      _batch_schema(getattr(task, "LOCAL_SCHEMA", {})))
 async def submit_local_batch(args):
     """Fire a whole batch of local jobs and return immediately with their job_ids."""
     if _stop_requested:
@@ -800,7 +845,8 @@ def create_server():
     the matching function -- remote_fn for the remote tools, local_fn for the local."""
     tools = []
     if HAS_REMOTE:
-        tools += [submit_job, get_completed_jobs, release_claim]
+        tools += [submit_job_batch if BATCH_MODE else submit_job,
+                  get_completed_jobs, release_claim]
     if HAS_LOCAL:
         tools += [submit_local_batch if BATCH_MODE else submit_local,
                   get_local_completed]
@@ -819,7 +865,8 @@ def tool_names():
     """Fully-qualified names for ClaudeAgentOptions(allowed_tools=...)."""
     names = []
     if HAS_REMOTE:
-        names += ["submit_job", "get_completed_jobs", "release_claim"]
+        names += ["submit_job_batch" if BATCH_MODE else "submit_job",
+                  "get_completed_jobs", "release_claim"]
     if HAS_LOCAL:
         names += ["submit_local_batch" if BATCH_MODE else "submit_local",
                   "get_local_completed"]
