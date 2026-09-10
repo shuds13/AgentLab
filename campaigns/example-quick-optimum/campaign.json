@@ -1,5 +1,6 @@
 {
   "system": "local",
   "local_max_concurrent": 8,
+  "max_concurrent": 8,
   "batch_mode": true
 }

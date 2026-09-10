@@ -151,12 +151,14 @@ BATCH_MODE = str(os.environ.get("BATCH_MODE",
                                 _cam.get("batch_mode",
                                          _sys_cfg.get("batch_mode", False)))).lower() \
     in ("1", "true", "yes")
-# Jobs a batch submit fires in one call. The capacity by default: a batch that does not
-# fill the machine leaves slots idle for as long as the batch takes.
+# Jobs a batch submit fires in one call. The capacity of whichever backend the run uses,
+# by default: a batch that does not fill it leaves slots idle for as long as the batch
+# takes, and one larger than it is refused.
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE",
                                 _cam.get("batch_size",
                                          _sys_cfg.get("batch_size",
-                                                      LOCAL_MAX_CONCURRENT))))
+                                                      MAX_CONCURRENT if HAS_REMOTE
+                                                      else LOCAL_MAX_CONCURRENT))))
 
 # One Executor per bucket, created lazily and reused. Each distinct user_endpoint_config
 # gets its own block pool on the endpoint, so buckets can run concurrently.
