@@ -43,6 +43,19 @@ os.environ["WORKSPACE_DIR"] = WORKSPACE_DIR
 import critic  # noqa: E402
 import tools  # noqa: E402
 from tools import create_server, shutdown_executor  # noqa: E402
+
+# Optional. Records this run's prompts, turns, tool calls and subagents as Flowcept
+# provenance, read off the message stream the run already reads. Without flowcept
+# installed the run is unchanged.
+#
+# Needs the AI-harness provenance plugins, which are not in ORNL/flowcept as of
+# 2026-09-15 -- install from https://github.com/GueroudjiAmal/flowcept. Subagent
+# capture and system-message filtering need
+# https://github.com/GueroudjiAmal/flowcept/pull/9.
+try:
+    from flowcept.agents.claude_agent_sdk.claude_agent_sdk_plugin import ClaudeAgentTracer  # noqa: E402
+except ImportError:
+    ClaudeAgentTracer = None
 # Campaign files (prompt.md, user prompt) live with the campaign, not the framework.
 LAB_DIR = os.path.abspath(os.environ.get("LAB_DIR", os.path.join(SCRIPT_DIR, "..")))
 CAMPAIGN = os.environ.get("CAMPAIGN", "")
@@ -1003,11 +1016,74 @@ def _note_session(sid):
         _write_meta(session_id=sid, session_cwd=SCRIPT_DIR)
 
 
+_prov = None                # this run's provenance tracer, when flowcept is installed
+
+
+_prov_model = None          # the model to open the provenance session with
+
+
+def _prov_start(model):
+    """Set up provenance capture for this run. Records are appended under
+    $FLOWCEPT_HARNESS_HOME (default ~/.flowcept/harness), one file per session,
+    and read back with `flowcept-harness sessions|show|report`."""
+    global _prov_model
+    if ClaudeAgentTracer is None:
+        return
+    # Flowcept reads these from the environment: the campaign groups its agents'
+    # sessions into one campaign, and every record names the agent that produced it.
+    os.environ.setdefault("FLOWCEPT_HARNESS_CAMPAIGN_ID", CAMPAIGN or RUN_ID)
+    os.environ.setdefault("FLOWCEPT_HARNESS_SOURCE_AGENT_ID", HANDLE)
+    os.environ.setdefault("FLOWCEPT_HARNESS_PROJECT_DIR", CAMPAIGN_DIR)
+    _prov_model = model
+
+
+def _prov_record(message):
+    """Hand one streamed message to the tracer. Capture is an observer of the run and
+    a failure in it must not reach the run, so nothing here propagates."""
+    if _prov is None:
+        return
+    try:
+        _prov.handle(message)
+    except Exception:
+        pass
+
+
+def _prov_turn(prompt):
+    """Open a provenance turn for the prompt about to be sent, creating the session
+    on the first one. The tracer is built with the prompt rather than told about it,
+    because a tracer that has been told anything has already fixed its session id --
+    and the id worth having is the CLI's, which only arrives with the first message.
+    Sharing it means a recorded workflow, the run meta and `claude -r` all name the
+    same session."""
+    global _prov
+    if ClaudeAgentTracer is None:
+        return
+    try:
+        if _prov is None:
+            _prov = ClaudeAgentTracer(model=_prov_model, prompt=prompt)
+        else:
+            _prov.begin_turn(prompt)
+    except Exception as e:
+        print(f"[prov] provenance capture off ({e})", flush=True)
+        _prov = None
+
+
+def _prov_close(error=None):
+    """Close the provenance session, settling any turn or tool call left open."""
+    if _prov is None:
+        return
+    try:
+        _prov.close(error=error)
+    except Exception:
+        pass
+
+
 async def drain_turn(client, turn_num):
     """Print the assistant's output for one turn (until its ResultMessage), and take
     the status pane's model and context figures off the turn's own messages."""
     turn_model, turn_usage = None, None
     async for message in client.receive_response():
+        _prov_record(message)
         if isinstance(message, SystemMessage) and message.subtype == "init":
             # The CLI states the model it resolved at the start of every turn. It is
             # the same name /context reports, and it costs nothing to read.
@@ -1141,6 +1217,7 @@ async def main():
             _last_context["model"] = model
             print(f"Agent started -- {SYSTEM}{ROLE_NOTE} · model {model}", flush=True)
             _write_meta(model=model)
+            _prov_start(model)
             if NOTIFY_START:
                 slack_notify(f"🚀 Agent {HANDLE} started — "
                              f"{CAMPAIGN or 'no campaign'} on {SYSTEM}{ROLE_NOTE} · {model}"
@@ -1248,6 +1325,7 @@ async def main():
                         prompt = _announcements_prompt(fresh, tail=prompt)
                 last_announcements = board
                 submits_before = tools.submit_count()
+                _prov_turn(prompt)
                 await client.query(prompt)
                 await drain_turn(client, turn_num)
                 if answering_critic:
@@ -1374,6 +1452,7 @@ async def main():
         print("Cancelled -- running graceful shutdown.", flush=True)
     finally:
         beat_task.cancel()
+        _prov_close()
         # Its answer is of no use once the run has ended.
         if _context_task is not None and not _context_task.done():
             _context_task.cancel()
