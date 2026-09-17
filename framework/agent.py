@@ -190,6 +190,10 @@ FINALIZE_PROMPT = _prompt("FINALIZE_PROMPT",
 # The session must belong to this user on this machine.
 RESUME_SESSION = (os.environ.get("RESUME_SESSION") or "").strip()
 MAX_TURNS = 500           # backstop against a runaway loop
+# Largest single message the SDK accepts from the CLI, and so the largest tool result
+# the agent can receive. The reader holds a message in memory until it is complete, so
+# the cap is what bounds a stream that never ends. An image arrives around 1.5 MB.
+MAX_MESSAGE_BYTES = int(os.environ.get("MAX_MESSAGE_BYTES", str(8 * 1024 * 1024)))
 MAX_EMPTY_TURNS = 3       # consecutive idle turns (no work proposed) before giving up
 MAX_RUNTIME = int(os.environ["MAX_RUNTIME"]) if os.environ.get("MAX_RUNTIME") else None  # total agent wallclock (s); None = no time limit
 WAIT_TIMEOUT = 1800       # s between "still-alive" logs / backend-health checks during a wait
@@ -1160,6 +1164,7 @@ async def main():
         **({"model": AGENT_MODEL} if AGENT_MODEL else {}),
         **({"settings": _gateway_settings_file()} if GATEWAY_URL else {}),
         agents=subagent_defs(),
+        max_buffer_size=MAX_MESSAGE_BYTES,
         permission_mode="bypassPermissions",
         system_prompt=system_prompt,
         cwd=SCRIPT_DIR,
@@ -1179,7 +1184,7 @@ async def main():
     print("=" * 60, flush=True)
 
     start_time = time.time()
-    stop_reason = "ended (max turns)"
+    stop_reason = "ended (agent stream closed)"
 
     # PID file keyed by SYSTEM+ROLE so kill_agent.sh can target THIS agent when
     # several run at once. Removed on clean exit.
