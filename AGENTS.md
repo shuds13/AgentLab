@@ -130,9 +130,6 @@ it stands:
 | `run.sh` | settings and launch |
 | `method.md` | optional; how the agent works, when the default does not suit |
 
-`campaigns/example-vllm-inference-opt/` has all of these to copy the shape from, and its
-README says more about each.
-
 `docs/campaigns.md` covers what belongs in each file and what breaks when it goes in the
 wrong one, and how to pick a campaign up again for a later run.
 

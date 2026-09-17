@@ -24,12 +24,12 @@ Where a campaign will be run again, the aim is that a later run needs no edit to
 but `user_prompt.md`. The test for anything you write: **will this still be true next
 time it runs?** If not, it belongs in `user_prompt.md` or the workspace.
 
-## Brevity
+## Length
 
-Every one of these files is read by a person as well as an agent, and the campaign files
-are read on every run. A user's ability to maintain and work with a campaign depends on
-this conciseness. Say a thing once, in as few words as carry it, and leave out what the
-reader would do anyway.
+Campaign files are read on every run, so what is in them costs something each time. In
+what you write, say a thing once, in as few words as carry it.
+
+Text the person gave you — a prompt, a specification, a procedure — goes in as it stands.
 
 `user_prompt.md` matters most, often being rewritten each run: keep it as small as expresses
 what the run is for.
@@ -55,6 +55,14 @@ Standing, and reread every run as part of the system prompt.
 It holds the campaign's objective — what the campaign exists to find out, unchanged from
 one run to the next — along with anything else true of every run: what is held fixed so
 results stay comparable, and how the agent should work.
+
+Where the person gave you a prompt, it goes in as they wrote it. What the campaign needs
+beyond it is added alongside, so which is which stays clear.
+
+What you established yourself — how a job runs, what a measurement reproduced, where the
+code and the prior results are — goes in a file of its own that this one names in a line.
+
+A campaign has the sections its own goal needs.
 
 `user_prompt.md` holds this run's aim: which part of that objective this run goes after,
 and when it stops. The objective outlives the run; the aim does not.
