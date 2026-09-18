@@ -224,12 +224,16 @@ PAGE = """<!doctype html>
         border:1px solid #333; vertical-align:middle; margin-right:8px; }
  .bar i { display:block; height:100%%; background:#3d7a3d; }
  /* Clear of the chat panel, whichever of its height and its floor is in force. */
- #newest { position:fixed; right:18px; bottom:calc(max(30vh, 120px) + 14px); display:none;
+ #newest { position:fixed; right:18px;
+           bottom:calc(max(var(--chat-h, 30vh), 120px) + 14px); display:none;
            background:#2d4a2d; color:#fff; border:1px solid #4a7a4a; padding:5px 12px;
            cursor:pointer; font:inherit; }
  /* The conversation with the run: what has been said, and where you say it. One
     section, because an input detached from its transcript reads as a search box. */
- #chat { flex:none; height:30vh; min-height:120px; display:flex; flex-direction:column;
+ /* --chat-h is set when the CHAT bar is dragged; anything sitting above the chat
+    reads it too, so it moves with the divider. */
+ #chat { flex:none; height:var(--chat-h, 30vh); min-height:120px;
+         display:flex; flex-direction:column;
          background:#0b0f14; border-top:2px solid #3a4a5a; }
  #chathead { flex:none; padding:4px 12px; background:#1b2836; color:#cfe0f0;
              border-bottom:1px solid #24313d; letter-spacing:.08em;
@@ -530,12 +534,13 @@ async function say() {
   const bar = document.getElementById("chathead"), chat = document.getElementById("chat");
   const KEY = "watch.chatHeight";
   const clamp = h => Math.max(60, Math.min(window.innerHeight - 120, h));
+  const setH = h => document.documentElement.style.setProperty("--chat-h", h + "px");
   try {
     const saved = parseInt(localStorage.getItem(KEY), 10);
-    if (saved > 0) chat.style.height = clamp(saved) + "px";
+    if (saved > 0) setH(clamp(saved));
   } catch (e) {}
   let from = 0, start = 0;
-  const move = e => { chat.style.height = clamp(start + (from - e.clientY)) + "px"; };
+  const move = e => { setH(clamp(start + (from - e.clientY))); };
   const up = () => {
     document.removeEventListener("mousemove", move);
     document.removeEventListener("mouseup", up);
