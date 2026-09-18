@@ -730,19 +730,46 @@ def _heartbeat(force=True):
 _last_heartbeat = 0.0
 
 
+# A snapshot of a campaign file worth keeping with the run. Bigger than this is data
+# the campaign holds rather than something it told the agent.
+SNAPSHOT_MAX_BYTES = 256 * 1024
+
+
 def _start_run_dir():
     os.makedirs(RUN_DIR, exist_ok=True)
-    for path in (os.path.join(CAMPAIGN_DIR, "prompt.md"), method_path(),
-                 os.path.join(CAMPAIGN_DIR, USER_PROMPT_FILE)):
+    # Every .md the campaign has, so a run is reproducible from what it was given.
+    # The top of the directory only, so a mirrored source tree is not swept in.
+    paths = [os.path.join(CAMPAIGN_DIR, "prompt.md"), method_path(),
+             os.path.join(CAMPAIGN_DIR, USER_PROMPT_FILE)]
+    paths += sorted(glob.glob(os.path.join(CAMPAIGN_DIR, "*.md")))
+    # What the jobs were given to run on: system, resource shapes, target.
+    paths.append(os.path.join(CAMPAIGN_DIR, "campaign.json"))
+    seen = set()
+    for path in paths:
         name = os.path.basename(path)
+        if name in seen:
+            continue
+        seen.add(name)
         try:
+            if os.path.getsize(path) > SNAPSHOT_MAX_BYTES:
+                print(f"[run] not snapshotting {name}: larger than "
+                      f"{SNAPSHOT_MAX_BYTES // 1024} KB", flush=True)
+                continue
             shutil.copy2(path, os.path.join(RUN_DIR, name))
         except Exception as e:
             print(f"[run] could not snapshot {name} (ignored): {e}", flush=True)
     # The budgets this run stops at, recorded so anything reading the run -- a watcher,
     # a later reader -- can say how far through it is without knowing the environment
     # it was launched in.
-    _write_meta(max_submits=tools.MAX_SUBMITS, max_runtime_s=MAX_RUNTIME,
+    # The resource shapes this run had, so anything reading it later can say what a job
+    # was given without the campaign file to hand.
+    _buckets = {name: {"queue": b["user_config"].get("queue", ""),
+                       "num_nodes": b.get("num_nodes"),
+                       "walltime": b["user_config"].get("walltime", ""),
+                       "max_concurrent": b.get("max_concurrent")}
+                for name, b in tools._SYS["buckets"].items()}
+    _write_meta(buckets=_buckets, default_bucket=tools._default_bucket,
+                max_submits=tools.MAX_SUBMITS, max_runtime_s=MAX_RUNTIME,
                 max_turns=MAX_TURNS, critic=CRITIC_LABEL,
                 run_id=RUN_ID, handle=HANDLE, system=SYSTEM, role=ROLE,
                 endpoint=tools.ENDPOINT_ID if tools.HAS_REMOTE else "",

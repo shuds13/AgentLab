@@ -160,6 +160,8 @@ def status(campaign):
         "results": _count_lines(os.path.join(ws, "results.jsonl")),
         "jobs": submits_total, "jobs_run": ran_here,
         "jobs_bucket": submits_bucket,
+        "buckets": meta.get("buckets") or {},
+        "default_bucket": meta.get("default_bucket"),
         "jobs_done": sum(done_run.values()),
         "jobs_remote": submits_run["remote"], "jobs_local": submits_run["local"],
         "done_remote": done_run["remote"], "done_local": done_run["local"],
@@ -331,6 +333,7 @@ function bar(done, total, fmt) {
 
 function renderStatus(s) {
   if (!s.run) { view.textContent = "no run yet"; return; }
+  const shapes = Object.entries(s.buckets || {});
   const rows = [
     ["run", `${s.handle || "\u2014"} \u00b7 ${s.run}`],
     ["state", s.status === "running"
@@ -340,13 +343,21 @@ function renderStatus(s) {
         ? `${s.phase} \u00b7 ${hms(s.phase_age_s)}` : "\u2014"],
     // Where the work ran, next to the counts of it. A campaign whose task defines both
     // kinds of job splits the counts, since they did not run in the same place.
-    ["jobs run on", s.endpoint
+    ["jobs run on", (s.endpoint
         ? `${s.system || "?"} (${s.endpoint})` + (s.has_local ? ", this machine" : "")
-        : "this machine"],
+        : "this machine")
+        // The shapes a job can be given, when there is a choice of them.
+        + (shapes.length > 1
+           ? `<br><span style="color:#777">` + shapes.map(([k, b]) =>
+               `${k}: ${b.num_nodes} node${b.num_nodes === 1 ? "" : "s"}` +
+               (b.queue ? ` on ${b.queue}` : "") + (b.walltime ? `, ${b.walltime}` : "") +
+               (b.max_concurrent ? `, max ${b.max_concurrent}` : "") +
+               (k === s.default_bucket ? " (default)" : "")).join("<br>") + `</span>` : "")],
     ["jobs submitted", bar(s.jobs_run, s.max_submits)
-        + (Object.keys(s.jobs_bucket || {}).length > 1
-           ? ` <span style="color:#777">(` + Object.entries(s.jobs_bucket)
-               .map(([k, v]) => `${v} ${k}`).join(", ") + `)</span>` : "")
+        // Every configured shape, so one that has taken no work yet still shows as zero.
+        + (shapes.length > 1
+           ? ` <span style="color:#777">(` + shapes.map(([k]) =>
+               `${(s.jobs_bucket || {})[k] || 0} ${k}`).join(", ") + `)</span>` : "")
         + (s.endpoint && s.has_local
            ? ` <span style="color:#777">(${s.jobs_remote} on ${s.system || "endpoint"}, `
              + `${s.jobs_local} here)</span>` : "")],
