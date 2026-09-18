@@ -224,7 +224,8 @@ PAGE = """<!doctype html>
  #chat { flex:none; height:30vh; min-height:120px; display:flex; flex-direction:column;
          background:#0b0f14; border-top:2px solid #3a4a5a; }
  #chathead { flex:none; padding:4px 12px; background:#1b2836; color:#cfe0f0;
-             border-bottom:1px solid #24313d; letter-spacing:.08em; }
+             border-bottom:1px solid #24313d; letter-spacing:.08em;
+             cursor:ns-resize; user-select:none; }
  #chatlog { flex:1; overflow:auto; padding:8px 12px; }
  #chatlog .m { margin:0 0 7px; }
  #chatlog .t { color:#666; margin-right:8px; }
@@ -503,6 +504,33 @@ async function say() {
   // you were reading with no sign it went anywhere.
   chat();
 }
+// Drag the CHAT bar to resize. #pane is flex:1, so whatever the chat gives up it takes.
+// The height is kept in localStorage, so it survives a reload and the next viewer.
+(function () {
+  const bar = document.getElementById("chathead"), chat = document.getElementById("chat");
+  const KEY = "watch.chatHeight";
+  const clamp = h => Math.max(60, Math.min(window.innerHeight - 120, h));
+  try {
+    const saved = parseInt(localStorage.getItem(KEY), 10);
+    if (saved > 0) chat.style.height = clamp(saved) + "px";
+  } catch (e) {}
+  let from = 0, start = 0;
+  const move = e => { chat.style.height = clamp(start + (from - e.clientY)) + "px"; };
+  const up = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+    document.body.style.userSelect = "";
+    try { localStorage.setItem(KEY, chat.offsetHeight); } catch (e) {}
+  };
+  bar.addEventListener("mousedown", e => {
+    from = e.clientY; start = chat.offsetHeight;
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+    e.preventDefault();
+  });
+})();
+
 document.querySelector("#say button").onclick = say;
 document.getElementById("msg").addEventListener(
   "keydown", e => { if (e.key === "Enter") say(); });
