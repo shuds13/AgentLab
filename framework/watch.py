@@ -289,6 +289,7 @@ function setTabs(files) {
       // of a rendered record does not follow you to the next tab.
       tab = n; offset = 0; logText = "";
       view.innerHTML = ""; view.className = ""; view.dataset.body = "";
+      delete view.dataset.statusSig;
       pane.scrollTop = 0; newest.style.display = "none";
       setTabs(files); refresh();
     };
@@ -365,10 +366,24 @@ function renderStatus(s) {
             ["jobs submitted", String(s.jobs)],
             ["results recorded", String(s.results)],
             ["critic reviews", String(s.reviews || 0)]);
-  view.innerHTML = "<table>" + rows.map(
-    r => r.length === 1
-      ? `<tr class="sec"><td colspan="2">${r[0]}</td></tr>`
-      : `<tr><td class="k">${r[0]}</td><td>${r[1]}</td></tr>`).join("") + "</table>";
+  // Rewrite only the cells whose value moved. Rebuilding the table every refresh
+  // replaces the nodes a selection sits in, and the ticking rows guarantee a rebuild
+  // every time -- so a value you are trying to copy cannot be held long enough.
+  const sig = rows.map(r => r.length === 1 ? "sec:" + r[0] : r[0]).join("|");
+  if (view.dataset.statusSig !== sig) {
+    view.dataset.statusSig = sig;
+    view.innerHTML = "<table>" + rows.map(
+      r => r.length === 1
+        ? `<tr class="sec"><td colspan="2">${r[0]}</td></tr>`
+        : `<tr><td class="k">${r[0]}</td><td class="v"></td></tr>`).join("") + "</table>";
+  }
+  const cells = view.querySelectorAll("td.v");
+  let i = 0;
+  for (const r of rows) {
+    if (r.length === 1) continue;
+    const td = cells[i++];
+    if (td && td.innerHTML !== r[1]) td.innerHTML = r[1];
+  }
 }
 
 const esc = t => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -384,6 +399,21 @@ function withFigures(text) {
         `<img src="/image?name=${encodeURIComponent(src)}" alt="${alt}" ` +
         `style="max-width:100%%;max-height:75vh;display:block;margin:8px 0;` +
         `border:1px solid #333;background:#fff;cursor:zoom-in"></a>`);
+}
+
+// A redraw replaces the nodes a selection is anchored in, so selecting text on a page
+// that refreshes every second is impossible. Hold the redraw while the pointer is down
+// and while anything is selected; it resumes when the selection is dropped.
+let dragging = false;
+document.addEventListener("mousedown", e => { if (pane.contains(e.target)) dragging = true; });
+document.addEventListener("mouseup", () => { dragging = false; });
+
+function selecting() {
+  if (dragging) return true;
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+  const n = sel.getRangeAt(0).commonAncestorContainer;
+  return pane.contains(n) || document.getElementById("chatlog").contains(n);
 }
 
 async function refresh() {
@@ -404,6 +434,7 @@ async function refresh() {
       if (stick) { pane.scrollTop = pane.scrollHeight; newest.style.display = "none"; }
       else if (j.text) newest.style.display = "block";
     } else {
+      if (selecting()) return;
       // The board is a list of lines, not a document: rendered as Markdown, consecutive
       // messages run together into one paragraph.
       const md = tab.endsWith(".md") && !rawMode && tab !== "ANNOUNCEMENTS.md";
@@ -428,6 +459,7 @@ const chatlog = document.getElementById("chatlog");
 let chatText = "";
 
 async function chat() {
+  if (selecting()) return;
   let body;
   try { body = await (await fetch("/messages")).text(); }
   catch (e) { return; }

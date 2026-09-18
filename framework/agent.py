@@ -635,9 +635,18 @@ _PHASES = {
 _DELEGATES = {}
 
 
+_phase_text = None          # what the phase file currently says
+
+
 def _set_phase(text):
     """What the run is doing right now, for anything watching it. A turn can be minutes
-    of silence, and "thinking" and "waiting for jobs" look identical from outside."""
+    of silence, and "thinking" and "waiting for jobs" look identical from outside.
+
+    An unchanged phase is left alone, so its timestamp stays the age of the phase."""
+    global _phase_text
+    if text == _phase_text:
+        return
+    _phase_text = text
     try:
         tmp = os.path.join(RUN_DIR, "phase.tmp")
         with open(tmp, "w") as f:
