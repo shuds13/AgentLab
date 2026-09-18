@@ -441,8 +441,9 @@ def shutdown_executor():
     if _sa_executor is not None:
         try:
             # Do not wait: a local job can run for hours, and blocking here would stop
-            # the rest of shutdown from happening.
-            _sa_executor.shutdown(wait=False)
+            # the rest of shutdown from happening. cancel_futures drops the queued work
+            # that has not started; a job already running is left to the exit below.
+            _sa_executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass
         _sa_executor = None

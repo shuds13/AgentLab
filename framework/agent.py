@@ -1205,19 +1205,28 @@ async def main():
         f.write(str(os.getpid()))
     _start_run_dir()
 
-    # SIGTERM (plain `kill`) is not caught by default, so `finally` would be skipped
-    # and no finish ping fired. Cancel the main task instead so shutdown runs. SIGINT
-    # (kill -INT / Ctrl-C) already unwinds via KeyboardInterrupt.
+    # Neither signal can be left to the default. SIGTERM (plain `kill`) is not caught,
+    # so `finally` would be skipped and no finish ping fired. SIGINT (Ctrl-C) raises
+    # KeyboardInterrupt in the main thread, which cannot surface while the loop is
+    # awaiting a thread-pool call -- most of a run -- so a press appears to do nothing.
+    # Cancelling the main task works from either, and a repeat is ignored so a second
+    # press during shutdown cannot tear down the teardown.
     main_task = asyncio.current_task()
-    def _on_sigterm():
-        nonlocal stop_reason
-        stop_reason = "signal (SIGTERM)"
-        print("SIGTERM received -- shutting down gracefully.", flush=True)
+    stopping_now = False
+    def _on_signal(name):
+        nonlocal stop_reason, stopping_now
+        if stopping_now:
+            print(f"{name} received -- already shutting down.", flush=True)
+            return
+        stopping_now = True
+        stop_reason = f"signal ({name})"
+        print(f"{name} received -- shutting down gracefully.", flush=True)
         main_task.cancel()
-    try:
-        loop.add_signal_handler(signal.SIGTERM, _on_sigterm)
-    except (NotImplementedError, RuntimeError):
-        pass
+    for _sig, _name in ((signal.SIGTERM, "SIGTERM"), (signal.SIGINT, "SIGINT")):
+        try:
+            loop.add_signal_handler(_sig, _on_signal, _name)
+        except (NotImplementedError, RuntimeError):
+            pass
 
     beat_task = asyncio.create_task(_heartbeat_loop())
 
@@ -1492,6 +1501,12 @@ async def main():
         shutdown_executor()
         print("Executor shut down.", flush=True)
         _stop_watcher()
+        # Everything this run had to record is written by now. A running local job holds
+        # a non-daemon pool thread, which the interpreter would join on the way out.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        sys.stdout, sys.stderr = sys.__stdout__, sys.__stderr__
+        os._exit(0)
 
 
 if __name__ == "__main__":
