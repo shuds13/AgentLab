@@ -68,6 +68,7 @@ collects what is in flight, writes up, and exits.
 | `MAX_MESSAGE_BYTES` | 8388608 | largest single message the agent SDK accepts from the CLI, and so the largest tool result the agent can receive. A result over it ends the run |
 | `LOCAL_JOB_TIMEOUT` | 14400 | seconds to wait on one local job, where a task defines one |
 | `MAX_CONCURRENT` | `max_concurrent` in campaign.json, else the system file, else 1 | remote jobs in flight at once |
+| — | `max_concurrent` on a bucket in campaign.json | that bucket's own limit, under the run-wide one. Use it where one shape is costlier than another |
 | `LOCAL_MAX_CONCURRENT` | `local_max_concurrent` in campaign.json, else the system file, else 1 | local jobs at once; one by default, since a local job is assumed to use the whole machine |
 
 Both follow the same order — environment, campaign, system, default. The system file

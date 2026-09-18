@@ -1010,10 +1010,15 @@ def preflight():
             shown = ", ".join(f"{k}={v}" for k, v in sorted(res.items())
                               if v != "" and v is not None
                               and k not in ("init_blocks", "min_blocks"))
+            if b.get("max_concurrent"):
+                shown += f", max_concurrent={b['max_concurrent']}"
             label = f"resources[{name}]" if len(buckets) > 1 else "resources"
             marker = "  (default)" if name == tools._default_bucket and len(buckets) > 1 else ""
             print(f"{label}:    {shown}{marker}", flush=True)
-        print(f"job timeout:  {tools.TARGET.get('timeout', '(unset)')}s", flush=True)
+        # Only when the campaign sets one. A task is free to size its own from the
+        # bucket's walltime instead, and a line saying "(unset)" reads like a fault.
+        if tools.TARGET.get("timeout"):
+            print(f"job timeout:  {tools.TARGET['timeout']}s", flush=True)
 
 
 _session_id = None          # this run's Claude session, for reopening it later

@@ -76,6 +76,8 @@ def _submits(path, run_id):
     total = 0
     this_run = {"remote": 0, "local": 0}
     done = {"remote": 0, "local": 0}
+    # Per bucket, for a campaign whose jobs come in more than one resource shape.
+    buckets = {}
     try:
         with open(path, errors="replace") as f:
             for line in f:
@@ -95,9 +97,12 @@ def _submits(path, run_id):
                     continue
                 total += 1
                 this_run[where] += mine
+                b = row.get("bucket")
+                if mine and where == "remote" and b:
+                    buckets[b] = buckets.get(b, 0) + 1
     except OSError:
         pass
-    return total, this_run, done
+    return total, this_run, done, buckets
 
 
 def status(campaign):
@@ -119,8 +124,8 @@ def status(campaign):
                 age = int(time.time() - float(f.read().strip()))
         except Exception:
             age = None
-    submits_total, submits_run, done_run = _submits(os.path.join(ws, "jobs.jsonl"),
-                                                    meta.get("run_id"))
+    submits_total, submits_run, done_run, submits_bucket = _submits(
+        os.path.join(ws, "jobs.jsonl"), meta.get("run_id"))
     ran_here = sum(submits_run.values())
     # How long the run took, not how long ago it began: once it has ended, the clock
     # stops where it stopped.
@@ -154,6 +159,7 @@ def status(campaign):
         "phase": phase, "phase_age_s": phase_age,
         "results": _count_lines(os.path.join(ws, "results.jsonl")),
         "jobs": submits_total, "jobs_run": ran_here,
+        "jobs_bucket": submits_bucket,
         "jobs_done": sum(done_run.values()),
         "jobs_remote": submits_run["remote"], "jobs_local": submits_run["local"],
         "done_remote": done_run["remote"], "done_local": done_run["local"],
@@ -338,6 +344,9 @@ function renderStatus(s) {
         ? `${s.system || "?"} (${s.endpoint})` + (s.has_local ? ", this machine" : "")
         : "this machine"],
     ["jobs submitted", bar(s.jobs_run, s.max_submits)
+        + (Object.keys(s.jobs_bucket || {}).length > 1
+           ? ` <span style="color:#777">(` + Object.entries(s.jobs_bucket)
+               .map(([k, v]) => `${v} ${k}`).join(", ") + `)</span>` : "")
         + (s.endpoint && s.has_local
            ? ` <span style="color:#777">(${s.jobs_remote} on ${s.system || "endpoint"}, `
              + `${s.jobs_local} here)</span>` : "")],

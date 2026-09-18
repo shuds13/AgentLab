@@ -115,14 +115,28 @@ MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT",
                                              _sys_cfg.get("max_concurrent", 1))))
 
 # Named resource shapes on one system (e.g. a small quick queue and a large long one).
-# A task may route a job to one; otherwise the default is used.
+# A task routes a job to one with bucket_for(args); otherwise the default is used.
+#
+# `resources` in campaign.json is one shape, and is all a campaign needs where its jobs
+# are all the same size. A campaign whose jobs differ instead gives `buckets`: a name to
+# a shape, each filling in from `resources` for what it does not say, and the first named
+# is the default. Each bucket gets its own executor and its own block pool on the endpoint.
 _bucket_defaults = dict(_sys_cfg.get("bucket_defaults", {}))
 _bucket_defaults.update(_cam.get("resources", {}))    # campaign: queue, walltime, nodes
 _bucket_defaults.update(_usr.get("resources", {}))    # user: anything they must override
 _bucket_defaults["account"] = _usr.get("account", "")
-_SYS = {"buckets": {"default": {"num_nodes": _bucket_defaults.get("num_nodes", 1),
-                                "user_config": _bucket_defaults}}}
-_default_bucket = "default"
+
+_cam_buckets = _cam.get("buckets") or {"default": {}}
+_SYS = {"buckets": {}}
+for _name, _over in _cam_buckets.items():
+    _cfg = dict(_bucket_defaults)
+    _cfg.update(_over or {})
+    # A bucket's own cap on jobs in flight. Popped out: user_config goes to the endpoint
+    # as the batch system's configuration and this is not one of its settings.
+    _cap = _cfg.pop("max_concurrent", None)
+    _SYS["buckets"][_name] = {"num_nodes": _cfg.get("num_nodes", 1), "user_config": _cfg,
+                              "max_concurrent": int(_cap) if _cap else None}
+_default_bucket = next(iter(_SYS["buckets"]))
 
 # TARGET is handed to the task's remote_fn. Everything the remote side needs must be
 # in here: the function is shipped source-only and cannot read this module.
@@ -354,8 +368,14 @@ def local_submit_count():
     return _local_submit_count
 
 
-def _remote_pending_count():
-    return sum(1 for j in _jobs.values() if not j["future"].done())
+def _remote_pending_count(bucket=None):
+    return sum(1 for j in _jobs.values() if not j["future"].done()
+               and (bucket is None or j["bucket"] == bucket))
+
+
+def _bucket_of(args):
+    """Which bucket this job would go to, before it is fired."""
+    return task.bucket_for(args) if hasattr(task, "bucket_for") else _default_bucket
 
 
 def _local_pending_count():
@@ -485,8 +505,16 @@ def _fire_remote(args):
                          f"Pick different work."}
 
     bucket = task.bucket_for(args) if hasattr(task, "bucket_for") else _default_bucket
+    if bucket not in _SYS["buckets"]:
+        return {"error": f"bucket {bucket!r} is not one of "
+                         f"{sorted(_SYS['buckets'])} -- check bucket_for in task.py."}
     target = dict(TARGET)
-    target["nranks"] = _SYS["buckets"][bucket].get("num_nodes", 1) * target["ppn"]
+    _b = _SYS["buckets"][bucket]
+    target["nranks"] = _b.get("num_nodes", 1) * target["ppn"]
+    # The shape the job actually got, so it can size itself to the allocation it is in.
+    target["bucket"] = bucket
+    target["num_nodes"] = _b.get("num_nodes", 1)
+    target["walltime"] = _b.get("user_config", {}).get("walltime", "")
     try:
         fut = get_executor(bucket).submit(task.remote_fn, args, target)
     except Exception as e:
@@ -517,6 +545,14 @@ async def submit_job(args):
                 f"submit refused: at capacity ({_remote_pending_count()} running/queued, "
                 f"max_concurrent={MAX_CONCURRENT}). Collect a finished job "
                 f"with get_completed_jobs before submitting more."}], "is_error": True}
+    _b = _bucket_of(args)
+    _cap = _SYS["buckets"].get(_b, {}).get("max_concurrent")
+    if _cap and _remote_pending_count(_b) >= _cap:
+        return {"content": [{"type": "text", "text":
+                f"submit refused: bucket {_b!r} is at capacity "
+                f"({_remote_pending_count(_b)} running/queued, max_concurrent={_cap}). "
+                f"Collect one of its jobs, or submit work that routes elsewhere."}],
+                "is_error": True}
 
     fired = _fire_remote(args)
     if "error" in fired:
