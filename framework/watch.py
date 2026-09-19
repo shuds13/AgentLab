@@ -133,6 +133,61 @@ def _submits(path, run_id):
     return total, this_run, done, buckets
 
 
+def _phase(run_dir):
+    """What the run said it was doing, and how long ago it said so."""
+    try:
+        with open(os.path.join(run_dir, "phase")) as f:
+            stamp, phase = f.read().split("\n", 1)
+            return phase.strip(), int(time.time() - float(stamp))
+    except Exception:
+        return None, None
+
+
+def _elapsed(meta):
+    """How long the run took, not how long ago it began: once it has ended, the clock
+    stops where it stopped."""
+    started, ended = meta.get("started_at"), meta.get("ended_at")
+    if not started:
+        return None
+    try:
+        end = datetime.fromisoformat(ended).timestamp() if ended else time.time()
+        return int(end - datetime.fromisoformat(started).timestamp())
+    except Exception:
+        return None
+
+
+def lab_summary(campaign):
+    """One row of the lab page: enough to tell whether to go in.
+
+    Nothing here grows with the campaign's history. A lab accumulates campaigns and
+    each of those accumulates runs, so this reads the newest run's own small files and
+    leaves the counts -- which mean reading every job and result ever recorded -- to
+    the campaign's own page, where there is one campaign to pay for."""
+    run_dir = newest_run(campaign)
+    if not run_dir:
+        return {"campaign": campaign, "run": None}
+    try:
+        with open(os.path.join(run_dir, "meta.json")) as f:
+            meta = json.load(f)
+    except Exception:
+        return {"campaign": campaign, "run": None}
+    age = _beat_age(run_dir)
+    phase, phase_age = _phase(run_dir)
+    return {
+        "campaign": campaign, "run": meta.get("run_id"),
+        "handle": meta.get("handle"), "status": meta.get("status"),
+        "stop_reason": meta.get("stop_reason"), "model": meta.get("model"),
+        "system": meta.get("system"), "endpoint": meta.get("endpoint"),
+        "started_at": meta.get("started_at"), "ended_at": meta.get("ended_at"),
+        "elapsed_s": _elapsed(meta),
+        "heartbeat_age_s": None if age is None else int(age),
+        # Liveness is the heartbeat being recent, not the run saying it is running:
+        # a run killed outright never gets to write down that it stopped.
+        "live": age is not None and age <= AGENT_ALIVE_WITHIN,
+        "phase": phase, "phase_age_s": phase_age,
+    }
+
+
 def status(campaign):
     """Where this run has got to, in terms any campaign has: work done against the
     budgets it stops at, and whether it is still going."""
@@ -155,23 +210,9 @@ def status(campaign):
     submits_total, submits_run, done_run, submits_bucket = _submits(
         os.path.join(ws, "jobs.jsonl"), meta.get("run_id"))
     ran_here = sum(submits_run.values())
-    # How long the run took, not how long ago it began: once it has ended, the clock
-    # stops where it stopped.
-    phase, phase_age = None, None
-    try:
-        with open(os.path.join(run_dir, "phase")) as f:
-            stamp, phase = f.read().split("\n", 1)
-            phase, phase_age = phase.strip(), int(time.time() - float(stamp))
-    except Exception:
-        pass
-    started, ended = meta.get("started_at"), meta.get("ended_at")
-    elapsed = None
-    if started:
-        try:
-            end = datetime.fromisoformat(ended).timestamp() if ended else time.time()
-            elapsed = int(end - datetime.fromisoformat(started).timestamp())
-        except Exception:
-            elapsed = None
+    phase, phase_age = _phase(run_dir)
+    started = meta.get("started_at")
+    elapsed = _elapsed(meta)
     return {
         "run": meta.get("run_id"), "handle": meta.get("handle"),
         "campaign": campaign, "status": meta.get("status"),
@@ -270,6 +311,30 @@ PAGE = """<!doctype html>
                  font-weight:bold; border:1px solid #3a4a5a; padding:1px 4px;
                  cursor:pointer; }
  header select:hover { border-color:#6a8aaa; }
+ /* The lab's name is the way back up to it, from inside a campaign. */
+ header b.home { cursor:pointer; }
+ header b.home:hover { color:#9cc4e8; }
+ header b.here { cursor:default; }
+ /* The lab: every campaign it has, and which of them is doing something. A row is the
+    way in, so the whole row answers to the pointer rather than a link inside it. */
+ #lab { display:none; padding:12px; }
+ #lab table { width:100%%; margin:0; }
+ #lab th { text-align:left; color:#6f8296; font-weight:normal;
+           padding:0 18px 5px 0; border-bottom:1px solid #2b3946; }
+ #lab td { padding:7px 18px 7px 0; border-bottom:1px solid #1e1e1e; }
+ /* A name and a duration read as one thing; broken over two lines they do not. The
+    free text -- what stopped it, what it is doing -- is what gives way instead. */
+ #lab th, #lab td { white-space:nowrap; }
+ #lab .state, #lab .doing { white-space:normal; }
+ #lab tr.row { cursor:pointer; }
+ #lab tr.row:hover td { background:#1a2430; }
+ #lab .name { color:#fff; }
+ #lab .dot { display:inline-block; width:7px; height:7px; border-radius:50%%;
+             background:#3d7a3d; margin-right:8px; vertical-align:middle; }
+ #lab .dot.off { background:#3a3a3a; }
+ #lab .on { color:#7aa87a; }
+ #lab .quiet { color:#888; }
+ #lab .none { color:#666; padding:12px 0; }
  #tabs { display:flex; gap:4px; padding:6px 12px; background:#161616;
          border-bottom:1px solid #333; flex-wrap:wrap; flex:none; }
  #tabs button { background:#222; color:#bbb; border:1px solid #333; padding:3px 10px;
@@ -330,11 +395,11 @@ PAGE = """<!doctype html>
                margin-left:8px; cursor:pointer; font:inherit; font-size:11px; }
  button.copy:hover { color:#fff; }
 </style></head><body>
-<header><b>AgentLab</b><span class="sep">/</span>\
+<header><b id="home">AgentLab</b><span class="sep" id="sep">/</span>\
 <select id="camp"><option>%(campaign)s</option></select>\
 <span id="head">connecting\u2026</span></header>
 <div id="tabs"></div>
-<div id="pane"><pre id="view">loading\u2026</pre></div>
+<div id="pane"><pre id="view">loading\u2026</pre><div id="lab"></div></div>
 <button id="newest">\u2193 newest</button>
 <div id="chat">
   <div id="chathead">CHAT</div>
@@ -350,6 +415,9 @@ let tab = "status", offset = 0, logText = "", rawMode = false;
 const HOME = %(campaign_json)s;
 let campaign = HOME;
 const url = p => p + (p.includes("?") ? "&" : "?") + "c=" + encodeURIComponent(campaign);
+// Two places to be: the lab, which lists the campaigns it has, and one campaign's own
+// page. The address bar says which, so a reload comes back to where you were.
+let scope = %(scope_json)s;
 const view = document.getElementById("view"), pane = document.getElementById("pane");
 const newest = document.getElementById("newest");
 
@@ -528,13 +596,15 @@ function selecting() {
 }
 
 async function refresh() {
-  // The campaign this pass is about. A reply that arrives after the page has been
-  // switched belongs to the campaign that asked for it, not the one now showing, so
-  // it is dropped rather than drawn.
+  if (scope === "lab") return labRefresh();
+  // The campaign this pass is about. A reply that arrives after the page has moved on
+  // belongs to the campaign that asked for it, not to where you are now, so it is
+  // dropped rather than drawn.
   const mine = campaign;
+  const here = () => mine === campaign && scope === "campaign";
   try {
     const s = await (await fetch(url("/status"))).json();
-    if (mine !== campaign) return;
+    if (!here()) return;
     document.getElementById("head").textContent = s.run
       ? (s.status === "running" ? "running \u00b7 " : s.status + " \u00b7 ") + (s.handle || s.run)
       : "no run yet";
@@ -544,7 +614,7 @@ async function refresh() {
       const stick = atBottom();
       const r = await fetch(url(`/log?from=${offset}`));
       const j = await r.json();
-      if (mine !== campaign) return;
+      if (!here()) return;
       if (j.reset) { logText = ""; offset = 0; }      // a new run: start the pane again
       if (j.text) { logText += j.text; view.textContent = logText; }
       offset = j.offset;
@@ -557,7 +627,7 @@ async function refresh() {
       const md = tab.endsWith(".md") && !rawMode && tab !== "ANNOUNCEMENTS.md";
       const body = await (await fetch(url(
         "/file?name=" + encodeURIComponent(tab) + (md ? "" : "&raw=1")))).text();
-      if (mine !== campaign) return;
+      if (!here()) return;
       if (body !== view.dataset.body) {                // keep where you were reading
         const at = pane.scrollTop;
         view.dataset.body = body;
@@ -577,12 +647,12 @@ const chatlog = document.getElementById("chatlog");
 let chatText = "";
 
 async function chat() {
-  if (selecting()) return;
+  if (scope === "lab" || selecting()) return;
   const mine = campaign;
   let body;
   try { body = await (await fetch(url("/messages"))).text(); }
   catch (e) { return; }
-  if (mine !== campaign) return;
+  if (mine !== campaign || scope !== "campaign") return;
   if (body === chatText) return;
   chatText = body;
   const msgs = body.split(/\\n\\s*\\n/).map(m => m.trim()).filter(Boolean);
@@ -610,10 +680,11 @@ document.addEventListener("click", e => {
 });
 
 async function files() {
+  if (scope === "lab") return;
   const mine = campaign;
   try {
     const list = await (await fetch(url("/files"))).json();
-    if (mine === campaign) setTabs(list);
+    if (mine === campaign && scope === "campaign") setTabs(list);
   } catch (e) {}
 }
 // A message goes to the board the agent reads between turns, so it lands after the
@@ -655,15 +726,113 @@ async function say() {
   });
 })();
 
-// One watcher serves every campaign in the lab, so switching is a change of what the
-// page asks for rather than another process on another port.
-const camp = document.getElementById("camp");
+// One watcher serves the whole lab, so moving between the lab and a campaign, or
+// between campaigns, is a change of what the page asks for rather than another
+// process on another port.
+const camp = document.getElementById("camp"), labPane = document.getElementById("lab");
 
-// Where a message would land, said next to the box you type it in: the chat follows
-// the campaign, and a line meant for one agent should not reach another unnoticed.
-function showCampaign() {
-  document.title = campaign;
-  document.getElementById("chathead").textContent = "CHAT · " + campaign;
+// Paint the frame for where we are. The lab has no file tabs and no chat: there is no
+// one agent to read them for. The chat bar names the campaign it would write to, so a
+// line meant for one agent cannot reach another unnoticed.
+function showScope() {
+  const lab = scope === "lab";
+  labPane.style.display = lab ? "block" : "none";
+  view.style.display = lab ? "none" : "";
+  document.getElementById("tabs").style.display = lab ? "none" : "";
+  document.getElementById("chat").style.display = lab ? "none" : "";
+  camp.style.display = lab ? "none" : "";
+  document.getElementById("sep").style.display = lab ? "none" : "";
+  document.getElementById("home").className = lab ? "here" : "home";
+  if (lab) newest.style.display = "none";
+  document.title = lab ? "AgentLab" : campaign;
+  document.getElementById("chathead").textContent = "CHAT \u00b7 " + campaign;
+}
+
+// Nothing carries over between places: the log, the file being read and the
+// conversation all belong to the campaign that was showing.
+function resetPane() {
+  tab = "status"; offset = 0; logText = ""; chatText = "";
+  view.innerHTML = ""; view.className = ""; view.dataset.body = "";
+  delete view.dataset.statusSig;
+  const t = document.getElementById("tabs");
+  t.dataset.key = ""; t.innerHTML = "";    // else the last campaign's tabs flash first
+  labPane.dataset.key = "";
+  pane.scrollTop = 0; newest.style.display = "none";
+  chatlog.className = "none"; chatlog.textContent = "no messages yet";
+  document.getElementById("head").textContent = "connecting\u2026";
+}
+
+function enterCampaign(name) {
+  campaign = name; scope = "campaign"; camp.value = name;
+  history.replaceState(null, "", "?c=" + encodeURIComponent(name));
+  resetPane(); showScope();
+  files(); refresh(); chat();
+}
+
+function goLab() {
+  scope = "lab";
+  history.replaceState(null, "", "?lab");
+  resetPane(); showScope();
+  refresh();
+}
+
+// A date to glance at, not to read: the year is today's and the seconds do not matter.
+const when = t => {
+  const m = String(t || "").match(/^(\\d{4})-(\\d\\d)-(\\d\\d)T(\\d\\d:\\d\\d)/);
+  return m ? `${m[2]}-${m[3]} ${m[4]}` : "\u2014";
+};
+
+function renderLab(rows) {
+  if (!rows.length) {
+    labPane.innerHTML = `<div class="none">no campaigns have run yet</div>`;
+    labPane.dataset.key = "";
+    return;
+  }
+  // Same reason the status table is built once and its cells rewritten: a table
+  // rebuilt every second cannot hold a selection, and these rows tick.
+  const key = rows.map(r => r.campaign).join("|");
+  if (labPane.dataset.key !== key) {
+    labPane.dataset.key = key;
+    labPane.innerHTML = "<table><tr><th>campaign</th><th>state</th><th>doing</th>" +
+      "<th>run</th><th>took</th><th>last active</th></tr>" +
+      rows.map(r => `<tr class="row" data-c="${esc(r.campaign)}">` +
+        `<td class="name"></td><td class="state"></td><td class="doing"></td>` +
+        `<td class="run"></td><td class="took"></td><td class="last"></td></tr>`
+      ).join("") + "</table>";
+    for (const tr of labPane.querySelectorAll("tr.row"))
+      tr.onclick = () => enterCampaign(tr.dataset.c);
+  }
+  const trs = labPane.querySelectorAll("tr.row");
+  rows.forEach((r, i) => {
+    const set = (sel, h) => {
+      const td = trs[i].querySelector(sel);
+      if (td && td.innerHTML !== h) td.innerHTML = h;
+    };
+    set(".name", `<span class="dot${r.live ? "" : " off"}"></span>${esc(r.campaign)}`);
+    set(".state", !r.run ? `<span class="quiet">never run</span>`
+        : r.live ? `<span class="on">running</span>`
+        : `<span class="quiet">${esc(r.status || "stopped")}` +
+          (r.stop_reason ? " \u00b7 " + esc(r.stop_reason) : "") + `</span>`);
+    set(".doing", r.live && r.phase
+        ? `${esc(r.phase)} <span class="quiet">\u00b7 ${hms(r.phase_age_s)}</span>`
+        : "\u2014");
+    set(".run", r.handle ? esc(r.handle) : "\u2014");
+    set(".took", r.elapsed_s == null ? "\u2014" : hms(r.elapsed_s));
+    // A live run is active now; a stopped one was last active when it ended.
+    set(".last", r.live ? `<span class="on">now</span>` : when(r.ended_at));
+  });
+}
+
+async function labRefresh() {
+  let rows;
+  try { rows = await (await fetch("/lab")).json(); }
+  catch (e) { document.getElementById("head").textContent = "watcher stopped"; return; }
+  if (scope !== "lab") return;
+  const live = rows.filter(r => r.live).length;
+  document.getElementById("head").textContent =
+    `${rows.length} campaign${rows.length === 1 ? "" : "s"} \u00b7 ` +
+    (live ? `${live} running` : "none running");
+  renderLab(rows);
 }
 
 async function campaignList() {
@@ -674,8 +843,10 @@ async function campaignList() {
   // page was open. The server is answering for the one it started on, so show that.
   if (!names.includes(campaign)) {
     campaign = HOME;
-    history.replaceState(null, "", location.pathname);
-    showCampaign();
+    if (scope === "campaign") {
+      history.replaceState(null, "", "?c=" + encodeURIComponent(campaign));
+    }
+    showScope();
   }
   const key = names.join("|");
   if (camp.dataset.key !== key) {
@@ -685,27 +856,14 @@ async function campaignList() {
   camp.value = campaign;
 }
 
-camp.onchange = () => {
-  campaign = camp.value;
-  history.replaceState(null, "", "?c=" + encodeURIComponent(campaign));
-  showCampaign();
-  // Nothing carries over: the log, the file being read and the conversation all belong
-  // to the campaign that was showing. Same reset as changing tab, one level up.
-  tab = "status"; offset = 0; logText = ""; chatText = "";
-  view.innerHTML = ""; view.className = ""; view.dataset.body = "";
-  delete view.dataset.statusSig;
-  document.getElementById("tabs").dataset.key = "";
-  pane.scrollTop = 0; newest.style.display = "none";
-  chatlog.className = "none"; chatlog.textContent = "no messages yet";
-  document.getElementById("head").textContent = "connecting…";
-  files(); refresh(); chat();
-};
+camp.onchange = () => enterCampaign(camp.value);
+document.getElementById("home").onclick = () => { if (scope !== "lab") goLab(); };
 
 document.querySelector("#say button").onclick = say;
 document.getElementById("msg").addEventListener(
   "keydown", e => { if (e.key === "Enter") say(); });
 
-showCampaign();
+showScope();
 campaignList(); files(); refresh(); chat();
 setInterval(refresh, 1500);
 setInterval(files, 10000);
@@ -750,6 +908,7 @@ def _render(text, campaign):
 class Handler(http.server.BaseHTTPRequestHandler):
     campaign = ""           # the one it was started on: where the page opens, and the
                             # campaign a request that names none is about
+    open_on_lab = False     # set when no campaign was named: `/` shows the lab instead
 
     last_request = 0.0      # for --exit-when-idle: a page open polls constantly
 
@@ -769,6 +928,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.campaign and self.campaign not in names:
             names = sorted(names + [self.campaign])
         return names
+
+    def _scope(self, q):
+        """Which of the two places the page opens on. The address says so -- `?lab` for
+        the lab, `?c=` for a campaign -- and a bare `/` opens where this watcher was
+        pointed: at a campaign if one was named, else at the lab."""
+        if "lab" in q:
+            return "lab"
+        if q.get("c", [""])[0]:
+            return "campaign"
+        return "lab" if self.open_on_lab else "campaign"
 
     def handle_one_request(self):
         type(self).last_request = time.time()
@@ -810,19 +979,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
-        q = urllib.parse.parse_qs(url.query)
+        # `?lab` carries no value, and a query key without one is dropped unless
+        # blanks are kept.
+        q = urllib.parse.parse_qs(url.query, keep_blank_values=True)
         campaign = self._campaign(q)
         if url.path == "/":
-            # The page opens on the campaign asked for, so a bookmarked one is showing
-            # before the first poll rather than a moment after it.
+            # The page opens where the address says, so a bookmark is showing the right
+            # place before the first poll rather than a moment after it.
             self._send(PAGE % {"campaign": html.escape(campaign),
-                               "campaign_json": json.dumps(campaign)},
+                               "campaign_json": json.dumps(campaign),
+                               "scope_json": json.dumps(self._scope(q))},
                        "text/html; charset=utf-8")
         elif url.path == "/campaigns":
             self._send(json.dumps(self._choices()), "application/json")
+        elif url.path == "/lab":
+            # Ordered as the lab reads: what is running first, then by name.
+            rows = [lab_summary(c) for c in self._choices()]
+            rows.sort(key=lambda r: (not r.get("live"), r["campaign"]))
+            self._send(json.dumps(rows), "application/json")
         elif url.path == "/log":
             self._send(json.dumps(
-                self._log_from(campaign, int(q.get("from", ["0"])[0]))),
+                self._log_from(campaign, int(q.get("from", ["0"])[0] or 0))),
                 "application/json")
         elif url.path == "/status":
             self._send(json.dumps(status(campaign)), "application/json")
@@ -922,7 +1099,9 @@ def main():
         argv = argv[:i] + argv[i + 2:]      # its value is a port, not a campaign
     args = [a for a in argv if not a.startswith("-")]
     # The campaign is which one to open on, not which one this can serve: the page
-    # switches between all of them. Left out, it opens on the one most recently active.
+    # switches between all of them. Left out, it opens on the lab -- every campaign and
+    # which of them is running -- and the campaign behind that is the most recent one,
+    # so going into a campaign from the header lands somewhere sensible.
     campaign = args[0] if args else latest_campaign()
     if not campaign:
         sys.exit(f"no campaign has run yet in {os.path.join(LAB_DIR, 'workspace')}")
@@ -931,6 +1110,7 @@ def main():
         sys.exit(f"no workspace at {ws} -- has this campaign run?")
 
     Handler.campaign = campaign
+    Handler.open_on_lab = not args
     # Another campaign may already be watched here, so take the next free port rather
     # than dying on the one that was asked for.
     for candidate in range(port, port + 20):
@@ -943,7 +1123,7 @@ def main():
     else:
         sys.exit(f"no free port between {port} and {port + 19}")
     url = f"http://127.0.0.1:{port}/"
-    opened = campaign if args else f"{campaign} (most recently active)"
+    opened = campaign if args else "the lab"
     print(f"watching {opened} at {url}  (Ctrl-C to stop; the run is unaffected)",
           flush=True)
     if "--no-open" not in sys.argv:
