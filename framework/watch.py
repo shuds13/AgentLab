@@ -11,9 +11,11 @@ touching it.
 Usage:
     python watch.py <campaign> [--port 8765] [--no-open]
 
-It reads the campaign's workspace and serves what it finds. The one thing it writes is
-a message you type: that goes to the board the agent reads between turns. Stop it with
-Ctrl-C; the run is unaffected either way.
+It reads the campaign's workspace and serves what it finds. The campaign named on the
+command line is the one it opens on; the page can switch to any other campaign in the
+lab, since one watcher can serve them all. The one thing it writes is a message you
+type: that goes to the board the agent reads between turns. Stop it with Ctrl-C; the
+run is unaffected either way.
 """
 
 import glob
@@ -45,6 +47,31 @@ except Exception:
 
 def workspace(campaign):
     return os.path.join(LAB_DIR, "workspace", campaign)
+
+
+def campaigns():
+    """Every campaign this lab has a workspace for, for the page to choose between.
+
+    A campaign workspace is one holding a campaign's own records or its runs. The lab
+    keeps its own directories under workspace/ too -- run/, logs/, belonging to the
+    services rather than to any campaign -- and those are not offered.
+
+    This is also the set a request is checked against: the name it asks for becomes a
+    path, so only a name from here is allowed to."""
+    root = os.path.join(LAB_DIR, "workspace")
+    found = []
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return found
+    for name in names:
+        ws = os.path.join(root, name)
+        if not os.path.isdir(ws):
+            continue
+        if os.path.isdir(os.path.join(ws, "runs")) or any(
+                os.path.isfile(os.path.join(ws, f)) for f in READABLE):
+            found.append(name)
+    return sorted(found)
 
 
 def newest_run(campaign):
@@ -194,6 +221,12 @@ PAGE = """<!doctype html>
  header .sep { color:#555; }
  header #head { margin-left:auto; }
  header span { color:#888; }
+ /* The campaign being watched, and the way to watch another. Styled as the heading it
+    replaces, so the header still reads as a name rather than as a form. */
+ header select { background:#1b2836; color:#fff; font:inherit; font-size:14px;
+                 font-weight:bold; border:1px solid #3a4a5a; padding:1px 4px;
+                 cursor:pointer; }
+ header select:hover { border-color:#6a8aaa; }
  #tabs { display:flex; gap:4px; padding:6px 12px; background:#161616;
          border-bottom:1px solid #333; flex-wrap:wrap; flex:none; }
  #tabs button { background:#222; color:#bbb; border:1px solid #333; padding:3px 10px;
@@ -254,7 +287,8 @@ PAGE = """<!doctype html>
                margin-left:8px; cursor:pointer; font:inherit; font-size:11px; }
  button.copy:hover { color:#fff; }
 </style></head><body>
-<header><b>AgentLab</b><span class="sep">/</span><b id="camp">%(campaign)s</b>\
+<header><b>AgentLab</b><span class="sep">/</span>\
+<select id="camp"><option>%(campaign)s</option></select>\
 <span id="head">connecting\u2026</span></header>
 <div id="tabs"></div>
 <div id="pane"><pre id="view">loading\u2026</pre></div>
@@ -267,6 +301,12 @@ PAGE = """<!doctype html>
 </div>
 <script>
 let tab = "status", offset = 0, logText = "", rawMode = false;
+// Which campaign the page is showing. Every request says so, and the address bar
+// carries it, so a reload or a bookmark comes back to the same one. The server has
+// already checked the name it served this page with, so that is what it opens on.
+const HOME = %(campaign_json)s;
+let campaign = HOME;
+const url = p => p + (p.includes("?") ? "&" : "?") + "c=" + encodeURIComponent(campaign);
 const view = document.getElementById("view"), pane = document.getElementById("pane");
 const newest = document.getElementById("newest");
 
@@ -416,14 +456,17 @@ const esc = t => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&
 // A record that references a figure should show it. Everything else stays as written:
 // this is the file, not a rendering of it.
 function withFigures(text) {
-  return esc(text).replace(/!\\[([^\\]]*)\\]\\(([^)\\s]+)\\)/g, (m, alt, src) =>
-    /^https?:/.test(src) ? m
-      // Sized to sit inside the text rather than replace it; click for the full thing.
-      : `<a href="/image?name=${encodeURIComponent(src)}" target="_blank" ` +
+  return esc(text).replace(/!\\[([^\\]]*)\\]\\(([^)\\s]+)\\)/g, (m, alt, src) => {
+    if (/^https?:/.test(src)) return m;
+    // Into an attribute, so the query separator is escaped along with the rest.
+    const u = esc(url("/image?name=" + encodeURIComponent(src)));
+    // Sized to sit inside the text rather than replace it; click for the full thing.
+    return `<a href="${u}" target="_blank" ` +
         `title="${src} \u2014 click to open full size">` +
-        `<img src="/image?name=${encodeURIComponent(src)}" alt="${alt}" ` +
+        `<img src="${u}" alt="${alt}" ` +
         `style="max-width:100%%;max-height:75vh;display:block;margin:8px 0;` +
-        `border:1px solid #333;background:#fff;cursor:zoom-in"></a>`);
+        `border:1px solid #333;background:#fff;cursor:zoom-in"></a>`;
+  });
 }
 
 // A redraw replaces the nodes a selection is anchored in, so selecting text on a page
@@ -442,8 +485,13 @@ function selecting() {
 }
 
 async function refresh() {
+  // The campaign this pass is about. A reply that arrives after the page has been
+  // switched belongs to the campaign that asked for it, not the one now showing, so
+  // it is dropped rather than drawn.
+  const mine = campaign;
   try {
-    const s = await (await fetch("/status")).json();
+    const s = await (await fetch(url("/status"))).json();
+    if (mine !== campaign) return;
     document.getElementById("head").textContent = s.run
       ? (s.status === "running" ? "running \u00b7 " : s.status + " \u00b7 ") + (s.handle || s.run)
       : "no run yet";
@@ -451,8 +499,9 @@ async function refresh() {
     if (tab === "log") {
       view.className = "";
       const stick = atBottom();
-      const r = await fetch(`/log?from=${offset}`);
+      const r = await fetch(url(`/log?from=${offset}`));
       const j = await r.json();
+      if (mine !== campaign) return;
       if (j.reset) { logText = ""; offset = 0; }      // a new run: start the pane again
       if (j.text) { logText += j.text; view.textContent = logText; }
       offset = j.offset;
@@ -463,8 +512,9 @@ async function refresh() {
       // The board is a list of lines, not a document: rendered as Markdown, consecutive
       // messages run together into one paragraph.
       const md = tab.endsWith(".md") && !rawMode && tab !== "ANNOUNCEMENTS.md";
-      const body = await (await fetch(
-        "/file?name=" + encodeURIComponent(tab) + (md ? "" : "&raw=1"))).text();
+      const body = await (await fetch(url(
+        "/file?name=" + encodeURIComponent(tab) + (md ? "" : "&raw=1")))).text();
+      if (mine !== campaign) return;
       if (body !== view.dataset.body) {                // keep where you were reading
         const at = pane.scrollTop;
         view.dataset.body = body;
@@ -485,9 +535,11 @@ let chatText = "";
 
 async function chat() {
   if (selecting()) return;
+  const mine = campaign;
   let body;
-  try { body = await (await fetch("/messages")).text(); }
+  try { body = await (await fetch(url("/messages"))).text(); }
   catch (e) { return; }
+  if (mine !== campaign) return;
   if (body === chatText) return;
   chatText = body;
   const msgs = body.split(/\\n\\s*\\n/).map(m => m.trim()).filter(Boolean);
@@ -515,7 +567,11 @@ document.addEventListener("click", e => {
 });
 
 async function files() {
-  try { setTabs(await (await fetch("/files")).json()); } catch (e) {}
+  const mine = campaign;
+  try {
+    const list = await (await fetch(url("/files"))).json();
+    if (mine === campaign) setTabs(list);
+  } catch (e) {}
 }
 // A message goes to the board the agent reads between turns, so it lands after the
 // turn in flight rather than interrupting it.
@@ -523,7 +579,7 @@ async function say() {
   const box = document.getElementById("msg"), text = box.value.trim();
   if (!text) return;
   box.value = "";
-  try { await fetch("/say", {method: "POST", body: text}); } catch (e) {}
+  try { await fetch(url("/say"), {method: "POST", body: text}); } catch (e) {}
   // Show the conversation the message just joined, rather than leaving you on whatever
   // you were reading with no sign it went anywhere.
   chat();
@@ -556,19 +612,68 @@ async function say() {
   });
 })();
 
+// One watcher serves every campaign in the lab, so switching is a change of what the
+// page asks for rather than another process on another port.
+const camp = document.getElementById("camp");
+
+// Where a message would land, said next to the box you type it in: the chat follows
+// the campaign, and a line meant for one agent should not reach another unnoticed.
+function showCampaign() {
+  document.title = campaign;
+  document.getElementById("chathead").textContent = "CHAT · " + campaign;
+}
+
+async function campaignList() {
+  let names;
+  try { names = await (await fetch("/campaigns")).json(); } catch (e) { return; }
+  if (!names.length) return;
+  // The campaign being shown has gone from the lab -- its workspace removed while the
+  // page was open. The server is answering for the one it started on, so show that.
+  if (!names.includes(campaign)) {
+    campaign = HOME;
+    history.replaceState(null, "", location.pathname);
+    showCampaign();
+  }
+  const key = names.join("|");
+  if (camp.dataset.key !== key) {
+    camp.dataset.key = key;
+    camp.innerHTML = names.map(n => `<option>${esc(n)}</option>`).join("");
+  }
+  camp.value = campaign;
+}
+
+camp.onchange = () => {
+  campaign = camp.value;
+  history.replaceState(null, "", "?c=" + encodeURIComponent(campaign));
+  showCampaign();
+  // Nothing carries over: the log, the file being read and the conversation all belong
+  // to the campaign that was showing. Same reset as changing tab, one level up.
+  tab = "status"; offset = 0; logText = ""; chatText = "";
+  view.innerHTML = ""; view.className = ""; view.dataset.body = "";
+  delete view.dataset.statusSig;
+  document.getElementById("tabs").dataset.key = "";
+  pane.scrollTop = 0; newest.style.display = "none";
+  chatlog.className = "none"; chatlog.textContent = "no messages yet";
+  document.getElementById("head").textContent = "connecting…";
+  files(); refresh(); chat();
+};
+
 document.querySelector("#say button").onclick = say;
 document.getElementById("msg").addEventListener(
   "keydown", e => { if (e.key === "Enter") say(); });
 
-files(); refresh(); chat();
+showCampaign();
+campaignList(); files(); refresh(); chat();
 setInterval(refresh, 1500);
 setInterval(files, 10000);
+// A campaign that starts while the page is open should appear in the list.
+setInterval(campaignList, 10000);
 setInterval(chat, 2000);
 </script></body></html>
 """
 
 
-def _render(text):
+def _render(text, campaign):
     """A record as its author meant it to read -- headings, tables, figures. Falls back
     to the text itself if anything goes wrong: a viewer that shows nothing is worse than
     one that shows the file."""
@@ -576,13 +681,17 @@ def _render(text):
         html_out = _markdown.markdown(text, extensions=["tables", "fenced_code"])
     except Exception:
         return "<pre>" + html.escape(text) + "</pre>"
-    # Figures are referenced relative to the workspace, which only this server can read.
+    # Figures are referenced relative to the workspace, which only this server can read,
+    # and the workspace is the campaign's -- so the route is told which one. These go
+    # into attributes of the HTML below, so the separator is written as an entity.
+    owner = "&amp;c=" + urllib.parse.quote(campaign)
+
     def _img(m):
         src = urllib.parse.quote(m.group("src"))
         alt = m.group(0)
         alt = re.search(r'alt="([^"]*)"', alt)
-        return (f'<a href="/image?name={src}" target="_blank">'
-                f'<img src="/image?name={src}" alt="{alt.group(1) if alt else ""}"></a>')
+        return (f'<a href="/image?name={src}{owner}" target="_blank">'
+                f'<img src="/image?name={src}{owner}" alt="{alt.group(1) if alt else ""}"></a>')
 
     html_out = re.sub(r'<img[^>]*?src="(?!https?:|/)(?P<src>[^"]+)"[^>]*/?>', _img, html_out)
 
@@ -590,17 +699,33 @@ def _render(text):
     # workspace, which only this server can read, so point it at the same route.
     return re.sub(
         r'<a href="(?!https?:|/)(?P<href>[^"]+\.(?:png|jpg|jpeg|gif|svg|webp))"',
-        lambda m: f'<a target="_blank" href="/image?name={urllib.parse.quote(m.group("href"))}"',
+        lambda m: '<a target="_blank" href="/image?name='
+                  f'{urllib.parse.quote(m.group("href"))}{owner}"',
         html_out, flags=re.I)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
-    campaign = ""
+    campaign = ""           # the one it was started on: where the page opens, and the
+                            # campaign a request that names none is about
 
     last_request = 0.0      # for --exit-when-idle: a page open polls constantly
 
     def log_message(self, *a):
         pass            # a watcher that narrates its own requests is noise
+
+    def _campaign(self, q):
+        """The campaign a request is about. The page names one; the name becomes a path,
+        so only a campaign this lab has may be named."""
+        name = (q.get("c") or [""])[0]
+        return name if name in self._choices() else self.campaign
+
+    def _choices(self):
+        """What the page may switch between. The campaign this was started on is always
+        among them, whether or not its workspace has anything in it yet."""
+        names = campaigns()
+        if self.campaign and self.campaign not in names:
+            names = sorted(names + [self.campaign])
+        return names
 
     def handle_one_request(self):
         type(self).last_request = time.time()
@@ -621,12 +746,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if url.path != "/say":
             self.send_error(404)
             return
+        campaign = self._campaign(urllib.parse.parse_qs(url.query))
         length = int(self.headers.get("Content-Length") or 0)
         text = self.rfile.read(length).decode("utf-8", "replace").strip()
         if not text:
             self._send(json.dumps({"sent": False}), "application/json")
             return
-        ws = workspace(self.campaign)
+        ws = workspace(campaign)
         stamp = datetime.now().strftime("%H:%M")
         try:
             os.makedirs(ws, exist_ok=True)
@@ -642,44 +768,52 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
         q = urllib.parse.parse_qs(url.query)
+        campaign = self._campaign(q)
         if url.path == "/":
-            self._send(PAGE % {"campaign": html.escape(self.campaign),
-                               "campaign_json": json.dumps(self.campaign)},
+            # The page opens on the campaign asked for, so a bookmarked one is showing
+            # before the first poll rather than a moment after it.
+            self._send(PAGE % {"campaign": html.escape(campaign),
+                               "campaign_json": json.dumps(campaign)},
                        "text/html; charset=utf-8")
+        elif url.path == "/campaigns":
+            self._send(json.dumps(self._choices()), "application/json")
         elif url.path == "/log":
-            self._send(json.dumps(self._log_from(int(q.get("from", ["0"])[0]))),
-                       "application/json")
+            self._send(json.dumps(
+                self._log_from(campaign, int(q.get("from", ["0"])[0]))),
+                "application/json")
         elif url.path == "/status":
-            self._send(json.dumps(status(self.campaign)), "application/json")
+            self._send(json.dumps(status(campaign)), "application/json")
         elif url.path == "/files":
-            ws = workspace(self.campaign)
+            ws = workspace(campaign)
             self._send(json.dumps([f for f in READABLE
                                    if os.path.isfile(os.path.join(ws, f))]),
                        "application/json")
         elif url.path == "/messages":
             # The conversation, not a file tab: served whether or not it exists yet.
             try:
-                with open(os.path.join(workspace(self.campaign), "MESSAGES.md"),
+                with open(os.path.join(workspace(campaign), "MESSAGES.md"),
                           errors="replace") as f:
                     self._send(f.read())
             except OSError:
                 self._send("")
         elif url.path == "/image":
-            self._send_image(q.get("name", [""])[0])
+            self._send_image(campaign, q.get("name", [""])[0])
         elif url.path == "/file":
             name = q.get("name", [""])[0]
-            text = self._file(name)
+            text = self._file(campaign, name)
             if q.get("raw") or not name.endswith(".md") or _markdown is None:
                 self._send(text)
             else:
-                self._send(_render(text), "text/html; charset=utf-8")
+                self._send(_render(text, campaign), "text/html; charset=utf-8")
         else:
             self.send_error(404)
 
-    _serving = None            # the log file the page is currently being fed
+    # Per campaign: one watcher serves them all, and a page on one must not reset a
+    # page on another.
+    _serving = {}              # campaign -> the log file it is currently being fed
 
-    def _log_from(self, offset):
-        path = newest_log(self.campaign)
+    def _log_from(self, campaign, offset):
+        path = newest_log(campaign)
         if not path:
             return {"text": "", "offset": 0, "name": "no run log yet", "running": False}
         size = os.path.getsize(path)
@@ -687,14 +821,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # log, and a truncated one is no longer what we were reading. Either way,
         # splicing two logs together would be a lie.
         cls = type(self)
-        reset = offset > size or (cls._serving is not None and cls._serving != path)
-        cls._serving = path
+        was = cls._serving.get(campaign)
+        reset = offset > size or (was is not None and was != path)
+        cls._serving[campaign] = path
         if reset:
             offset = 0
         with open(path, errors="replace") as f:
             f.seek(offset)
             text = f.read()
-        run_dir = os.path.join(workspace(self.campaign), "runs")
+        run_dir = os.path.join(workspace(campaign), "runs")
         beating = glob.glob(os.path.join(run_dir, "*", "heartbeat"))
         return {"text": text, "offset": size, "reset": reset,
                 "name": os.path.basename(path), "running": bool(beating)}
@@ -702,11 +837,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                    ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp"}
 
-    def _send_image(self, name):
+    def _send_image(self, campaign, name):
         """Serve a figure the records point at. Confined to the campaign's workspace:
         the name is resolved and checked to be inside it, so a path from a file cannot
         reach out of it."""
-        ws = os.path.realpath(workspace(self.campaign))
+        ws = os.path.realpath(workspace(campaign))
         path = os.path.realpath(os.path.join(ws, name))
         ext = os.path.splitext(path)[1].lower()
         if not path.startswith(ws + os.sep) or ext not in self.IMAGE_TYPES:
@@ -718,10 +853,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except OSError:
             self.send_error(404)
 
-    def _file(self, name):
+    def _file(self, campaign, name):
         if name not in READABLE:
             return "not a file this watcher serves"
-        path = os.path.join(workspace(self.campaign), name)
+        path = os.path.join(workspace(campaign), name)
         try:
             size = os.path.getsize(path)
             with open(path, errors="replace") as f:
