@@ -9,13 +9,14 @@ they would otherwise `tail`, on localhost, read-only, so a run can be followed w
 touching it.
 
 Usage:
-    python watch.py <campaign> [--port 8765] [--no-open]
+    python watch.py [campaign] [--port 8765] [--no-open]
 
 It reads the campaign's workspace and serves what it finds. The campaign named on the
-command line is the one it opens on; the page can switch to any other campaign in the
-lab, since one watcher can serve them all. The one thing it writes is a message you
-type: that goes to the board the agent reads between turns. Stop it with Ctrl-C; the
-run is unaffected either way.
+command line is the one it opens on, and with none named it opens on the one most
+recently active; the page can switch to any other campaign in the lab, since one
+watcher can serve them all. The one thing it writes is a message you type: that goes
+to the board the agent reads between turns. Stop it with Ctrl-C; the run is unaffected
+either way.
 """
 
 import glob
@@ -204,6 +205,48 @@ def status(campaign):
 def newest_log(campaign):
     logs = glob.glob(os.path.join(workspace(campaign), "logs", "run_*.log"))
     return max(logs, key=os.path.getmtime) if logs else None
+
+
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+# Liveness is a RECENT heartbeat, not the file existing: a run killed outright leaves
+# its heartbeat behind, and a stale one must not read as alive. The convention, and the
+# override, are the agent's that writes it.
+AGENT_ALIVE_WITHIN = int(os.environ.get("AGENT_ALIVE_WITHIN", "300"))
+
+
+def _beat_age(run_dir):
+    """Seconds since the run last said it was alive, or None if it never did."""
+    try:
+        with open(os.path.join(run_dir, "heartbeat")) as f:
+            return time.time() - float(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def latest_campaign():
+    """The campaign to open on when none was named: the one most recently active.
+
+    A campaign whose run is still beating comes first, whenever that run began, since
+    that is the one there is something to watch. The rest are ranked by when their last
+    run wrote. A campaign that has never run sorts last; there is nothing of it to
+    show."""
+    def rank(campaign):
+        run_dir = newest_run(campaign)
+        if not run_dir:
+            return (0, 0.0)
+        age = _beat_age(run_dir)
+        if age is not None and age <= AGENT_ALIVE_WITHIN:
+            return (2, -age)            # beating: the freshest of them first
+        return (1, _mtime(os.path.join(run_dir, "meta.json")))
+
+    names = campaigns()
+    return max(names, key=rank) if names else None
 
 
 PAGE = """<!doctype html>
@@ -869,13 +912,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("-")]
-    if not args:
-        sys.exit("usage: python watch.py <campaign> [--port N] [--no-open]")
-    campaign = args[0]
+    argv = sys.argv[1:]
     port = 8765
-    if "--port" in sys.argv:
-        port = int(sys.argv[sys.argv.index("--port") + 1])
+    if "--port" in argv:
+        i = argv.index("--port")
+        if i + 1 >= len(argv):
+            sys.exit("--port needs a number")
+        port = int(argv[i + 1])
+        argv = argv[:i] + argv[i + 2:]      # its value is a port, not a campaign
+    args = [a for a in argv if not a.startswith("-")]
+    # The campaign is which one to open on, not which one this can serve: the page
+    # switches between all of them. Left out, it opens on the one most recently active.
+    campaign = args[0] if args else latest_campaign()
+    if not campaign:
+        sys.exit(f"no campaign has run yet in {os.path.join(LAB_DIR, 'workspace')}")
     ws = workspace(campaign)
     if not os.path.isdir(ws):
         sys.exit(f"no workspace at {ws} -- has this campaign run?")
@@ -893,7 +943,8 @@ def main():
     else:
         sys.exit(f"no free port between {port} and {port + 19}")
     url = f"http://127.0.0.1:{port}/"
-    print(f"watching {campaign} at {url}  (Ctrl-C to stop; the run is unaffected)",
+    opened = campaign if args else f"{campaign} (most recently active)"
+    print(f"watching {opened} at {url}  (Ctrl-C to stop; the run is unaffected)",
           flush=True)
     if "--no-open" not in sys.argv:
         webbrowser.open(url)
