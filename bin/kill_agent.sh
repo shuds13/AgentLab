@@ -30,7 +30,7 @@ else
     RUN_DIRS=( "$LAB_DIR"/workspace/*/runs/*/ )
 fi
 RUNS_DIR="${WORKSPACE_DIR:-$LAB_DIR/workspace/*}/runs"
-STALE_AFTER=300     # s without a heartbeat before a run is presumed dead
+STALE_AFTER=600     # s without a heartbeat before a run is presumed dead
 
 # Read one field out of a run's meta.json.
 meta_get() {

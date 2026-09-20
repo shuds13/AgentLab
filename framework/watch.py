@@ -258,7 +258,7 @@ def _mtime(path):
 # Liveness is a RECENT heartbeat, not the file existing: a run killed outright leaves
 # its heartbeat behind, and a stale one must not read as alive. The convention, and the
 # override, are the agent's that writes it.
-AGENT_ALIVE_WITHIN = int(os.environ.get("AGENT_ALIVE_WITHIN", "300"))
+AGENT_ALIVE_WITHIN = int(os.environ.get("AGENT_ALIVE_WITHIN", "600"))
 
 
 def _beat_age(run_dir):

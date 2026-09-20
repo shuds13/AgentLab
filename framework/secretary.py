@@ -62,7 +62,7 @@ STATE = os.path.join(WORKSPACE_ROOT, "run", "secretary_seen.txt")
 # the agents' runs/<run_id>/heartbeat: a recent timestamp means alive.
 HEARTBEAT = os.path.join(WORKSPACE_ROOT, "run", "secretary_heartbeat")
 POLL = int(os.environ.get("SECRETARY_POLL", "5"))           # s between inbox checks
-AGENT_ALIVE_WITHIN = int(os.environ.get("AGENT_ALIVE_WITHIN", "300"))  # s; fresher heartbeat = agent is up
+AGENT_ALIVE_WITHIN = int(os.environ.get("AGENT_ALIVE_WITHIN", "600"))  # s; fresher heartbeat = agent is up
 NOTIFY_SCRIPT = os.environ.get("NOTIFY_SCRIPT") or os.path.join(SCRIPT_DIR, "slack_notify.sh")
 
 SYSTEM_PROMPT = f"""You are the secretary for a collaborative agentic search

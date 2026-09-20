@@ -86,7 +86,7 @@ CRITIC_LABEL = "no critic"
 CYCLE_RECORDS = [os.path.join(WORKSPACE_DIR, name)
                  for name in ("LOGBOOK.md", "JOURNAL.md")]
 
-AGENT_ALIVE_WITHIN = int(os.environ.get("AGENT_ALIVE_WITHIN", "300"))  # s; fresher heartbeat = agent is up
+AGENT_ALIVE_WITHIN = int(os.environ.get("AGENT_ALIVE_WITHIN", "600"))  # s; fresher heartbeat = agent is up
 
 
 def _live_handles():

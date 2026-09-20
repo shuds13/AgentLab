@@ -23,7 +23,7 @@ else
     RUN_DIRS=( "$LAB_DIR"/workspace/*/runs/*/ )
 fi
 RUNS_DIR="${WORKSPACE_DIR:-$LAB_DIR/workspace/*}/runs"
-STALE_AFTER=300     # s without a heartbeat before a run is presumed dead
+STALE_AFTER=600     # s without a heartbeat before a run is presumed dead
 
 # meta.json is read once per run and cached in scalar variables. macOS ships Bash 3.2,
 # which has indexed arrays but not the associative arrays used by newer Bash versions.
