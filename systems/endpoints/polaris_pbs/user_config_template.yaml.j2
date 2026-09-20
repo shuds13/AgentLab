@@ -8,13 +8,13 @@
 # EDIT: account, filesystems, and worker_init are site- and project-specific.
 
 # Idle timeout (UserEndpointConfig, NOT engine). Heartbeat = 30s.
-# soft: after 10 idle heartbeats (~5 min) with NO outstanding tasks, shut the user
+# soft: after 20 idle heartbeats (~10 min) with NO outstanding tasks, shut the user
 #   endpoint down so its PBS block is torn down and the nodes released. A task
 #   arriving inside the window keeps it alive.
 # idle_heartbeats_hard is deliberately NOT set: "hard" shuts down when tasks are
 #   outstanding-but-not-moving, which is exactly what a job legitimately WAITING in
 #   the queue looks like -- it would kill long-queued jobs.
-idle_heartbeats_soft: 10
+idle_heartbeats_soft: 20
 
 engine:
   type: GlobusComputeEngine

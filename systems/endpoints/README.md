@@ -114,7 +114,7 @@ or clamp what is passed:
 
 ## Notes worth knowing
 
-- **Idle timeout.** The PBS template sets `idle_heartbeats_soft: 10`, so ~5 idle
+- **Idle timeout.** The PBS template sets `idle_heartbeats_soft: 20`, so ~10 idle
   minutes with no outstanding tasks releases the nodes. It deliberately does not
   set `idle_heartbeats_hard`, which shuts down when tasks exist but are not
   moving — indistinguishable from a job sitting in a long queue, and it would kill

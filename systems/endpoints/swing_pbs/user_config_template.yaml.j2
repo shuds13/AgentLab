@@ -7,10 +7,10 @@
 # EDIT before use: the application environment and, if needed, the GPU-to-CPU mapping below.
 # Swing requires an account (-A), a walltime, and at least one GPU per node.
 
-# Release the PBS allocation after roughly five minutes with no outstanding tasks.
+# Release the PBS allocation after roughly ten minutes with no outstanding tasks.
 # idle_heartbeats_hard is intentionally unset because a queued task is not proof that
 # the endpoint is unhealthy.
-idle_heartbeats_soft: 10
+idle_heartbeats_soft: 20
 
 engine:
   type: GlobusComputeEngine

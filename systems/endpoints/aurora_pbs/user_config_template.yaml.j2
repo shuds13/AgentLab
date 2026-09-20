@@ -7,10 +7,10 @@
 # Edit before use: the worker_init environment. The account arrives from
 # users/<you>/aurora.json -- there is no default, because it is charged to someone.
 
-# Shut the endpoint down after 10 idle heartbeats (~5 min) with no outstanding tasks,
+# Shut the endpoint down after 20 idle heartbeats (~10 min) with no outstanding tasks,
 # releasing the PBS block. idle_heartbeats_hard is left unset: it triggers on tasks that
 # are outstanding but not progressing, which is what a queued job looks like.
-idle_heartbeats_soft: 10
+idle_heartbeats_soft: 20
 
 engine:
   type: GlobusComputeEngine
