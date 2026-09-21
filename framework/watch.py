@@ -208,27 +208,42 @@ def lab_users():
     Credentials are not returned. The endpoint id is an address, not a secret, and it is
     what someone comes to this page for; nothing else in the file is sent.
 
-    A file still carrying the template's placeholders is reported as a stub rather than
-    filtered out -- someone half set up is worth seeing, and it is not access."""
+    Two things are reported rather than hidden, because a lab is shared and a silent
+    omission reads as "nobody is there": a file still carrying the template's
+    placeholders is a stub, and a directory this process cannot read is named with
+    `unreadable` set. Someone half set up, or set up behind permissions you do not have,
+    is still someone in the lab."""
     people = []
     root = os.path.join(LAB_DIR, "users")
     try:
         names = sorted(os.listdir(root))
-    except OSError:
-        return people
+    except OSError as exc:
+        # The whole directory, not one person: say which it is, so an empty section
+        # cannot be mistaken for a lab with nobody in it.
+        return [{"user": os.path.basename(root), "systems": [], "unreadable": True,
+                 "error": exc.strerror or str(exc)}] if os.path.exists(root) else []
     for user in names:
         udir = os.path.join(root, user)
         if not os.path.isdir(udir):
             continue
+        try:
+            fnames = sorted(os.listdir(udir))
+        except OSError as exc:
+            people.append({"user": user, "systems": [], "unreadable": True,
+                           "error": exc.strerror or str(exc)})
+            continue
         systems = []
-        for fname in sorted(os.listdir(udir)):
+        for fname in fnames:
             if not fname.endswith(".json"):
                 continue
             try:
                 with open(os.path.join(udir, fname)) as fh:
                     cfg = json.load(fh)
+                unreadable = False
+            except OSError:
+                cfg, unreadable = {}, True
             except Exception:
-                cfg = {}
+                cfg, unreadable = {}, False
             endpoint = str(cfg.get("endpoint", "") or "")
             account = str(cfg.get("account", "") or "")
             # The templates ship values in angle brackets, and an unedited one must not
@@ -238,9 +253,9 @@ def lab_users():
                             "endpoint": endpoint, "account": account,
                             "work_dir": str(cfg.get("work_dir", "") or ""),
                             "transfer": bool(cfg.get("globus")) and not stub,
-                            "stub": stub})
+                            "stub": stub, "unreadable": unreadable})
         if systems:
-            people.append({"user": user, "systems": systems})
+            people.append({"user": user, "systems": systems, "unreadable": False})
     return people
 
 
@@ -444,6 +459,8 @@ PAGE = """<!doctype html>
                    border:1px solid #2b3946; border-radius:10px; color:#9ab;
                    font-size:12px; }
  #labusers .chip.stub { border-style:dashed; color:#666; }
+ #labusers .chip.locked { border-color:#5a3a3a; color:#b08080; }
+ #labusers tr.locked .who { color:#b08080; }
  #labusers .caret { display:inline-block; width:12px; color:#6f8296; }
  #labusers tr.detail td { border-bottom:1px solid #1e1e1e; padding:0 18px 10px 0; }
  #labusers .kv { display:grid; grid-template-columns:auto 1fr; gap:2px 14px;
@@ -1004,12 +1021,20 @@ function renderLabUsers(people) {
     usersPane.dataset.key = "none";
     return;
   }
-  const key = people.map(p => p.user + ":" + p.systems.map(a => a.system).join(",")).join("|");
+  const key = people.map(p => p.user + ":" + (p.unreadable ? "x" :
+    p.systems.map(a => a.system).join(","))).join("|");
   if (usersPane.dataset.key !== key) {
     usersPane.dataset.key = key;
     usersPane.innerHTML = `<h3>people</h3><table>` +
       `<tr><th>user</th><th>systems</th><th>transfer</th></tr>` +
       people.map(p => {
+        // A person whose directory this process cannot read is still in the lab, so
+        // the row says so rather than leaving a gap that reads as nobody.
+        if (p.unreadable) return `<tr class="row locked" data-u="${esc(p.user)}">` +
+          `<td class="who"><span class="caret"></span>${esc(p.user)}</td>` +
+          `<td><span class="chip locked">no read access</span></td>` +
+          `<td><span class="quiet">${esc(p.error || "")}</span></td></tr>` +
+          `<tr class="detail" data-d="${esc(p.user)}"><td colspan="3"></td></tr>`;
         const stub = p.systems.every(a => a.stub);
         const chips = p.systems.map(a =>
           `<span class="chip${a.stub ? " stub" : ""}">${esc(a.system)}</span>`).join("");
@@ -1044,7 +1069,10 @@ function paintUsers(people) {
     if (caret) caret.textContent = open ? "\u25be" : "\u25b8";
     det.style.display = open ? "" : "none";
     if (!open) continue;
-    const html = p.systems.map(a => `<div class="kv">` +
+    const html = p.unreadable
+      ? `<div class="kv"><div class="k">status</div><div class="v">this user\u2019s directory cannot be read by the account running the watcher</div></div>`
+      :
+    p.systems.map(a => `<div class="kv">` +
       `<div class="k">system</div><div class="v">${esc(a.system)}` +
       (a.stub ? ` <span class="quiet">(template, not configured)</span>` : "") + `</div>` +
       `<div class="k">endpoint</div><div class="v">${a.endpoint ? esc(a.endpoint) : "\u2014"}</div>` +
@@ -1191,6 +1219,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
+        # Everything here is live: the page is generated from code that changes under
+        # the viewer, and the JSON behind it changes every second. Nothing carries a
+        # validator, so without this a browser is free to reuse a copy from before the
+        # last edit -- and a restart of the watcher does not dislodge it.
+        self.send_header("Cache-Control", "no-store, must-revalidate")
         self.end_headers()
         self.wfile.write(data)
 
