@@ -188,12 +188,19 @@ def slack_attached():
         return False
 
 
+# A secretary beats every poll (5s by default), so it is known dead in seconds -- not
+# on the agent's window, which is sized for a research agent that can spend minutes in
+# one model turn. This is the figure slack_to_board.py uses to decide the same thing,
+# and the two must agree or the page and the bridge disagree about who is up.
+SECRETARY_ALIVE_WITHIN = int(os.environ.get("SECRETARY_ALIVE_WITHIN", "60"))
+
+
 def secretary_live():
     """Is a secretary reading the inbox? It writes a heartbeat every poll, so a stale
     one means questions asked here will sit unanswered until it is started."""
     try:
         with open(os.path.join(lab_run_dir(), "secretary_heartbeat")) as fh:
-            return (time.time() - float(fh.read().strip())) <= AGENT_ALIVE_WITHIN
+            return (time.time() - float(fh.read().strip())) <= SECRETARY_ALIVE_WITHIN
     except Exception:
         return False
 
