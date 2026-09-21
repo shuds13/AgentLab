@@ -34,7 +34,7 @@ authorises it, so any machine holding the file can post.
 delivers any message mentioning the bot. Where it delivers depends on the secretary's
 heartbeat in `workspace/run/secretary_heartbeat`:
 
-- **secretary up** — to `workspace/run/slack_inbox.md`, which only the secretary reads.
+- **secretary up** — to `workspace/run/secretary_inbox.md`, which only the secretary reads.
   One question, one answer.
 - **secretary down** — to every campaign's `ANNOUNCEMENTS.md`, where the running agents
   pick it up. A message naming a campaign goes to that one. One answer per campaign.

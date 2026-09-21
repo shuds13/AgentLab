@@ -4,7 +4,7 @@ Forward Slack messages addressed to the agents to whoever should answer them.
 
 Where a message goes depends on whether the secretary is running:
 
-  secretary up    -> <workspace>/run/slack_inbox.md, read by the secretary alone. It
+  secretary up    -> <workspace>/run/secretary_inbox.md, read by the secretary alone. It
                      answers, and relays to a campaign's board when a running agent's
                      live reasoning is needed. ONE answer, however many agents run.
   secretary down  -> every campaign's ANNOUNCEMENTS.md, as before. Each running agent
@@ -57,7 +57,7 @@ WORKSPACE_ROOT = os.path.abspath(os.environ.get(
 STATE = (os.environ.get("SLACK_STATE")
          or os.path.join(WORKSPACE_ROOT, "run", "slack_last_ts"))
 INBOX = os.environ.get("SLACK_INBOX") or os.path.join(WORKSPACE_ROOT, "run",
-                                                     "slack_inbox.md")
+                                                     "secretary_inbox.md")
 HEARTBEAT = os.environ.get("SLACK_READER_HEARTBEAT") or os.path.join(
     WORKSPACE_ROOT, "run", "secretary_heartbeat")
 # s; a secretary heartbeat fresher than this means it is up and owns Slack questions.
@@ -122,6 +122,9 @@ def forward(messages, me):
     """Deliver agent-directed Slack messages, oldest first: to the secretary if it is
     up, to every campaign board if it is not."""
     lines = []
+    # The same messages, as a person would read them, for the lab transcript. The
+    # tagged lines above are instructions to a reader; these are the conversation.
+    spoken = []
     read_all = READ_ALL and (DEDICATED or secretary_up())
     for m in reversed(messages):          # Slack returns newest first
         if m.get("bot_id") or m.get("subtype"):
@@ -145,12 +148,23 @@ def forward(messages, me):
         # id is noise. The shared bridge needs it to say who asked for what.
         lines.append(f"[from Slack -- {tag}] "
                      + (text if DEDICATED else f"{who}: {text}"))
+        spoken.append((m.get("user") or "someone", text))
     if not lines:
         return 0
     if DEDICATED or secretary_up():
         os.makedirs(os.path.dirname(INBOX), exist_ok=True)
         with open(INBOX, "a") as f:
             f.write("\n".join(lines) + "\n")
+        # Mirror the question into the lab transcript. Replies already land there --
+        # slack_notify.sh writes it on every post -- so without this the watch page
+        # shows answers to questions it never saw. Best-effort: the transcript is a
+        # view, and failing to write it must not lose the delivery.
+        try:
+            with open(os.path.join(os.path.dirname(INBOX), "MESSAGES.md"), "a") as f:
+                for user, text in spoken:
+                    f.write(f"`{time.strftime('%H:%M')}` **slack:{user}** {text}\n\n")
+        except OSError as e:
+            print(f"transcript not written (ignored): {e}", flush=True)
         where = "reader" if DEDICATED else "secretary"
         for line in lines:
             print(f"forwarded to {where}:", line, flush=True)

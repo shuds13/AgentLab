@@ -156,6 +156,48 @@ def _elapsed(meta):
         return None
 
 
+# The lab's own run directory: state belonging to the lab rather than to any one
+# campaign. The secretary's inbox and the lab transcript live here.
+def lab_run_dir():
+    return os.path.join(LAB_DIR, "workspace", "run")
+
+
+def lab_messages():
+    """The lab conversation: what was asked here and what the secretary answered.
+
+    `slack_notify.sh` appends every reply, whether or not Slack is configured, so this
+    is the transcript even in a lab with no Slack at all."""
+    try:
+        with open(os.path.join(lab_run_dir(), "MESSAGES.md")) as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def slack_attached():
+    """Is there a Slack channel on the other end of this conversation?
+
+    The page says so before you type: a line sent here is answered by the secretary
+    through `slack_notify.sh`, which posts to Slack whenever a webhook is configured.
+    Someone writing in the browser would otherwise have no way to know the reply --
+    quoting their question -- appears in a channel."""
+    path = os.environ.get("SLACK_WEBHOOK_FILE") or os.path.expanduser("~/.slack_webhook")
+    try:
+        return os.path.getsize(path) > 0
+    except OSError:
+        return False
+
+
+def secretary_live():
+    """Is a secretary reading the inbox? It writes a heartbeat every poll, so a stale
+    one means questions asked here will sit unanswered until it is started."""
+    try:
+        with open(os.path.join(lab_run_dir(), "secretary_heartbeat")) as fh:
+            return (time.time() - float(fh.read().strip())) <= AGENT_ALIVE_WITHIN
+    except Exception:
+        return False
+
+
 def lab_users():
     """Who is set up in this lab, grouped by person.
 
@@ -723,7 +765,8 @@ const chatlog = document.getElementById("chatlog");
 let chatText = "";
 
 async function chat() {
-  if (scope === "lab" || selecting()) return;
+  if (selecting()) return;
+  if (scope === "lab") return labChat();
   const mine = campaign;
   let body;
   try { body = await (await fetch(url("/messages"))).text(); }
@@ -731,19 +774,7 @@ async function chat() {
   if (mine !== campaign || scope !== "campaign") return;
   if (body === chatText) return;
   chatText = body;
-  const msgs = body.split(/\\n\\s*\\n/).map(m => m.trim()).filter(Boolean);
-  if (!msgs.length) { chatlog.className = "none";
-                      chatlog.textContent = "no messages yet"; return; }
-  const near = chatlog.scrollTop + chatlog.clientHeight > chatlog.scrollHeight - 40;
-  chatlog.className = "";
-  chatlog.innerHTML = msgs.map(m => {
-    const p = m.match(/^`(\\d\\d:\\d\\d)`\\s+\\*\\*(\\w+)\\*\\*\\s+([\\s\\S]*)$/);
-    if (!p) return `<div class="m">${esc(m)}</div>`;
-    const you = p[2] === "you" ? " you" : "";
-    return `<div class="m"><span class="t">${p[1]}</span>` +
-           `<span class="who${you}">${p[2]}</span>${esc(p[3])}</div>`;
-  }).join("");
-  if (near) chatlog.scrollTop = chatlog.scrollHeight;
+  renderChat(body);
 }
 
 document.addEventListener("click", e => {
@@ -763,13 +794,46 @@ async function files() {
     if (mine === campaign && scope === "campaign") setTabs(list);
   } catch (e) {}
 }
+// The lab conversation: questions asked here and what the secretary answered. Every
+// reply is appended by slack_notify.sh whether or not Slack is configured, so this is
+// the whole exchange in a lab with no Slack at all.
+async function labChat() {
+  let d;
+  try { d = await (await fetch("/labchat")).json(); } catch (e) { return; }
+  if (scope !== "lab") return;
+  labState = {secretary: !!d.secretary, slack: !!d.slack};
+  setChatBar();
+  if (d.text === chatText) return;
+  chatText = d.text;
+  renderChat(d.text);
+}
+
+// Both conversations are the same file format, so they are drawn by the same code.
+function renderChat(body) {
+  const msgs = body.split(/\\n\\s*\\n/).map(m => m.trim()).filter(Boolean);
+  if (!msgs.length) { chatlog.className = "none";
+                      chatlog.textContent = "no messages yet"; return; }
+  const near = chatlog.scrollTop + chatlog.clientHeight > chatlog.scrollHeight - 40;
+  chatlog.className = "";
+  chatlog.innerHTML = msgs.map(m => {
+    const p = m.match(/^`(\\d\\d:\\d\\d)`\\s+\\*\\*([\\w-]+)\\*\\*\\s+([\\s\\S]*)$/);
+    if (!p) return `<div class="m">${esc(m)}</div>`;
+    const you = p[2] === "you" ? " you" : "";
+    return `<div class="m"><span class="t">${p[1]}</span>` +
+           `<span class="who${you}">${p[2]}</span>${esc(p[3])}</div>`;
+  }).join("");
+  if (near) chatlog.scrollTop = chatlog.scrollHeight;
+}
+
 // A message goes to the board the agent reads between turns, so it lands after the
-// turn in flight rather than interrupting it.
+// turn in flight rather than interrupting it. On the lab page it goes to the
+// secretary's inbox instead -- one reader, one answer, however many campaigns are up.
 async function say() {
   const box = document.getElementById("msg"), text = box.value.trim();
   if (!text) return;
   box.value = "";
-  try { await fetch(url("/say"), {method: "POST", body: text}); } catch (e) {}
+  const to = scope === "lab" ? "/say?lab" : url("/say");
+  try { await fetch(to, {method: "POST", body: text}); } catch (e) {}
   // Show the conversation the message just joined, rather than leaving you on whatever
   // you were reading with no sign it went anywhere.
   chat();
@@ -817,13 +881,38 @@ function showScope() {
   usersPane.style.display = lab ? "block" : "none";
   view.style.display = lab ? "none" : "";
   document.getElementById("tabs").style.display = lab ? "none" : "";
-  document.getElementById("chat").style.display = lab ? "none" : "";
+  // The chat is shown in both places, but it writes to different readers: a campaign's
+  // board, or the secretary's inbox. The bar says which, so a line meant for one cannot
+  // reach the other unnoticed.
+  document.getElementById("chat").style.display = "";
   camp.style.display = lab ? "none" : "";
   document.getElementById("sep").style.display = lab ? "none" : "";
   document.getElementById("home").className = lab ? "here" : "home";
   if (lab) newest.style.display = "none";
   document.title = lab ? "AgentLab" : campaign;
-  document.getElementById("chathead").textContent = "CHAT \u00b7 " + campaign;
+  setChatBar();
+}
+
+// The chat bar says who reads what you type and, on the lab page, who else sees it.
+// One writer: labChat() supplies what only it knows -- whether a secretary is reading
+// and whether Slack is attached -- and the rest follows from the scope, so the two
+// cannot overwrite each other's title as they poll.
+let labState = {secretary: false, slack: false};
+function setChatBar() {
+  const head = document.getElementById("chathead"), box = document.getElementById("msg");
+  if (scope !== "lab") {
+    head.textContent = "CHAT \u00b7 " + campaign;
+    box.placeholder = "message the agent \u2014 it reads between turns";
+    return;
+  }
+  head.textContent = "SECRETARY"
+    + (labState.secretary ? "" : " \u00b7 not running")
+    + (labState.slack ? " \u00b7 shared with Slack" : "");
+  box.placeholder = !labState.secretary
+    ? "secretary not running \u2014 this is queued until it starts"
+    : labState.slack
+      ? "ask the secretary \u2014 the reply is posted to Slack too"
+      : "ask the secretary \u2014 it answers from the recorded results";
 }
 
 // Nothing carries over between places: the log, the file being read and the
@@ -1112,11 +1201,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if url.path != "/say":
             self.send_error(404)
             return
-        campaign = self._campaign(urllib.parse.parse_qs(url.query))
+        q = urllib.parse.parse_qs(url.query, keep_blank_values=True)
+        campaign = self._campaign(q)
         length = int(self.headers.get("Content-Length") or 0)
         text = self.rfile.read(length).decode("utf-8", "replace").strip()
         if not text:
             self._send(json.dumps({"sent": False}), "application/json")
+            return
+        # A lab-scope line is a question for the secretary, not for any one agent, so it
+        # goes to the inbox it polls rather than to a campaign board. The bridge writes
+        # the same file; this is a second writer, not a different channel.
+        if "lab" in q:
+            run = lab_run_dir()
+            stamp = datetime.now().strftime("%H:%M")
+            try:
+                os.makedirs(run, exist_ok=True)
+                with open(os.path.join(run, "secretary_inbox.md"), "a") as f:
+                    f.write(text.replace("\n", " ") + "\n")
+                with open(os.path.join(run, "MESSAGES.md"), "a") as f:
+                    f.write(f"`{stamp}` **you** {text}\n\n")
+            except OSError as e:
+                self._send(json.dumps({"sent": False, "error": str(e)}),
+                           "application/json")
+                return
+            self._send(json.dumps({"sent": True, "secretary": secretary_live()}),
+                       "application/json")
             return
         ws = workspace(campaign)
         stamp = datetime.now().strftime("%H:%M")
@@ -1146,6 +1255,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                        "text/html; charset=utf-8")
         elif url.path == "/campaigns":
             self._send(json.dumps(self._choices()), "application/json")
+        elif url.path == "/labchat":
+            self._send(json.dumps({"text": lab_messages(),
+                                   "secretary": secretary_live(),
+                                   "slack": slack_attached()}),
+                       "application/json")
         elif url.path == "/users":
             self._send(json.dumps(lab_users()), "application/json")
         elif url.path == "/lab":

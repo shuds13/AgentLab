@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-Secretary: the front door for questions from Slack.
+Secretary: the front door for questions about the lab.
 
-While this process is running it OWNS the Slack questions. The bridge delivers them
-here (`<workspace>/run/slack_inbox.md`), not to the campaign boards, so the research
-agents never see them and cannot answer them. One question gets one answer, however
+Questions arrive in `<workspace>/run/secretary_inbox.md`, written by the Slack bridge
+when one is running and by the watch page's lab chat either way -- so a lab with no
+Slack at all still has a way to ask. While this process is running it OWNS those
+questions: they go to that inbox, not to the campaign boards, so the research agents
+never see them and cannot answer them. One question gets one answer, however
 many campaigns and agents are running -- which is the whole point: a question with no
 campaign named would otherwise be answered once per campaign.
 
@@ -15,7 +17,8 @@ that campaign's board addressed to ONE named agent, and says so, rather than gue
 That is the only thing that ever reaches an agent from Slack.
 
 If this process is not running, the bridge falls back to writing Slack messages to
-every campaign board, where the agents pick them up as before. Nothing is lost by the
+every campaign board, where the agents pick them up as before; a line typed into the
+lab chat waits in the inbox until a secretary starts. Nothing is lost by the
 secretary being down; you just get an answer per campaign again.
 
 It holds ONE continuing conversation (ClaudeSDKClient), the same way the research
@@ -56,7 +59,7 @@ WORKSPACE_ROOT = os.path.abspath(os.environ.get(
     "WORKSPACE_ROOT", os.path.join(SCRIPT_DIR, "..", "workspace")))
 # Slack questions land here while this process is alive. Separate from the boards on
 # purpose: a board is broadcast to a campaign's agents, this is a queue for one reader.
-INBOX = os.path.join(WORKSPACE_ROOT, "run", "slack_inbox.md")
+INBOX = os.path.join(WORKSPACE_ROOT, "run", "secretary_inbox.md")
 STATE = os.path.join(WORKSPACE_ROOT, "run", "secretary_seen.txt")
 # Liveness, read by slack_to_board.py to decide where to deliver. Same convention as
 # the agents' runs/<run_id>/heartbeat: a recent timestamp means alive.
