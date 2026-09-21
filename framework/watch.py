@@ -156,6 +156,52 @@ def _elapsed(meta):
         return None
 
 
+def lab_users():
+    """Who is set up in this lab, grouped by person.
+
+    A user is a directory of `users/<name>/<system>.json`, so one person holds one entry
+    per system they have access to. Read fresh each time and never cached: a user file
+    appears when someone is added, and the page is how you see that happened.
+
+    Credentials are not returned. The endpoint id is an address, not a secret, and it is
+    what someone comes to this page for; nothing else in the file is sent.
+
+    A file still carrying the template's placeholders is reported as a stub rather than
+    filtered out -- someone half set up is worth seeing, and it is not access."""
+    people = []
+    root = os.path.join(LAB_DIR, "users")
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return people
+    for user in names:
+        udir = os.path.join(root, user)
+        if not os.path.isdir(udir):
+            continue
+        systems = []
+        for fname in sorted(os.listdir(udir)):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(udir, fname)) as fh:
+                    cfg = json.load(fh)
+            except Exception:
+                cfg = {}
+            endpoint = str(cfg.get("endpoint", "") or "")
+            account = str(cfg.get("account", "") or "")
+            # The templates ship values in angle brackets, and an unedited one must not
+            # read as a working endpoint.
+            stub = endpoint.startswith("<") or not endpoint
+            systems.append({"system": fname[: -len(".json")],
+                            "endpoint": endpoint, "account": account,
+                            "work_dir": str(cfg.get("work_dir", "") or ""),
+                            "transfer": bool(cfg.get("globus")) and not stub,
+                            "stub": stub})
+        if systems:
+            people.append({"user": user, "systems": systems})
+    return people
+
+
 def lab_summary(campaign):
     """One row of the lab page: enough to tell whether to go in.
 
@@ -335,6 +381,36 @@ PAGE = """<!doctype html>
  #lab .on { color:#7aa87a; }
  #lab .quiet { color:#888; }
  #lab .none { color:#666; padding:12px 0; }
+ /* People share the campaign table's grid and its click-the-whole-row behaviour, so
+    the two read as one page. The separator earns its keep: without it the heading
+    reads as an overflow of the table above rather than a section of its own. */
+ #labusers { display:none; padding:12px; margin-top:26px;
+             border-top:1px solid #2b3946; }
+ #labusers h3 { color:#6f8296; font-weight:normal; font-size:13px;
+                margin:14px 0 10px; letter-spacing:.06em; text-transform:uppercase; }
+ #labusers table { width:100%%; margin:0; }
+ #labusers th { text-align:left; color:#6f8296; font-weight:normal;
+                padding:0 18px 5px 0; border-bottom:1px solid #2b3946; }
+ #labusers td { padding:7px 18px 7px 0; border-bottom:1px solid #1e1e1e;
+                white-space:nowrap; }
+ #labusers tr.row { cursor:pointer; }
+ #labusers tr.row:hover td { background:#1a2430; }
+ #labusers .who { color:#fff; }
+ /* A system the user is set up on. Muted when the file is still a template, so an
+    unconfigured entry is visibly not access. */
+ #labusers .chip { display:inline-block; padding:1px 8px; margin-right:6px;
+                   border:1px solid #2b3946; border-radius:10px; color:#9ab;
+                   font-size:12px; }
+ #labusers .chip.stub { border-style:dashed; color:#666; }
+ #labusers .caret { display:inline-block; width:12px; color:#6f8296; }
+ #labusers tr.detail td { border-bottom:1px solid #1e1e1e; padding:0 18px 10px 0; }
+ #labusers .kv { display:grid; grid-template-columns:auto 1fr; gap:2px 14px;
+                 padding:8px 0 2px 20px; white-space:normal; }
+ #labusers .kv .k { color:#6f8296; }
+ #labusers .kv .v { color:#ccc; word-break:break-all; }
+ #labusers .on { color:#7aa87a; }
+ #labusers .quiet { color:#888; }
+ #labusers .none { color:#666; padding:12px 0; }
  #tabs { display:flex; gap:4px; padding:6px 12px; background:#161616;
          border-bottom:1px solid #333; flex-wrap:wrap; flex:none; }
  #tabs button { background:#222; color:#bbb; border:1px solid #333; padding:3px 10px;
@@ -399,7 +475,7 @@ PAGE = """<!doctype html>
 <select id="camp"><option>%(campaign)s</option></select>\
 <span id="head">connecting\u2026</span></header>
 <div id="tabs"></div>
-<div id="pane"><pre id="view">loading\u2026</pre><div id="lab"></div></div>
+<div id="pane"><pre id="view">loading\u2026</pre><div id="lab"></div><div id="labusers"></div></div>
 <button id="newest">\u2193 newest</button>
 <div id="chat">
   <div id="chathead">CHAT</div>
@@ -730,6 +806,7 @@ async function say() {
 // between campaigns, is a change of what the page asks for rather than another
 // process on another port.
 const camp = document.getElementById("camp"), labPane = document.getElementById("lab");
+const usersPane = document.getElementById("labusers");
 
 // Paint the frame for where we are. The lab has no file tabs and no chat: there is no
 // one agent to read them for. The chat bar names the campaign it would write to, so a
@@ -737,6 +814,7 @@ const camp = document.getElementById("camp"), labPane = document.getElementById(
 function showScope() {
   const lab = scope === "lab";
   labPane.style.display = lab ? "block" : "none";
+  usersPane.style.display = lab ? "block" : "none";
   view.style.display = lab ? "none" : "";
   document.getElementById("tabs").style.display = lab ? "none" : "";
   document.getElementById("chat").style.display = lab ? "none" : "";
@@ -757,6 +835,7 @@ function resetPane() {
   const t = document.getElementById("tabs");
   t.dataset.key = ""; t.innerHTML = "";    // else the last campaign's tabs flash first
   labPane.dataset.key = "";
+  usersPane.dataset.key = "";
   pane.scrollTop = 0; newest.style.display = "none";
   chatlog.className = "none"; chatlog.textContent = "no messages yet";
   document.getElementById("head").textContent = "connecting\u2026";
@@ -823,11 +902,86 @@ function renderLab(rows) {
   });
 }
 
+// Who is set up in this lab, one row per person. The rows carry nothing that ticks, so
+// this rebuilds only when the set changes -- which is when someone is added.
+// Which systems a person has is the thing worth seeing at a glance; the endpoint id and
+// the paths are what you go looking for, so they live behind a click.
+const userOpen = new Set();
+
+function renderLabUsers(people) {
+  if (!people.length) {
+    usersPane.innerHTML = `<h3>people</h3><div class="none">` +
+      `no user files yet \u2014 add users/&lt;you&gt;/&lt;system&gt;.json</div>`;
+    usersPane.dataset.key = "none";
+    return;
+  }
+  const key = people.map(p => p.user + ":" + p.systems.map(a => a.system).join(",")).join("|");
+  if (usersPane.dataset.key !== key) {
+    usersPane.dataset.key = key;
+    usersPane.innerHTML = `<h3>people</h3><table>` +
+      `<tr><th>user</th><th>systems</th><th>transfer</th></tr>` +
+      people.map(p => {
+        const stub = p.systems.every(a => a.stub);
+        const chips = p.systems.map(a =>
+          `<span class="chip${a.stub ? " stub" : ""}">${esc(a.system)}</span>`).join("");
+        const moved = p.systems.filter(a => a.transfer).length;
+        return `<tr class="row" data-u="${esc(p.user)}">` +
+          `<td class="who"><span class="caret"></span>${esc(p.user)}</td>` +
+          `<td>${chips}</td>` +
+          `<td>${stub ? `<span class="quiet">not set up</span>`
+                : moved ? `<span class="on">${moved} of ${p.systems.length}</span>`
+                : `<span class="quiet">none</span>`}</td></tr>` +
+          `<tr class="detail" data-d="${esc(p.user)}"><td colspan="3"></td></tr>`;
+      }).join("") + `</table>`;
+    for (const tr of usersPane.querySelectorAll("tr.row"))
+      tr.onclick = () => {
+        const u = tr.dataset.u;
+        userOpen.has(u) ? userOpen.delete(u) : userOpen.add(u);
+        paintUsers(people);
+      };
+  }
+  paintUsers(people);
+}
+
+// The open/closed state is the only thing that changes between paints, so it is applied
+// separately from the table that holds it.
+function paintUsers(people) {
+  for (const p of people) {
+    const open = userOpen.has(p.user);
+    const row = usersPane.querySelector(`tr.row[data-u="${CSS.escape(p.user)}"]`);
+    const det = usersPane.querySelector(`tr.detail[data-d="${CSS.escape(p.user)}"]`);
+    if (!row || !det) continue;
+    const caret = row.querySelector(".caret");
+    if (caret) caret.textContent = open ? "\u25be" : "\u25b8";
+    det.style.display = open ? "" : "none";
+    if (!open) continue;
+    const html = p.systems.map(a => `<div class="kv">` +
+      `<div class="k">system</div><div class="v">${esc(a.system)}` +
+      (a.stub ? ` <span class="quiet">(template, not configured)</span>` : "") + `</div>` +
+      `<div class="k">endpoint</div><div class="v">${a.endpoint ? esc(a.endpoint) : "\u2014"}</div>` +
+      `<div class="k">account</div><div class="v">${a.account ? esc(a.account) : "\u2014"}</div>` +
+      `<div class="k">work dir</div><div class="v">${a.work_dir ? esc(a.work_dir) : "\u2014"}</div>` +
+      `<div class="k">transfer</div><div class="v">` +
+      (a.transfer ? `<span class="on">configured</span>`
+                  : `<span class="quiet">not configured</span>`) + `</div></div>`).join("");
+    const td = det.querySelector("td");
+    if (td.innerHTML !== html) td.innerHTML = html;
+  }
+}
+
+async function usersRefresh() {
+  let people;
+  try { people = await (await fetch("/users")).json(); } catch (e) { return; }
+  if (scope !== "lab") return;
+  renderLabUsers(people);
+}
+
 async function labRefresh() {
   let rows;
   try { rows = await (await fetch("/lab")).json(); }
   catch (e) { document.getElementById("head").textContent = "watcher stopped"; return; }
   if (scope !== "lab") return;
+  usersRefresh();
   const live = rows.filter(r => r.live).length;
   document.getElementById("head").textContent =
     `${rows.length} campaign${rows.length === 1 ? "" : "s"} \u00b7 ` +
@@ -992,6 +1146,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                        "text/html; charset=utf-8")
         elif url.path == "/campaigns":
             self._send(json.dumps(self._choices()), "application/json")
+        elif url.path == "/users":
+            self._send(json.dumps(lab_users()), "application/json")
         elif url.path == "/lab":
             # Ordered as the lab reads: what is running first, then by name.
             rows = [lab_summary(c) for c in self._choices()]
