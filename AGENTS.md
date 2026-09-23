@@ -256,6 +256,11 @@ efficiency review of the campaign.
 Tell them what the stopping conditions are set to, and how to watch and stop it —
 `bin/list_agents.sh --all` and `bin/kill_agent.sh --drain <run_id>`.
 
+`bin/watch.sh` gives a browser view of the lab from the machine it is on. Where they
+work from their own computer instead, `bin/watch_remote.sh <host> <path>` does it over
+ssh — one login, and it forwards the port the watcher took. They can set `HOST`, `REPO`
+and `ACTIVATE` at the top of their copy so it takes no arguments.
+
 ### 11. Globus Transfer (optional)
 
 Gives the agent a `transfer` tool -- `ls`, `get`, `put` -- for reading and

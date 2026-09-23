@@ -100,6 +100,28 @@ bin/kill_agent.sh --drain <run>   stop cleanly, finishing jobs in flight
 bin/lab.sh status                 the lab's own processes, and their logs
 ```
 
+## Watching
+
+A browser view of the lab: every campaign, which are running, and the files each one is
+writing.
+
+On the machine the lab is on:
+
+```
+bin/watch.sh                      the lab, at http://127.0.0.1:8765/
+bin/watch.sh <campaign>           open on one campaign
+```
+
+From your own computer, when the lab is on a machine you reach by ssh:
+
+```
+bin/watch_remote.sh <host> <path-to-AgentLab-there>
+```
+
+It logs in once, starts the watcher over there, forwards the port it took, and opens
+your browser. Set `HOST`, `REPO` and `ACTIVATE` at the top of the script and it needs no
+arguments. Ctrl-C stops both ends.
+
 ## Writing a campaign
 
 Copy `campaigns/example-vllm-inference-opt/` and replace four files:
