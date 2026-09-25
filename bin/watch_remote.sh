@@ -23,6 +23,10 @@ AUTO_OPEN=true
 HOST=""
 REPO="\$HOME/AgentLab"
 ACTIVATE=""
+# Seconds the remote watcher will sit with nobody looking before stopping itself. An
+# open page polls every second or so, so this only runs down once the tunnel is gone --
+# which is the one case where nothing here can reach over and stop it.
+IDLE=600
 
 POSITIONAL=()
 
@@ -66,7 +70,11 @@ free_port() {
 
 # One login. Everything after this reuses the socket, so no further prompts.
 echo "[watch] connecting to $HOST"
-ssh -M -S "$CTL" -o ControlPersist=60 -f -N "$HOST"
+# ServerAlive keeps the master from being dropped for silence: lose it and the remote
+# watcher is unreachable, so it can neither be stopped nor asked whether it is alive --
+# and the next command prompts for a login again.
+ssh -M -S "$CTL" -o ControlPersist=60 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+    -f -N "$HOST"
 
 # Start the watcher and learn which port it actually took. It is left running over
 # there for the moment because the forward cannot be added until the port is known.
@@ -75,7 +83,7 @@ REMOTE_LOG="/tmp/watch_remote.$USER.$$.log"
 # keeps the channel open, and this ssh would never return.
 REMOTE_PID="$(ssh -n -S "$CTL" "$HOST" \
     "{ cd '$REPO' && ${ACTIVATE:+$ACTIVATE && } \
-       exec setsid python3 framework/watch.py --no-open ; } \
+       exec setsid python3 framework/watch.py --no-open --exit-when-idle=$IDLE ; } \
      > $REMOTE_LOG 2>&1 </dev/null & echo \$!")"
 [ -n "$REMOTE_PID" ] || { echo "the watcher did not start" >&2; exit 1; }
 
