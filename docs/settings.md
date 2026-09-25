@@ -7,7 +7,7 @@ Three places, in the order they are read:
 | | |
 |---|---|
 | `lab.yaml` | what this lab runs, and where its own things are. Copy `lab.yaml.template` |
-| `notifiers/<transport>.env` | credentials and reader behaviour for the transport, default `notifiers/slack.env`; `NOTIFIER` picks another |
+| `notifiers/<transport>/` | one transport — how a message leaves the lab, and its credentials and reader behaviour in `<transport>.env`; default `notifiers/slack/`, `NOTIFIER` picks another |
 | `campaigns/<name>/run.sh` | what one campaign wants, which is the last word |
 
 A value already in the environment wins over all three, so a setting given on the
@@ -83,9 +83,10 @@ Slack and notification. Without `SLACK_WEBHOOK_FILE` these do nothing.
 | `WATCH` | false | serve this run for a browser at `http://127.0.0.1:<WATCH_PORT>/` — its log as it is written, and the files it writes |
 | `WATCH_PORT` | 8765 | port the viewer listens on, so two runs can be watched at once |
 | `WATCH_IDLE` | 600 | seconds without anyone looking before the viewer stops itself; it outlives the run, since that is when its records are worth reading |
-| `SLACK_WEBHOOK_FILE` | `~/.slack_webhook` | incoming webhook for outbound posts |
-| `SLACK_PREFIX` | the agent's handle | prepended to every post, so one channel carrying several campaigns stays readable |
-| `NOTIFY_SCRIPT` | `framework/slack_notify.sh` | the script that posts a message; another transport's script goes here |
+| `SLACK_WEBHOOK_FILE` | — | file holding the incoming webhook for outbound posts, named in `notifiers/slack/slack.env`; unset means this lab has no Slack |
+| `NOTIFY_PREFIX` | the agent's handle | who is speaking, in the transcript and on every post, so one lab carrying several campaigns stays readable |
+| `NOTIFIER` | slack | the transport a message leaves by: `notifiers/<name>/notify.sh` |
+| `NOTIFY_SCRIPT` | `notifiers/$NOTIFIER/notify.sh` | a transport script outside `notifiers/`, when one is wanted |
 | `NOTIFY_START` | false | post when a launch starts |
 | `NOTIFY_DAILY` | true | periodic status post |
 | `NOTIFY_DAILY_INTERVAL` | 86400 | seconds between those posts |
@@ -162,13 +163,14 @@ Calling `goal_met` exits immediately instead.
 ## Environment — Slack bridge and secretary
 
 One of each per lab, not per campaign. Channels and startable campaigns come from
-`lab.yaml`; the rest from `notifiers/<transport>.env`, default `notifiers/slack.env`.
+`lab.yaml`; the rest from `notifiers/<transport>/<transport>.env`, default
+`notifiers/slack/slack.env`.
 
 | | default | |
 |---|---|---|
 | `WORKSPACE_ROOT` | `workspace/` | scanned for campaigns |
 | `SLACK_CHANNEL` | — | channel ID the bridge reads |
-| `SLACK_BOT_TOKEN_FILE` | `~/.slack_bot_token` | bot token, needs `channels:history` for a public channel or `groups:history` for a private one |
+| `SLACK_BOT_TOKEN_FILE` | — | file holding the bot token, named in `notifiers/slack/slack.env`; needs `channels:history` for a public channel or `groups:history` for a private one |
 | `SLACK_BOT_NAME` | `@cas_agent` | plain-text mention fallback |
 | `SLACK_FETCH_POLL` | 5 | seconds between Slack checks; dominates end-to-end latency |
 | `RESUME_SESSION` | — | a session id, or `last` / `compact` for the engineer's own previous conversation. Set from `engineer-resume` |

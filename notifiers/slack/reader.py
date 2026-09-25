@@ -26,12 +26,12 @@ State is the timestamp of the last Slack message handled, kept in
 nothing, so switching this on never dumps channel history onto the board.
 
 Usage:
-    python slack_to_board.py            # poll forever
-    python slack_to_board.py --once     # one check, then exit (for cron)
+    python reader.py            # poll forever
+    python reader.py --once     # one check, then exit (for cron)
 
 Env:
     SLACK_CHANNEL          channel ID to read (required)
-    SLACK_BOT_TOKEN_FILE   file holding the xoxb- bot token
+    SLACK_BOT_TOKEN_FILE   file holding the xoxb- bot token, named in slack.env
     WORKSPACE_ROOT         holds one directory per campaign, plus run/
     SLACK_FETCH_POLL       seconds between checks (default 5)
     SECRETARY_ALIVE_WITHIN heartbeat age that still counts as up (default 60)
@@ -64,8 +64,7 @@ HEARTBEAT = os.environ.get("SLACK_READER_HEARTBEAT") or os.path.join(
 # It rewrites the file every poll (default 5s), so this tolerates many missed beats.
 SECRETARY_ALIVE_WITHIN = int(os.environ.get("SECRETARY_ALIVE_WITHIN", "60"))
 CHANNEL = os.environ.get("SLACK_CHANNEL", "")
-TOKEN_FILE = os.environ.get("SLACK_BOT_TOKEN_FILE",
-                            os.path.expanduser("~/.slack_bot_token"))
+TOKEN_FILE = os.environ.get("SLACK_BOT_TOKEN_FILE", "")
 POLL = int(os.environ.get("SLACK_FETCH_POLL", "5"))
 # Plain-text fallback for a mention typed without Slack autocomplete.
 BOT_NAME = os.environ.get("SLACK_BOT_NAME", "@cas_agent")
@@ -156,7 +155,7 @@ def forward(messages, me):
         with open(INBOX, "a") as f:
             f.write("\n".join(lines) + "\n")
         # Mirror the question into the lab transcript. Replies already land there --
-        # slack_notify.sh writes it on every post -- so without this the watch page
+        # framework/notify.sh writes it on every post -- so without this the watch page
         # shows answers to questions it never saw. Best-effort: the transcript is a
         # view, and failing to write it must not lose the delivery.
         try:
@@ -217,6 +216,9 @@ def main():
         with open(TOKEN_FILE) as f:
             token = f.read().strip()
     except Exception as e:
+        if not TOKEN_FILE:
+            sys.exit("no SLACK_BOT_TOKEN_FILE: name this lab's bot token file in "
+                     "notifiers/slack/slack.env")
         sys.exit(f"cannot read bot token from {TOKEN_FILE}: {e}")
 
     who = slack_get("auth.test", token)

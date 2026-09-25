@@ -6,7 +6,7 @@
 # docs/settings.md; this file is meant to be read at a glance, not to explain itself.
 
 bridge:     off         # Slack messages reach the secretary
-secretary:  off         # answers from the records, starts and stops runs
+secretary:  on          # answers from the records, starts and stops runs
 engineer:   off         # this repository, worked on from a channel of its own
 
 # A LiteLLM proxy, for using non-Anthropic models: it translates the Messages API the
@@ -21,7 +21,7 @@ litellm-key-file:                   # only if the proxy wants a different creden
 
 slack-channel:              # the lab's channel, e.g. C01234567
 engineer-slack-channel:     # the engineer's, if it runs
-engineer-webhook-file: ~/.slack_webhook_dev
+engineer-webhook-file:      # file holding its webhook URL, if it posts
 engineer-allow:             # Slack user ids that may instruct it. Empty: anyone in the channel
 engineer-resume: off        # off | last | compact -- carry on yesterday's conversation, summarised down
 

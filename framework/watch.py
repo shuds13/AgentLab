@@ -165,8 +165,8 @@ def lab_run_dir():
 def lab_messages():
     """The lab conversation: what was asked here and what the secretary answered.
 
-    `slack_notify.sh` appends every reply, whether or not Slack is configured, so this
-    is the transcript even in a lab with no Slack at all."""
+    `framework/notify.sh` appends every reply, whether or not Slack is configured, so
+    this is the transcript even in a lab with no Slack at all."""
     try:
         with open(os.path.join(lab_run_dir(), "MESSAGES.md")) as fh:
             return fh.read()
@@ -178,10 +178,15 @@ def slack_attached():
     """Is there a Slack channel on the other end of this conversation?
 
     The page says so before you type: a line sent here is answered by the secretary
-    through `slack_notify.sh`, which posts to Slack whenever a webhook is configured.
+    through `framework/notify.sh`, which carries it on to Slack when a webhook is
+    configured.
     Someone writing in the browser would otherwise have no way to know the reply --
-    quoting their question -- appears in a channel."""
-    path = os.environ.get("SLACK_WEBHOOK_FILE") or os.path.expanduser("~/.slack_webhook")
+    quoting their question -- appears in a channel.
+
+    The webhook is the one this lab names in `notifiers/slack/slack.env`, which `watch.sh`
+    reads through `settings.sh`. A lab that names none is its own conversation, so
+    several labs on one machine stay separate until they are pointed at a channel."""
+    path = os.environ.get("SLACK_WEBHOOK_FILE") or ""
     try:
         return os.path.getsize(path) > 0
     except OSError:
@@ -190,7 +195,7 @@ def slack_attached():
 
 # A secretary beats every poll (5s by default), so it is known dead in seconds -- not
 # on the agent's window, which is sized for a research agent that can spend minutes in
-# one model turn. This is the figure slack_to_board.py uses to decide the same thing,
+# one model turn. This is the figure the Slack reader uses to decide the same thing,
 # and the two must agree or the page and the bridge disagree about who is up.
 SECRETARY_ALIVE_WITHIN = int(os.environ.get("SECRETARY_ALIVE_WITHIN", "60"))
 
@@ -819,7 +824,7 @@ async function files() {
   } catch (e) {}
 }
 // The lab conversation: questions asked here and what the secretary answered. Every
-// reply is appended by slack_notify.sh whether or not Slack is configured, so this is
+// reply is appended by framework/notify.sh whether or not Slack is configured, so this is
 // the whole exchange in a lab with no Slack at all.
 async function labChat() {
   let d;

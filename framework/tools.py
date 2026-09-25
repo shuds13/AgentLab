@@ -4,7 +4,7 @@ coordinate several agents through a shared directory.
 This file is domain-agnostic. WHAT gets submitted comes from a task plug-in
 (see the campaign's task.py, and AGENTS.md); this file owns the mechanism around it:
 claiming work so two agents never duplicate it, tracking futures, capacity limits,
-draining on shutdown, the announcements board, and Slack notification.
+draining on shutdown, the announcements board, and notification.
 
 Which system to run on is picked with the SYSTEM env var and described in
 config.json.
@@ -200,10 +200,10 @@ JOBS_LOG = os.path.join(WORKSPACE_DIR, "jobs.jsonl")          # durable record o
 ANNOUNCEMENTS_FILE = os.path.join(WORKSPACE_DIR, "ANNOUNCEMENTS.md")
 # Both sides of the conversation with whoever is watching, in the order they were said.
 # The agent's own messages are written here whether or not a transport is configured, so
-# a lab with no Slack still has somewhere for notify to land.
+# a lab with no transport still has somewhere for notify to land.
 MESSAGES_FILE = os.path.join(WORKSPACE_DIR, "MESSAGES.md")
 
-NOTIFY_SCRIPT = os.environ.get("NOTIFY_SCRIPT") or os.path.join(SCRIPT_DIR, "slack_notify.sh")
+NOTIFY_SCRIPT = os.path.join(SCRIPT_DIR, "notify.sh")
 _last_success_time = None   # last non-error completion (real progress)
 _problem_since = None       # when the agent flagged a blocking problem (None = none)
 
@@ -219,7 +219,7 @@ def record_message(who, msg):
 
 
 def _slack_post(msg):
-    """Best-effort Slack post. Never raises; Slack is optional."""
+    """Best-effort post to the lab. Never raises; a transport is optional."""
     if not os.path.isfile(NOTIFY_SCRIPT):
         return
     try:

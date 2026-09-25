@@ -20,7 +20,7 @@ export USER_NAME="${USER_NAME:-$USER}"
 export MAX_SUBMITS=20
 export MAX_RUNTIME=21600
 
-# export SLACK_WEBHOOK_FILE="$HOME/.slack_webhook"
+# export SLACK_WEBHOOK_FILE="$HOME/.slack_webhook_thislab"   # overrides notifiers/slack/slack.env
 export NOTIFY_START=true
 export NOTIFY_DAILY=true
 export NOTIFY_FINISH=true

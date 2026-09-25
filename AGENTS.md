@@ -346,8 +346,9 @@ entirely on the first.
 ### Joining a lab
 
 Ask to be added to the lab's Slack channel, and for its webhook URL. Write that URL to
-`~/.slack_webhook`, outside the repository. That is the whole procedure — no app, no
-token, no processes to run.
+a file outside the repository, and name that file as `SLACK_WEBHOOK_FILE` in the lab's
+`notifiers/slack/slack.env`. That is the whole procedure — no app, no token, no processes to
+run. A second lab is a second channel: give it its own file and its own webhook.
 
 ### Setting up a lab
 
@@ -356,9 +357,9 @@ wait, carry on:
 
 1. Create a Slack app in the workspace. Most workspaces require a Slack admin to
    approve it. They request that through the app setup process.
-2. Add an incoming webhook. Its URL goes in `~/.slack_webhook` and is what members
-   receive when they join.
-3. Create a bot token in `~/.slack_bot_token`, scoped to the kind of channel the lab
+2. Add an incoming webhook. Its URL is what members receive when they join, and goes
+   in the file this lab names as `SLACK_WEBHOOK_FILE`.
+3. Create a bot token in the file named as `SLACK_BOT_TOKEN_FILE`, scoped to the kind of channel the lab
    runs in: `channels:history` for a public one, `groups:history` for a private one.
    A private channel also needs the bot invited to it. Inbound only — members never
    need it.
@@ -366,7 +367,7 @@ wait, carry on:
 
    ```
    cp lab.yaml.template lab.yaml
-   cp notifiers/slack.env.template notifiers/slack.env
+   cp notifiers/slack/slack.env.template notifiers/slack/slack.env
    ```
 
    Neither copy is tracked by git. `lab.yaml` is the short one — which processes to

@@ -7,4 +7,7 @@
 # With no campaign it opens on the one most recently active; the page switches between all.
 set -euo pipefail
 cd "$(dirname "$0")"
+# The page reports whether this lab posts to Slack, so it reads the lab's settings
+# rather than looking for a webhook of its own.
+. ../framework/settings.sh
 exec python3 ../framework/watch.py "$@"

@@ -61,12 +61,12 @@ WORKSPACE_ROOT = os.path.abspath(os.environ.get(
 # purpose: a board is broadcast to a campaign's agents, this is a queue for one reader.
 INBOX = os.path.join(WORKSPACE_ROOT, "run", "secretary_inbox.md")
 STATE = os.path.join(WORKSPACE_ROOT, "run", "secretary_seen.txt")
-# Liveness, read by slack_to_board.py to decide where to deliver. Same convention as
+# Liveness, read by a transport's reader to decide where to deliver. Same convention as
 # the agents' runs/<run_id>/heartbeat: a recent timestamp means alive.
 HEARTBEAT = os.path.join(WORKSPACE_ROOT, "run", "secretary_heartbeat")
 POLL = int(os.environ.get("SECRETARY_POLL", "5"))           # s between inbox checks
 AGENT_ALIVE_WITHIN = int(os.environ.get("AGENT_ALIVE_WITHIN", "600"))  # s; fresher heartbeat = agent is up
-NOTIFY_SCRIPT = os.environ.get("NOTIFY_SCRIPT") or os.path.join(SCRIPT_DIR, "slack_notify.sh")
+NOTIFY_SCRIPT = os.path.join(SCRIPT_DIR, "notify.sh")
 
 SYSTEM_PROMPT = f"""You are the secretary for a collaborative agentic search
 workflow. Research agents run on compute nodes and coordinate through shared files.
@@ -243,7 +243,7 @@ def write_seen(text):
 
 
 def beat():
-    """Publish liveness for slack_to_board.py. Written every poll, so it goes stale
+    """Publish liveness for a transport's reader. Written every poll, so it goes stale
     within a couple of polls if this process dies OR wedges mid-answer -- either way
     the bridge should stop delivering here and fall back to the boards."""
     os.makedirs(os.path.dirname(HEARTBEAT), exist_ok=True)
@@ -300,7 +300,7 @@ async def answer(client, text, agents):
     # answers it had already given.
     status = ("Research agents running:\n" + "\n".join(agents)
               if agents else "No research agent is running.")
-    await client.query(status + "\n\nNew from Slack:\n\n" + text +
+    await client.query(status + "\n\nNew question:\n\n" + text +
                        "\n\nAnswer it, then stop.")
     async for message in client.receive_response():
         if isinstance(message, AssistantMessage):

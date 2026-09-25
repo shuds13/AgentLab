@@ -139,9 +139,10 @@ def _allocate_handle():
 
 
 HANDLE = _allocate_handle()
-# Prefixed to this agent's Slack posts by slack_notify.sh. The handle alone, because
-# it is unique across the lab and is what someone types to address this agent.
-os.environ.setdefault("SLACK_PREFIX", HANDLE)
+# Marks this agent's messages, in the transcript and wherever they are carried on to.
+# The handle alone, because it is unique across the lab and is what someone types to
+# address this agent.
+os.environ.setdefault("NOTIFY_PREFIX", HANDLE)
 # Turns given to the agent AFTER everything has drained, so it can write the
 # journal/LOGBOOK before the process exits.
 MAX_FINALIZE_TURNS = 2
@@ -220,18 +221,18 @@ NOTIFY_DAILY = _bool_env("NOTIFY_DAILY", True)
 NOTIFY_FINISH = _bool_env("NOTIFY_FINISH", True)
 DAILY_INTERVAL = int(os.environ.get("NOTIFY_DAILY_INTERVAL", "86400"))  # seconds between periodic summaries
 PROBLEM_GRACE = int(os.environ.get("NOTIFY_PROBLEM_GRACE", "1800"))     # shut down this long (s) after the agent flags an unresolved blocking problem
-NOTIFY_SCRIPT = os.environ.get("NOTIFY_SCRIPT") or os.path.join(SCRIPT_DIR, "slack_notify.sh")
+NOTIFY_SCRIPT = os.path.join(SCRIPT_DIR, "notify.sh")
 
 # When a periodic summary is due, the runner asks the agent to write it (its own
 # words) via the notify tool, instead of a fixed harness string.
 REPORT_PROMPT = _prompt("REPORT_PROMPT",
-    "Before anything else this turn, post a brief (1-2 line) status summary to Slack "
+    "Before anything else this turn, post a brief (1-2 line) status summary to the lab "
     "with the notify tool: what you are currently working on, recent progress, and any "
     "concern. Then continue as normal."
 )
 
 
-def slack_notify(msg):
+def notify_lab(msg):
     # The run's own conversation holds it whether or not a transport is configured, so
     # a lab with no Slack still has the notifications somewhere.
     tools.record_message("runner", msg)
@@ -241,7 +242,7 @@ def slack_notify(msg):
         subprocess.run(["bash", NOTIFY_SCRIPT, msg], timeout=30,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception as e:
-        print(f"[slack_notify] failed (ignored): {e}", flush=True)
+        print(f"[notify] failed (ignored): {e}", flush=True)
 
 
 def _fmt_uptime(secs):
@@ -336,13 +337,13 @@ def _note_turn_context(usage, model=None):
 
 
 async def _post_scheduled_status(client, turn_num, start_time):
-    """Post the fixed-metrics scheduled status line to Slack (harness-owned, deterministic)."""
+    """Post the fixed-metrics scheduled status line (harness-owned, deterministic)."""
     u = _last_context
     model = u.get("model") or "?"
     tok, win, pct = u.get("tokens"), u.get("window"), u.get("pct")
     ctx = (f"ctx ~{tok}/{win} (~{pct:.0f}%)"
            if tok is not None and win and pct is not None else "ctx n/a")
-    slack_notify(f"📅 Scheduled Status — {model}, "
+    notify_lab(f"📅 Scheduled Status — {model}, "
                  f"turn {turn_num} · {tools.submit_count()} remote / {tools.local_submit_count()} local "
                  f"this session · {tools.jobs_in_flight()} in-flight · {ctx} · "
                  f"uptime {_fmt_uptime(time.time() - start_time)}")
@@ -624,7 +625,7 @@ _PHASES = {
     "submit_job": "submitting jobs", "submit_local": "submitting jobs",
     "get_completed_jobs": "collecting results", "get_local_completed": "collecting results",
     "check_backend": "checking the backend", "release_claim": "releasing a claim",
-    "notify": "posting to Slack", "cycle_done": "closing the cycle",
+    "notify": "posting to the lab", "cycle_done": "closing the cycle",
     "Read": "reading records", "Grep": "reading records", "Glob": "reading records",
     "Write": "writing up", "Edit": "writing up", "NotebookEdit": "writing up",
     "Bash": "running analysis",
@@ -961,7 +962,7 @@ def preflight():
                 except Exception:
                     _nm = tools.ENDPOINT_ID
                 if not CHECK_ONLY:
-                    slack_notify(f"🚨 Agent exiting -- Globus Compute "
+                    notify_lab(f"🚨 Agent exiting -- Globus Compute "
                                  f"endpoint '{_nm}' is not online (status={_st}). Start it: "
                                  f"globus-compute-endpoint start {_nm} --detach")
                 problems.append(f"Globus Compute endpoint '{_nm}' ({tools.ENDPOINT_ID}) is not online "
@@ -1274,7 +1275,7 @@ async def main():
             _write_meta(model=model)
             _prov_start(model)
             if NOTIFY_START:
-                slack_notify(f"🚀 Agent {HANDLE} started — "
+                notify_lab(f"🚀 Agent {HANDLE} started — "
                              f"{CAMPAIGN or 'no campaign'} on {SYSTEM}{ROLE_NOTE} · {model}"
                              f" · critic {CRITIC_LABEL}.")
             prompt = load_user_prompt()
@@ -1360,7 +1361,7 @@ async def main():
                             # A review takes a couple of minutes. During a wind-down
                             # that silence looks like a hang, so say what it is waiting
                             # for.
-                            slack_notify(f"🔍 Reviewing the last cycle with "
+                            notify_lab(f"🔍 Reviewing the last cycle with "
                                          f"{CRITIC_LABEL} before exit.")
                         _set_phase(f"turn {turn_num}: critic reviewing ({CRITIC_LABEL})")
                         reply = critic.review(CRITIC_MODEL, new_section,
@@ -1526,7 +1527,7 @@ async def main():
             except OSError:
                 pass
         if NOTIFY_FINISH:
-            slack_notify(f"🏁 Agent stopped — "
+            notify_lab(f"🏁 Agent stopped — "
                          f"reason: {stop_reason} · {tools.submit_count()} remote / "
                          f"{tools.local_submit_count()} local submitted · "
                          f"uptime {_fmt_uptime(time.time() - start_time)}.")

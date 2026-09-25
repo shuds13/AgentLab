@@ -17,9 +17,9 @@ venv/
 # Local scratch: proxy configs, venvs, probes.
 scratch/
 
-# Lab messaging settings: channel IDs, credential paths.
-notifiers/*
-!notifiers/*.template
+# Lab messaging settings: channel IDs, credential paths. The transports themselves
+# are part of the framework and are tracked; only a lab's filled-in copy is not.
+notifiers/**/*.env
 
 # This lab's own settings: what it runs, its models, its channels.
 lab.yaml

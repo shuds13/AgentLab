@@ -24,7 +24,7 @@ Env:
     RESUME_SESSION       a session id to continue instead of starting fresh, or
                          `last` for the one this engineer used before, or `compact`
                          for that one summarised down before it carries on
-    NOTIFY_SCRIPT        how it replies (default framework/slack_notify.sh)
+    NOTIFIER             transport its replies leave by (default slack)
 """
 
 import asyncio
@@ -54,8 +54,7 @@ POLL = int(os.environ.get("ENGINEER_POLL", "5"))
 BRANCH = (os.environ.get("ENGINEER_BRANCH") or "").strip()
 RESUME_SESSION = (os.environ.get("RESUME_SESSION") or "").strip()
 COMPACT_FIRST = RESUME_SESSION.lower() == "compact"
-NOTIFY_SCRIPT = os.environ.get("NOTIFY_SCRIPT") or os.path.join(SCRIPT_DIR,
-                                                                "slack_notify.sh")
+NOTIFY_SCRIPT = os.path.join(SCRIPT_DIR, "notify.sh")
 
 SYSTEM_PROMPT = f"""You are the engineer for AgentLab, the framework in {LAB_DIR}, and
 you work on it from a Slack channel. Someone types there; you answer, and change the

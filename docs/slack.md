@@ -19,17 +19,20 @@ Web API. Reading a channel needs the scope for its kind: `channels:history` for 
 public channel, `groups:history` for a private one. A bot reads only channels it is a
 member of, so a private channel has to invite it.
 
-Keep both outside the repository, in `~/.slack_webhook` and `~/.slack_bot_token`.
+Keep both outside the repository, in files named by `SLACK_WEBHOOK_FILE` and
+`SLACK_BOT_TOKEN_FILE` in the lab's `notifiers/slack/slack.env`. A lab naming neither has no
+Slack, and two labs on one machine share a channel only if they name the same files.
 
 ## Two paths, two credentials
 
 Outbound and inbound use different endpoints and different credentials. Neither passes
 through the other, and neither passes through the app — the app is an identity, not a hop.
 
-**Outbound.** `framework/slack_notify.sh` POSTs to the webhook URL. The URL alone
+**Outbound.** `framework/notify.sh` records the message and hands it to
+`notifiers/slack/notify.sh`, which POSTs to the webhook URL. The URL alone
 authorises it, so any machine holding the file can post.
 
-**Inbound.** `framework/slack_to_board.py` polls
+**Inbound.** `notifiers/slack/reader.py` polls
 `https://slack.com/api/conversations.history` with the bot token, every 5 seconds, and
 delivers any message mentioning the bot. Where it delivers depends on the secretary's
 heartbeat in `workspace/run/secretary_heartbeat`:
@@ -85,18 +88,18 @@ in `list_agents.sh`, alongside the Claude session id for reading a finished run 
 
 | | runs where | needs |
 |---|---|---|
-| campaign agent | any machine, one per campaign | `~/.slack_webhook` |
-| bridge | one per lab | `~/.slack_bot_token`, the channel ID |
-| secretary | one per lab | `~/.slack_webhook` |
+| campaign agent | any machine, one per campaign | `SLACK_WEBHOOK_FILE` |
+| bridge | one per lab | `SLACK_BOT_TOKEN_FILE`, the channel ID |
+| secretary | one per lab | `SLACK_WEBHOOK_FILE` |
 
 Both are started by `bin/lab.sh start`, which runs whatever `lab.yaml` switches on.
 
-Every post carries `*[$SLACK_PREFIX]*` — the campaign and agent for a research agent,
-`secretary` for the secretary — applied in `slack_notify.sh` so one channel shared by
-several campaigns stays readable.
+Every post carries `*[$NOTIFY_PREFIX]*` — the campaign and agent for a research agent,
+`secretary` for the secretary — applied in `notifiers/slack/notify.sh` so one channel
+shared by several campaigns stays readable.
 
 The channel ID is in `lab.yaml` and the bot name and credential paths in
-`notifiers/slack.env`, each copied from the template beside it and untracked. The
+`notifiers/slack/slack.env`, each copied from the template beside it and untracked. The
 credentials themselves stay where they are, outside the repository.
 
 Which is why joining a lab is a one-line setup: you need the channel and the webhook URL,
