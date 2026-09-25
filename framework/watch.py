@@ -25,6 +25,7 @@ import http.server
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 import sys
@@ -208,6 +209,53 @@ def secretary_live():
             return (time.time() - float(fh.read().strip())) <= SECRETARY_ALIVE_WITHIN
     except Exception:
         return False
+
+
+# What `lab.sh status` last said, and when. The page polls, and each ask is a bash and
+# a python3; a few seconds stale is not worth spawning those every second.
+_services = {"at": 0.0, "rows": []}
+SERVICES_TTL = 3
+
+
+def lab_services(force=False):
+    """The lab's own processes and whether they are up.
+
+    Asked of `lab.sh` rather than worked out here: which services a lab has is
+    lab.yaml's business and what counts as running is that script's, and a second
+    opinion in this file would be one to keep in step."""
+    now = time.time()
+    if not force and now - _services["at"] < SERVICES_TTL:
+        return _services["rows"]
+    rows = []
+    try:
+        out = subprocess.run(["./lab.sh", "status"], cwd=os.path.join(LAB_DIR, "bin"),
+                             capture_output=True, text=True, timeout=60).stdout
+    except Exception as e:
+        out = ""
+        rows.append({"service": "lab.sh", "running": False, "detail": str(e)})
+    for line in out.splitlines():
+        name, _, rest = line.strip().partition(":")
+        rest = rest.strip()
+        if name and rest:
+            rows.append({"service": name, "running": rest.startswith("running"),
+                         "detail": rest})
+    _services.update(at=now, rows=rows)
+    return rows
+
+
+def lab_control(action):
+    """Start or stop those processes, by running what a person would run. `lab.sh` owns
+    what that means -- which services, in which order, and leaving alone anything it did
+    not start itself. Starting waits for each service to come up, so this is slow, and
+    the page is told what the script printed rather than a bare success."""
+    try:
+        done = subprocess.run(["./lab.sh", action], cwd=os.path.join(LAB_DIR, "bin"),
+                              capture_output=True, text=True, timeout=300)
+        text = (done.stdout + done.stderr).strip() or f"{action}: nothing to do"
+    except Exception as e:
+        text = f"{action} failed: {e}"
+    _services["at"] = 0.0          # whatever it did, the cached answer is now stale
+    return text
 
 
 def lab_users():
@@ -432,6 +480,22 @@ PAGE = """<!doctype html>
  header b.here { cursor:default; }
  /* The lab: every campaign it has, and which of them is doing something. A row is the
     way in, so the whole row answers to the pointer rather than a link inside it. */
+ /* The lab's own processes, above the chat that talks to one of them: what is up, and
+    the button that changes it. It stays put whatever the state and says what it would
+    do -- a control that comes and goes is one you cannot find when you want it. */
+ #labsvc { display:none; flex:none; padding:10px 12px;
+            background:#0b0f14; border-top:1px solid #2b3946; }
+ #labsvc .svcs { display:flex; flex-wrap:wrap; gap:18px; align-items:center; }
+ #labsvc .svc { color:#888; }
+ #labsvc .svc.up { color:#7aa87a; }
+ #labsvc .dot { display:inline-block; width:7px; height:7px; border-radius:50%%;
+                background:#3a3a3a; margin-right:7px; vertical-align:middle; }
+ #labsvc .svc.up .dot { background:#3d7a3d; }
+ #labsvc .acts { margin-left:auto; display:flex; gap:8px; }
+ #labsvc button { background:#1b2836; color:#cfe0f0; border:1px solid #2b3946;
+                  padding:3px 12px; cursor:pointer; font:inherit; }
+ #labsvc button:hover:enabled { background:#24374b; color:#fff; }
+ #labsvc button:disabled { opacity:.5; cursor:default; }
  #lab { display:none; padding:12px; }
  #lab table { width:100%%; margin:0; }
  #lab th { text-align:left; color:#6f8296; font-weight:normal;
@@ -546,8 +610,11 @@ PAGE = """<!doctype html>
 <select id="camp"><option>%(campaign)s</option></select>\
 <span id="head">connecting\u2026</span></header>
 <div id="tabs"></div>
-<div id="pane"><pre id="view">loading\u2026</pre><div id="lab"></div><div id="labusers"></div></div>
+<div id="pane"><pre id="view">loading\u2026</pre>\
+<div id="lab"></div><div id="labusers"></div></div>
 <button id="newest">\u2193 newest</button>
+<div id="labsvc"><div class="svcs"><span id="svclist"></span>\
+<span class="acts"><button id="labrun">start lab</button></span></div></div>
 <div id="chat">
   <div id="chathead">CHAT</div>
   <div id="chatlog" class="none">no messages yet</div>
@@ -900,12 +967,14 @@ async function say() {
 // process on another port.
 const camp = document.getElementById("camp"), labPane = document.getElementById("lab");
 const usersPane = document.getElementById("labusers");
+const svcPane = document.getElementById("labsvc");
 
 // Paint the frame for where we are. The lab has no file tabs and no chat: there is no
 // one agent to read them for. The chat bar names the campaign it would write to, so a
 // line meant for one agent cannot reach another unnoticed.
 function showScope() {
   const lab = scope === "lab";
+  svcPane.style.display = lab ? "block" : "none";
   labPane.style.display = lab ? "block" : "none";
   usersPane.style.display = lab ? "block" : "none";
   view.style.display = lab ? "none" : "";
@@ -1111,12 +1180,55 @@ async function labRefresh() {
   catch (e) { document.getElementById("head").textContent = "watcher stopped"; return; }
   if (scope !== "lab") return;
   usersRefresh();
+  servicesRefresh();
   const live = rows.filter(r => r.live).length;
   document.getElementById("head").textContent =
     `${rows.length} campaign${rows.length === 1 ? "" : "s"} \u00b7 ` +
     (live ? `${live} running` : "none running");
   renderLab(rows);
 }
+
+// The lab's own processes. Polled with everything else, and driven by the button beside
+// them: the dots are the answer, so what the script printed is not shown.
+function renderServices(rows) {
+  const list = document.getElementById("svclist");
+  const html = rows.length
+    ? rows.map(r => `<span class="svc${r.running ? " up" : ""}" title="${esc(r.detail)}">` +
+                    `<span class="dot"></span>${esc(r.service)}</span>`).join(" ")
+    : `<span class="svc">nothing switched on in lab.yaml</span>`;
+  if (list.innerHTML !== html) list.innerHTML = html;
+  // One button, because there is one thing to do: whatever is not running, start it;
+  // when it all is, the only move left is stopping it.
+  const button = document.getElementById("labrun");
+  const running = rows.length > 0 && rows.every(r => r.running);
+  if (!button.disabled) {
+    button.dataset.act = running ? "stop" : "start";
+    button.textContent = running ? "stop lab" : "start lab";
+  }
+}
+
+async function servicesRefresh() {
+  let rows;
+  try { rows = await (await fetch("/services")).json(); } catch (e) { return; }
+  if (scope === "lab") renderServices(rows);
+}
+
+// A start waits for each service to come up, so the button says so rather than looking
+// ignored. It stays in place throughout -- disabled while the script runs, never gone.
+async function labControl(action) {
+  const button = document.getElementById("labrun");
+  button.disabled = true;
+  button.textContent = action === "start" ? "starting\u2026" : "stopping\u2026";
+  try {
+    const d = await (await fetch("/services?do=" + action, {method: "POST"})).json();
+    if (d.services) renderServices(d.services);
+  } catch (e) {}
+  button.disabled = false;
+  chat();
+}
+
+document.getElementById("labrun").onclick = e =>
+  labControl(e.currentTarget.dataset.act || "start");
 
 async function campaignList() {
   let names;
@@ -1243,10 +1355,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """The one write: a message for the agent. It lands on the board the agent reads
         between turns, and in the conversation the page shows."""
         url = urllib.parse.urlparse(self.path)
-        if url.path != "/say":
+        if url.path not in ("/say", "/services"):
             self.send_error(404)
             return
         q = urllib.parse.parse_qs(url.query, keep_blank_values=True)
+        if url.path == "/services":
+            # The lab's processes, started and stopped from the page that reports them.
+            action = (q.get("do") or [""])[0]
+            if action not in ("start", "stop"):
+                self._send(json.dumps({"ok": False, "text": "start or stop"}),
+                           "application/json")
+                return
+            self._send(json.dumps({"ok": True, "text": lab_control(action),
+                                   "services": lab_services(force=True)}),
+                       "application/json")
+            return
         campaign = self._campaign(q)
         length = int(self.headers.get("Content-Length") or 0)
         text = self.rfile.read(length).decode("utf-8", "replace").strip()
@@ -1305,6 +1428,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                    "secretary": secretary_live(),
                                    "slack": slack_attached()}),
                        "application/json")
+        elif url.path == "/services":
+            self._send(json.dumps(lab_services()), "application/json")
         elif url.path == "/users":
             self._send(json.dumps(lab_users()), "application/json")
         elif url.path == "/lab":
