@@ -480,11 +480,12 @@ PAGE = """<!doctype html>
  header b.here { cursor:default; }
  /* The lab: every campaign it has, and which of them is doing something. A row is the
     way in, so the whole row answers to the pointer rather than a link inside it. */
- /* The lab's own processes, above the chat that talks to one of them: what is up, and
-    the button that changes it. It stays put whatever the state and says what it would
-    do -- a control that comes and goes is one you cannot find when you want it. */
- #labsvc { display:none; flex:none; padding:10px 12px;
-            background:#0b0f14; border-top:1px solid #2b3946; }
+ /* The lab's own processes, at the top of the page and ruled off from the campaigns
+    below: what is up, and the button that changes it. It stays put whatever the state
+    and says what it would do -- a control that comes and goes is one you cannot find
+    when you want it. */
+ #labsvc { display:none; padding:12px; margin-bottom:8px;
+            border-bottom:1px solid #2b3946; }
  #labsvc .svcs { display:flex; flex-wrap:wrap; gap:18px; align-items:center; }
  #labsvc .svc { color:#888; }
  #labsvc .svc.up { color:#7aa87a; }
@@ -611,10 +612,10 @@ PAGE = """<!doctype html>
 <span id="head">connecting\u2026</span></header>
 <div id="tabs"></div>
 <div id="pane"><pre id="view">loading\u2026</pre>\
+<div id="labsvc"><div class="svcs"><span id="svclist"></span>\
+<span class="acts"><button id="labrun">start lab</button></span></div></div>\
 <div id="lab"></div><div id="labusers"></div></div>
 <button id="newest">\u2193 newest</button>
-<div id="labsvc"><div class="svcs"><span id="svclist"></span>\
-<span class="acts"><button id="labrun">start lab</button></span></div></div>
 <div id="chat">
   <div id="chathead">CHAT</div>
   <div id="chatlog" class="none">no messages yet</div>
