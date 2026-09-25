@@ -11,14 +11,14 @@ An experimental lab for persistent agent tasks that submit work to HPC systems.
 Built on the same machinery as
 [CAS framework](https://github.com/shuds13/cas-framework), which coordinates many
 agents on a single search campaign. AgentLab allows a user or team to run any number of
-investigations side by side, all visible and steerable from one Slack channel.
+investigations side by side, all visible and steerable from one UI or Slack channel.
 
 You give an agent a goal and a system. It submits the work, reads what comes back,
 decides what to try next, and keeps going until it has an answer.
 
 Each investigation is a **campaign**. Campaigns are independent and can run at the same
 time, sharing the framework, the system definitions, and optionally one Slack app and
-secretary, so nobody stands up new infrastructure per question.
+secretary.
 
 ## Structure
 
