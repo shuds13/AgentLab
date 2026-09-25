@@ -1411,13 +1411,11 @@ def main():
     # The campaign is which one to open on, not which one this can serve: the page
     # switches between all of them. Left out, it opens on the lab -- every campaign and
     # which of them is running -- and the campaign behind that is the most recent one,
-    # so going into a campaign from the header lands somewhere sensible.
-    campaign = args[0] if args else latest_campaign()
-    if not campaign:
-        sys.exit(f"no campaign has run yet in {os.path.join(LAB_DIR, 'workspace')}")
-    ws = workspace(campaign)
-    if not os.path.isdir(ws):
-        sys.exit(f"no workspace at {ws} -- has this campaign run?")
+    # so going into a campaign from the header lands somewhere sensible. A lab where
+    # nothing has run yet opens the same way, on a lab page with no campaigns in it.
+    campaign = args[0] if args else (latest_campaign() or "")
+    if args and not os.path.isdir(workspace(campaign)):
+        sys.exit(f"no workspace at {workspace(campaign)} -- has this campaign run?")
 
     Handler.campaign = campaign
     Handler.open_on_lab = not args
