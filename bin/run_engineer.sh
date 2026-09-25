@@ -5,7 +5,6 @@
 # Run from this dir: ./run_engineer.sh
 set -euo pipefail
 cd "$(dirname "$0")"
-# source "$HOME/miniconda3/etc/profile.d/conda.sh" && conda activate agentlab
 umask 002
 export PATH="$HOME/.local/bin:$PATH"
 . ../framework/settings.sh

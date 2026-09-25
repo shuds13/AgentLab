@@ -5,6 +5,10 @@
 # Copy to lab.yaml and edit. That copy is not tracked. Every setting is explained in
 # docs/settings.md; this file is meant to be read at a glance, not to explain itself.
 
+# The environment this lab's code runs in. bin/lab.sh starts its processes without a
+# login shell, so whatever a person's shell sets up is not there.
+activate:   # conda activate agentlab
+
 bridge:     off         # Slack messages reach the secretary
 secretary:  on          # answers from the records, starts and stops runs
 engineer:   off         # this repository, worked on from a channel of its own

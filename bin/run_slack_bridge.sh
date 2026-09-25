@@ -6,7 +6,6 @@
 # Run from this dir: ./run_slack_bridge.sh
 set -euo pipefail
 cd "$(dirname "$0")"
-# source "$HOME/miniconda3/etc/profile.d/conda.sh" && conda activate cas
 umask 002
 . ../framework/settings.sh
 export WORKSPACE_ROOT="$(cd ../workspace && pwd)"   # all campaigns

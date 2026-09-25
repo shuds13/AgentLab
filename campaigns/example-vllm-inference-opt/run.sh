@@ -7,8 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Environment providing the claude CLI and the Python packages in requirements.txt.
-# source "$HOME/miniconda3/etc/profile.d/conda.sh" && conda activate agentlab
+# The environment comes from lab.yaml's `activate`, by way of settings.sh below.
 export PATH="$HOME/.local/bin:$PATH"
 
 # What this installation has available -- model gateways, credentials. Anything below

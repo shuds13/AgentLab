@@ -20,6 +20,7 @@ Untracked, because it is this installation's, not the framework's.
 
 | | | |
 |---|---|---|
+| `activate` | — | a line of shell putting the lab's environment in place — conda, a venv, `module load` — run by `settings.sh` before anything needs an interpreter. The processes `lab.sh` starts get no login shell, so a person's own setup is not there |
 | `bridge` | off | forward Slack messages to the secretary and the boards |
 | `secretary` | off | answer from the records, start and stop runs |
 | `engineer` | off | this repository, worked on from a channel of its own |

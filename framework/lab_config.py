@@ -24,6 +24,7 @@ PATH = os.path.join(LAB_DIR, "lab.yaml")
 # sees; names on the right are what the code has always called them. CRITIC_GATEWAY_START
 # is not among them: it is built, below, out of the bin, the config and the port.
 AS_ENV = {
+    "activate": "LAB_ACTIVATE",
     "litellm-url": "CRITIC_BASE_URL",
     "litellm-config": "LITELLM_CONFIG",
     "litellm-key-file": "CRITIC_API_KEY_FILE",
