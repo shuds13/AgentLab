@@ -1461,6 +1461,7 @@ async def main():
                 print(f"[turn {turn_num}] new_submits={new_submits} "
                       f"in_flight={tools.jobs_in_flight()} pending={tools.pending_count()}",
                       flush=True)
+                _write_meta(turns=turn_num)
 
                 # Start winding down when the budget is spent or time is up. Only the
                 # DECISION happens here -- outstanding work still drains below, so a
