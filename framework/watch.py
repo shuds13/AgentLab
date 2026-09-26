@@ -81,12 +81,20 @@ def newest_run(campaign):
 
     Not simply the newest meta.json -- a live run writes its meta once at startup and
     a finished one writes its own at exit, so a run that ended later looks newer than
-    a run still going, and the view would stick to the finished one."""
+    a run still going, and the view would stick to the finished one.
+
+    Live means a RECENT heartbeat, not the file existing. A run killed outright leaves
+    its heartbeat behind, and counting that as live pins the view to a dead run for
+    good: every later run ends and removes its own, so the abandoned one is the only
+    candidate left."""
     metas = glob.glob(os.path.join(workspace(campaign), "runs", "*", "meta.json"))
     if not metas:
         return None
-    live = [m for m in metas
-            if os.path.isfile(os.path.join(os.path.dirname(m), "heartbeat"))]
+    live = []
+    for m in metas:
+        age = _beat_age(os.path.dirname(m))
+        if age is not None and age < AGENT_ALIVE_WITHIN:
+            live.append(m)
     return os.path.dirname(max(live or metas, key=os.path.getmtime))
 
 
