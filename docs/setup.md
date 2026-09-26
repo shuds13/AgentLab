@@ -69,7 +69,7 @@ proxy, cache paths, queue defaults, and `endpoint_template`, the directory under
 shared by every campaign.
 
 A machine with no batch system says `"needs_account": false`, since there is nothing to
-charge, and its `users/<you>/<system>.json` gives only the endpoint and `work_dir`.
+charge, and its `users/<you>/<system>.json` gives only the endpoint and `work_root`.
 
 ## 4. Describe your access
 
@@ -80,11 +80,20 @@ charge, and a writable working directory on the compute system.
 {
   "endpoint": "<uuid from step 2>",
   "account": "<project>",
-  "work_dir": "/path/on/compute/system/agentlab_runs"
+  "work_root": "/path/on/compute/system/agentlab_runs"
 }
 ```
 
-Create that directory on the compute system before the first run.
+`work_root` is the directory campaigns sit under: the campaign name is appended, so
+`work_root/<campaign>` is where a run's jobs write. Two campaigns on one system then
+keep their own angles and logs, and a second campaign needs no edit here.
+
+Use `work_dir` instead to name one exact path, for a campaign that should write
+somewhere of its own choosing, or two that are meant to share. It wins over
+`work_root`. One of the two is required.
+
+Create the directory on the compute system before the first run. The resolved path is
+printed at preflight and recorded in each run's `meta.json`.
 
 ## 5. Run
 

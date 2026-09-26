@@ -91,10 +91,19 @@ _user_path = os.path.join(LAB_DIR, "users", USER_NAME, f"{SYSTEM}.json")
 if HAS_REMOTE:
     # A system with no batch scheduler has nothing to charge, so it says so and the
     # account is not asked for.
-    _needs = ("endpoint", "work_dir")
+    _needs = ("endpoint",)
     if _sys_cfg.get("needs_account", True):
         _needs += ("account",)
     _usr = _read_json(_user_path, f"your access to '{SYSTEM}'", needs=_needs)
+    # Where this campaign's jobs write. `work_dir` names it outright and wins;
+    # `work_root` is the directory campaigns sit under, with the campaign appended.
+    if not _usr.get("work_dir"):
+        _root = _usr.get("work_root")
+        if not _root:
+            raise SystemExit(
+                f"{_user_path} needs 'work_dir' (an exact path) or 'work_root' "
+                f"(the directory campaigns sit under; '{CAMPAIGN}' is appended).")
+        _usr["work_dir"] = os.path.join(_root, CAMPAIGN)
 else:
     _usr = (_read_json(_user_path, f"your access to '{SYSTEM}'")
             if os.path.isfile(_user_path) else {})
@@ -147,6 +156,7 @@ _cam_target = dict(_cam.get("target", {}))
 TARGET["env"] = {**TARGET.get("env", {}), **_cam_target.pop("env", {})}
 TARGET.update(_cam_target)
 TARGET["work_dir"] = _usr["work_dir"]
+WORK_DIR = _usr["work_dir"]     # surfaced at preflight and recorded in meta.json
 TARGET.setdefault("ppn", _sys_cfg.get("ppn", 1))
 TARGET["nranks"] = _SYS["buckets"][_default_bucket].get("num_nodes", 1) * TARGET["ppn"]
 

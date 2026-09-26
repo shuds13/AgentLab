@@ -831,6 +831,7 @@ def _start_run_dir():
                 max_turns=MAX_TURNS, critic=CRITIC_LABEL,
                 run_id=RUN_ID, handle=HANDLE, system=SYSTEM, role=ROLE,
                 endpoint=tools.ENDPOINT_ID if tools.HAS_REMOTE else "",
+                work_dir=tools.WORK_DIR,
                 has_local=tools.HAS_LOCAL,
                 started_by=os.environ.get("STARTED_BY", ""),
                 host=socket.gethostname(), pid=os.getpid(),
@@ -1042,6 +1043,8 @@ def preflight():
     backend = (f"endpoint online ({SYSTEM} {tools.ENDPOINT_ID})" if tools.HAS_REMOTE
                else "local execution only")
     print(f"preflight OK: task_dir={tools.TASK_DIR}, method.md, WORKSPACE_DIR, {backend}.", flush=True)
+    if tools.HAS_REMOTE:
+        print(f"work_dir:     {tools.WORK_DIR}", flush=True)
     # The gateway converts between the Messages API and a backend that does not speak
     # it. The agent needs it whenever it is pointed at one, whether or not there is a
     # critic: a run on a non-Anthropic model goes through the same proxy.
