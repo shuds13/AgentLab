@@ -15,20 +15,14 @@ export USER_NAME="${USER_NAME:-$USER}"
 # A workspace of its own, so these results sit beside run.sh's rather than among them.
 export WORKSPACE_DIR="$(cd ../.. && pwd)/workspace/${CAMPAIGN}-nemotron"
 
-# Claude Code reads its endpoint from its own settings in preference to the
-# environment, so the model is chosen by giving it a config directory rather than by
-# setting ANTHROPIC_BASE_URL here. That directory is its whole config home and it
-# fills it with transcripts, logs and caches, so it is staged in the workspace where
-# run output already lives; the .settings.json beside this script is the part worth
-# keeping. docs/llm.md covers the one-time authentication it needs.
+# The endpoint and model, from settings Claude Code reads in preference to the
+# environment. Built in the workspace, since it fills with transcripts and caches.
 export CLAUDE_CONFIG_DIR="$WORKSPACE_DIR/claude"
 mkdir -p "$CLAUDE_CONFIG_DIR"
 cp run_nemotron.settings.json "$CLAUDE_CONFIG_DIR/settings.json"
 
-# The service takes a Globus access token as a bearer credential, which is what
-# ANTHROPIC_AUTH_TOKEN sends; a key given any other way arrives as x-api-key and is
-# refused. Fetched per run rather than stored, since a token lasts 48 hours -- and so
-# a run longer than that outlives its credential.
+# A bearer token, which is what ANTHROPIC_AUTH_TOKEN sends; anything else arrives as
+# x-api-key and is refused. Lasts 48 hours, so fetched per run. docs/llm.md
 export ANTHROPIC_AUTH_TOKEN="$(python3 ~/inference_auth_token.py get_access_token)"
 
 # Jobs take about a second, so a run that proves the machinery works is minutes.
@@ -36,7 +30,7 @@ export ANTHROPIC_AUTH_TOKEN="$(python3 ~/inference_auth_token.py get_access_toke
 export MAX_SUBMITS=24
 export MAX_RUNTIME=900
 
-# Tokens and, where the price is the model's own, dollars -- in the viewer and Slack.
+# Tokens in the viewer and Slack; no dollars, the price would not be this model's.
 export SHOW_COST=true
 
 # Notifications if set up

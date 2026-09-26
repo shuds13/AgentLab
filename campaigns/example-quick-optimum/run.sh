@@ -16,7 +16,7 @@ export USER_NAME="${USER_NAME:-$USER}"
 export MAX_SUBMITS=24
 export MAX_RUNTIME=900
 
-# Tokens and, where the price is the model's own, dollars -- in the viewer and Slack.
+# Tokens and dollars in the viewer and Slack.
 export SHOW_COST=true
 
 # Notifications if set up
