@@ -395,6 +395,7 @@ def status(campaign):
         "context_window": meta.get("context_window"),
         "context_pct": meta.get("context_pct"),
         "cost_models": meta.get("cost_models") or [],
+        "turns": meta.get("turns"),
         "started_at": started, "ended_at": meta.get("ended_at"),
         "elapsed_s": elapsed, "heartbeat_age_s": age,
         "phase": phase, "phase_age_s": phase_age,
@@ -729,7 +730,8 @@ function renderStatus(s) {
     ["run", `${s.handle || "\u2014"} \u00b7 ${s.run}`],
     ["state", s.status === "running"
         ? `running \u00b7 heartbeat ${hms(s.heartbeat_age_s)} ago`
-        : `${s.status} \u00b7 ${s.stop_reason || ""}`],
+        : `${s.status} \u00b7 ${s.stop_reason || ""}`
+          + (s.turns ? ` \u00b7 after ${s.turns} turn${s.turns === 1 ? "" : "s"}` : "")],
     ["doing", s.status === "running" && s.phase
         ? `${s.phase} \u00b7 ${hms(s.phase_age_s)}` : "\u2014"],
     // Where the work ran, next to the counts of it. A campaign whose task defines both
