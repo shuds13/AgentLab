@@ -1,0 +1,16 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://inference-api.alcf.anl.gov/resource_server/minerva/api"
+  },
+  "modelPicker": {
+    "options": [
+      {
+        "model": "nemotron-3-ultra",
+        "label": "Nemotron Ultra",
+        "description": "ALCF inference service, Minerva",
+        "behavesAs": "claude-opus-5"
+      }
+    ]
+  },
+  "model": "nemotron-3-ultra"
+}

@@ -24,6 +24,95 @@ Set the base URL and the model in `~/.claude/settings.json`:
 Nothing in `framework/` changes. Tools, permissions and context handling are the
 SDK's, unchanged.
 
+## The ALCF inference service
+
+[ALCF's inference endpoints](https://docs.alcf.anl.gov/services/inference-endpoints/)
+serve open models on facility hardware, across three clusters. Which one a model is on
+decides how a campaign reaches it:
+
+| Cluster | Serves | Path here |
+|---|---|---|
+| Minerva (B200) | Messages API, among others | directly, as above |
+| Sophia (A100, vLLM) | chat completions | through LiteLLM |
+| Metis (SambaNova SN40L) | chat completions | through LiteLLM |
+
+Minerva is the one that needs no translation layer, so a model there is the simplest
+case in this document. `nemotron-3-ultra` is on Minerva, and
+`campaigns/example-quick-optimum/run_nemotron.sh` runs against it.
+
+### Authenticating
+
+The service has no static API key. It authenticates with Globus, and the OAuth access
+token goes wherever a key would. ALCF's helper script does the exchange; fetch it once
+and run it in the lab's environment, which is where a campaign will call it from:
+
+```
+wget -O ~/inference_auth_token.py https://raw.githubusercontent.com/argonne-lcf/inference-endpoints/refs/heads/main/inference_auth_token.py && python3 ~/inference_auth_token.py authenticate
+```
+
+It needs `globus_sdk`, which `globus-compute-sdk` in `requirements.txt` already brings
+in, so there is nothing to install. It prints a URL to authorise in a browser and
+writes tokens under `~/.globus/app/`. An access token lasts 48
+hours and `get_access_token` refreshes an expired one by itself; ALCF requires
+re-authentication every 30 days, with `--force`.
+
+The token is a bearer credential, so it has to arrive as `ANTHROPIC_AUTH_TOKEN`.
+`apiKeyHelper` and `ANTHROPIC_API_KEY` send `x-api-key` instead, which the service
+answers with 401. Fetch it in the campaign's `run.sh`, so nothing is stored and each
+run gets a current one:
+
+```
+export ANTHROPIC_AUTH_TOKEN="$(python3 ~/inference_auth_token.py get_access_token)"
+```
+
+A run lasting more than 48 hours outlives its token; there is no in-flight refresh,
+since the mechanism for one sends the wrong header.
+
+The settings file holds the endpoint and the model:
+
+```json
+{
+  "env": {"ANTHROPIC_BASE_URL": "https://inference-api.alcf.anl.gov/resource_server/minerva/api"},
+  "modelPicker": {"options": [{"model": "nemotron-3-ultra", "label": "Nemotron Ultra", "behavesAs": "claude-opus-5"}]},
+  "model": "nemotron-3-ultra"
+}
+```
+
+Two details in that file are easy to get wrong, and both fail as "There's an issue with
+the selected model", which names neither cause:
+
+- The base URL stops at `/api`. Claude Code appends `/v1/messages` itself, so ALCF's
+  published URL -- which ends in `/v1` -- produces `/v1/v1/messages` and a 404.
+- `modelPicker` is what makes an unknown model selectable at all. Claude Code offers
+  only models in its own catalog, and `behavesAs` names a model it does know whose
+  client-side handling to borrow. The model ID sent upstream is unchanged. Without the
+  row the model is refused before any request is made.
+
+`behavesAs` also settles the context window, which would otherwise default to 200k
+regardless of the model's own. `CLAUDE_CODE_MAX_CONTEXT_TOKENS` sets it explicitly.
+
+Point `CLAUDE_CONFIG_DIR` at a directory holding that file, as under "A different
+model for one campaign" below, and the rest of the lab keeps whatever endpoint it was
+using. That directory is Claude Code's whole config home, not just a settings file --
+it accumulates transcripts, debug logs and caches -- so a campaign is tidier staging
+it into the workspace at launch than keeping it beside the task:
+
+```
+export CLAUDE_CONFIG_DIR="$WORKSPACE_DIR/claude"
+mkdir -p "$CLAUDE_CONFIG_DIR"
+cp run_nemotron.settings.json "$CLAUDE_CONFIG_DIR/settings.json"
+```
+
+`campaigns/example-quick-optimum/run_nemotron.sh` and `run_nemotron.settings.json` beside it
+are a working example.
+
+A model on Sophia or Metis is the LiteLLM case instead, since those clusters serve
+chat completions only. `litellm/config.yaml.template` has entries for both. The same
+access token is what `ALCF_INFERENCE_API_KEY` holds -- and LiteLLM passes the caller's
+credential upstream, so it also has to be what the campaign presents to the proxy.
+Tool calling is not currently supported on Metis, which rules that cluster out for
+agent runs.
+
 ## A model that is not Claude, through LiteLLM
 
 [LiteLLM](https://docs.litellm.ai) exposes a `/v1/messages` endpoint in Anthropic
