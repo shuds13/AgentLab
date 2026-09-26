@@ -386,6 +386,7 @@ def status(campaign):
         "context_tokens": meta.get("context_tokens"),
         "context_window": meta.get("context_window"),
         "context_pct": meta.get("context_pct"),
+        "cost_models": meta.get("cost_models") or [],
         "started_at": started, "ended_at": meta.get("ended_at"),
         "elapsed_s": elapsed, "heartbeat_age_s": age,
         "phase": phase, "phase_age_s": phase_age,
@@ -691,6 +692,18 @@ const hms = s => s == null ? "\u2014" :
   (s >= 3600 ? Math.floor(s/3600) + "h " : "") +
   (s >= 60 ? Math.floor(s%%3600/60) + "m " : "") + (s%%60) + "s";
 
+// What the run consumed. A dash for the money means the price was not the serving
+// model's own, not that the run was free -- the runner drops a figure it cannot stand
+// behind rather than printing a catalog price for a model the catalog does not cover.
+function costRows(models) {
+  if (!models || !models.length) return [];
+  return models.map(m => [
+    models.length > 1 ? `cost · ${m.model}` : "cost",
+    `${short(m.input_tokens)} in / ${short(m.output_tokens)} out · `
+      + (m.usd == null ? "—"
+         : "$" + m.usd.toFixed(2))]);
+}
+
 // A budget is a ceiling, not a target: an agent that has answered its question stops
 // early, so the bar shows how much of the allowance is used, not progress towards it.
 function bar(done, total, fmt) {
@@ -739,6 +752,7 @@ function renderStatus(s) {
         : s.context_pct == null
         ? `${short(s.context_tokens)} (window not known yet)`
         : `${short(s.context_tokens)}/${short(s.context_window)} (${Math.round(s.context_pct)}%%)`)],
+    ...costRows(s.cost_models),
     ["critic", s.critic || "\u2014"],
     // The run's Claude session, to reopen afterwards with `claude -r`. Copying is
     // offered once the run has stopped: opening a session the runner still holds puts

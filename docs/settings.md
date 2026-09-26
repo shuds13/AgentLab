@@ -82,6 +82,7 @@ Slack and notification. Without `SLACK_WEBHOOK_FILE` these do nothing.
 | | default | |
 |---|---|---|
 | `WATCH` | false | serve this run for a browser at `http://127.0.0.1:<WATCH_PORT>/` — its log as it is written, and the files it writes |
+| `SHOW_COST` | false | report what the run consumed beside the context figure, in the viewer and in Slack. Tokens always; dollars only for a Claude model reached directly, since Claude Code prices an unknown model at the rate of whatever it is mapped onto and a gateway model at nothing it can verify — those show `—` |
 | `WATCH_PORT` | 8765 | port the viewer listens on, so two runs can be watched at once |
 | `WATCH_IDLE` | 600 | seconds without anyone looking before the viewer stops itself; it outlives the run, since that is when its records are worth reading |
 | `SLACK_WEBHOOK_FILE` | — | file holding the incoming webhook for outbound posts, named in `notifiers/slack/slack.env`; unset means this lab has no Slack |

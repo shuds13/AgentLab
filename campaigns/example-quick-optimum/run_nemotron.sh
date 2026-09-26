@@ -36,6 +36,9 @@ export ANTHROPIC_AUTH_TOKEN="$(python3 ~/inference_auth_token.py get_access_toke
 export MAX_SUBMITS=24
 export MAX_RUNTIME=900
 
+# Tokens and, where the price is the model's own, dollars -- in the viewer and Slack.
+export SHOW_COST=true
+
 # Notifications if set up
 export NOTIFY_START=true
 export NOTIFY_DAILY=false

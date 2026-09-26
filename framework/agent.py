@@ -207,6 +207,10 @@ def _bool_env(name, default=False):
     v = os.environ.get(name)
     return default if v is None else v.strip().lower() in ("1", "true", "yes", "on")
 
+# What the run consumed, reported beside the context figure. Tokens always; dollars
+# only where the price is the serving model's own -- see _note_cost.
+SHOW_COST = _bool_env("SHOW_COST", False)
+
 # A browser view of this run: the log as it is written and the files it writes. Off
 # unless asked for, and it never affects the run -- it only reads the workspace.
 WATCH = _bool_env("WATCH", False)
@@ -336,6 +340,58 @@ def _note_turn_context(usage, model=None):
     _write_meta(context_tokens=tokens, **({"context_pct": pct} if pct is not None else {}))
 
 
+_last_cost = []             # one entry per model, from the most recent result
+
+
+def _priced_honestly(model):
+    """Whether a dollar figure for this model is the model's own price.
+
+    Claude Code prices a turn from its own catalog. A model it does not know is only
+    selectable by mapping it onto one it does (`behavesAs`), and it then prices the
+    tokens at the mapped model's rate and reports `hasUnknownModelCost: false` -- a
+    confident figure for a model whose price it does not have. The same applies to
+    anything reached through the gateway, which the catalog knows nothing about. So a
+    dollar figure is kept only for a Claude model reached directly.
+    """
+    return bool(model) and model.startswith("claude-") and not GATEWAY_URL
+
+
+def _note_cost(message):
+    """Record what the run has consumed, off the result message that ends a turn.
+
+    `model_usage` is keyed by model, so a subagent on a model of its own, or a run that
+    changes model, is several entries rather than one. The CLI's totals are cumulative
+    for the session, so this replaces what it held rather than adding to it."""
+    usage = getattr(message, "model_usage", None)
+    if not usage:
+        return
+    entries = []
+    for model, u in sorted(usage.items()):
+        entry = {"model": model,
+                 "input_tokens": (u.get("inputTokens", 0)
+                                  + u.get("cacheReadInputTokens", 0)
+                                  + u.get("cacheCreationInputTokens", 0)),
+                 "output_tokens": u.get("outputTokens", 0)}
+        if _priced_honestly(model) and u.get("costUSD") is not None:
+            entry["usd"] = u["costUSD"]
+        entries.append(entry)
+    if entries == _last_cost:
+        return
+    _last_cost[:] = entries
+    _write_meta(cost_models=entries)
+
+
+def _fmt_cost(entries, sep=" · "):
+    """The cost line as the status pane and Slack both want it."""
+    parts = []
+    for e in entries:
+        money = f"${e['usd']:,.2f}" if e.get("usd") is not None else "$n/a"
+        name = f"{e['model']} " if len(entries) > 1 else ""
+        parts.append(f"{name}{e['input_tokens']:,} in / {e['output_tokens']:,} out"
+                     f" · {money}")
+    return sep.join(parts)
+
+
 async def _post_scheduled_status(client, turn_num, start_time):
     """Post the fixed-metrics scheduled status line (harness-owned, deterministic)."""
     u = _last_context
@@ -343,9 +399,10 @@ async def _post_scheduled_status(client, turn_num, start_time):
     tok, win, pct = u.get("tokens"), u.get("window"), u.get("pct")
     ctx = (f"ctx ~{tok}/{win} (~{pct:.0f}%)"
            if tok is not None and win and pct is not None else "ctx n/a")
+    cost = f" · {_fmt_cost(_last_cost)}" if SHOW_COST and _last_cost else ""
     notify_lab(f"📅 Scheduled Status — {model}, "
                  f"turn {turn_num} · {tools.submit_count()} remote / {tools.local_submit_count()} local "
-                 f"this session · {tools.jobs_in_flight()} in-flight · {ctx} · "
+                 f"this session · {tools.jobs_in_flight()} in-flight · {ctx}{cost} · "
                  f"uptime {_fmt_uptime(time.time() - start_time)}")
 
 
@@ -1170,6 +1227,8 @@ async def drain_turn(client, turn_num):
                     _set_phase(f"turn {turn_num}: {_PHASES.get(bare, bare)}")
         elif isinstance(message, ResultMessage):
             _note_session(getattr(message, "session_id", None))
+            if SHOW_COST:
+                _note_cost(message)
             print(f"\n[turn {turn_num} end] {message.subtype}", flush=True)
     _note_turn_context(turn_usage, turn_model)
     # The window is the one figure a turn does not carry. Ask until it is known, then
@@ -1527,9 +1586,10 @@ async def main():
             except OSError:
                 pass
         if NOTIFY_FINISH:
+            cost = f" · {_fmt_cost(_last_cost)}" if SHOW_COST and _last_cost else ""
             notify_lab(f"🏁 Agent stopped — "
                          f"reason: {stop_reason} · {tools.submit_count()} remote / "
-                         f"{tools.local_submit_count()} local submitted · "
+                         f"{tools.local_submit_count()} local submitted{cost} · "
                          f"uptime {_fmt_uptime(time.time() - start_time)}.")
         shutdown_executor()
         print("Executor shut down.", flush=True)
