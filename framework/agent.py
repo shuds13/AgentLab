@@ -761,9 +761,14 @@ def _write_meta(**updates):
     except Exception:
         meta = {}
     meta.update(updates)
+    # Written by replacing the file, not by truncating it: the viewer reads this while
+    # a run writes it, and a reader that catches the file mid-write sees invalid JSON
+    # and reports the run as missing. os.replace is atomic within a directory.
     try:
-        with open(path, "w") as f:
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w") as f:
             json.dump(meta, f, indent=2)
+        os.replace(tmp, path)
     except Exception as e:
         print(f"[run] meta.json write failed (ignored): {e}", flush=True)
 
