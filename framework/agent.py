@@ -1040,6 +1040,14 @@ def preflight():
         os.remove(_t)
     except Exception as e:
         problems.append(f"WORKSPACE_DIR not writable ({WORKSPACE_DIR}): {e}")
+    if tools.HAS_TRANSFER:
+        # The transfer path is only checked when the user file declares it. A campaign
+        # that never transfers has no globus block, so CFG is None and this is a no-op.
+        try:
+            problems.extend(tools._transfer.preflight())
+        except Exception as e:
+            print(f"[preflight] WARNING: could not check Globus Transfer collections: {e}",
+                  flush=True)
     if problems:
         print("PREFLIGHT FAILED - cannot run. Fix these and restart:", flush=True)
         for pr in problems:

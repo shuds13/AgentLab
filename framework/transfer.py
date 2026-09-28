@@ -125,6 +125,38 @@ def _authenticated():
     return True, out
 
 
+def preflight():
+    """Check the configured collections answer, before a run that depends on them.
+
+    Only meaningful when Transfer is configured -- CFG is None otherwise and the tool is
+    not offered, so there is nothing to check. Returns a list of problems, empty when
+    the path is usable.
+
+    A local collection is most often a Globus Connect Personal that is simply not
+    running, which `ls` reports rather than the login check: `whoami` succeeds while the
+    collection is unreachable, and the first transfer of the run is then what discovers
+    it.
+    """
+    if CFG is None:
+        return []
+    ok, msg = _authenticated()
+    if not ok:
+        return [f"Globus Transfer is configured but not usable: {msg}"]
+    problems = []
+    for role in ("local_collection", "remote_collection"):
+        coll = CFG[role]
+        rc, out, err = _globus("ls", f"{coll}:/", timeout=60)
+        if rc != 0:
+            detail = (err or out or "no detail").splitlines()[0]
+            hint = ("\n    If this is Globus Connect Personal, start it: "
+                    "globusconnectpersonal -start &"
+                    if role == "local_collection" else
+                    "\n    Check the collection id and that any required consent is granted.")
+            problems.append(f"Globus {role.split('_')[0]} collection {coll} is not "
+                            f"reachable: {detail}{hint}")
+    return problems
+
+
 def _err(msg):
     return {"content": [{"type": "text", "text": msg}], "is_error": True}
 
