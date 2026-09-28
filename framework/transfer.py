@@ -207,11 +207,10 @@ def _cpath(posix_path):
     return posix_path
 
 
-def _remote_exists(coll, path):
-    """True if `path` is a directory, or a name present in its parent. Checked before a
-    get so a missing file is an immediate answer rather than a transfer Globus retries."""
-    if _remote_is_dir(coll, path):
-        return True
+def _remote_in_parent(coll, path):
+    """True if `path`'s name is listed in its parent. Only called once a path is known
+    not to be a directory, so a missing file is answered here rather than becoming a
+    transfer Globus retries."""
     parent, _, name = path.rpartition("/")
     rc, out, _ = _globus("ls", f"{coll}:{parent or '/'}", timeout=120)
     if rc != 0:
@@ -343,9 +342,9 @@ async def transfer(args):
         if dest is None:
             return _err("refusing to write outside the campaign and workspace "
                         f"directories: {local_path}")
-        if not _remote_exists(rc_coll, _cpath(path)):
-            return _err(f"no such path on the compute system: {path}")
         recursive = _remote_is_dir(rc_coll, _cpath(path))
+        if not recursive and not _remote_in_parent(rc_coll, _cpath(path)):
+            return _err(f"no such path on the compute system: {path}")
         os.makedirs(dest if recursive else os.path.dirname(dest), exist_ok=True)
         cmd = ["transfer", f"{rc_coll}:{_cpath(path)}", f"{lc_coll}:{dest}",
                "--label", "agentlab-get", "--notify", "off", "--format", "json"]
