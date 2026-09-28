@@ -739,13 +739,17 @@ function renderStatus(s) {
     ["jobs run on", (s.endpoint
         ? `${s.system || "?"} (${s.endpoint})` + (s.has_local ? ", this machine" : "")
         : "this machine")
-        // The shapes a job can be given, when there is a choice of them.
-        + (shapes.length > 1
+        // The shape a job is given -- nodes, queue, walltime -- which is worth seeing
+        // even when there is only one of them. The name and the default marker are
+        // only meaningful where there is a choice.
+        + (shapes.length
            ? `<br><span style="color:#777">` + shapes.map(([k, b]) =>
-               `${k}: ${b.num_nodes} node${b.num_nodes === 1 ? "" : "s"}` +
+               (shapes.length > 1 ? `${k}: ` : "") +
+               `${b.num_nodes} node${b.num_nodes === 1 ? "" : "s"}` +
                (b.queue ? ` on ${b.queue}` : "") + (b.walltime ? `, ${b.walltime}` : "") +
                (b.max_concurrent ? `, max ${b.max_concurrent}` : "") +
-               (k === s.default_bucket ? " (default)" : "")).join("<br>") + `</span>` : "")],
+               (shapes.length > 1 && k === s.default_bucket ? " (default)" : "")
+             ).join("<br>") + `</span>` : "")],
     ["jobs submitted", bar(s.jobs_run, s.max_submits)
         // Every configured shape, so one that has taken no work yet still shows as zero.
         + (shapes.length > 1

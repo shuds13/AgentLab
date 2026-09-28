@@ -116,13 +116,6 @@ ENDPOINT_ID = _usr.get("endpoint", "")
 _transfer.CFG = _transfer.configure(_usr, os.path.join(LAB_DIR, "workspace", CAMPAIGN),
                                    _CAMPAIGN_DIR, _sys_cfg)
 HAS_TRANSFER = _transfer.CFG is not None
-# How many jobs may be in flight at once. The system file holds a site default, bounded
-# by queue policy and allocation rather than by the size of the machine; a campaign
-# overrides it, because what is sensible depends on what one job does.
-MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT",
-                                    _cam.get("max_concurrent",
-                                             _sys_cfg.get("max_concurrent", 1))))
-
 # Named resource shapes on one system (e.g. a small quick queue and a large long one).
 # A task routes a job to one with bucket_for(args); otherwise the default is used.
 #
@@ -146,6 +139,12 @@ for _name, _over in _cam_buckets.items():
     _SYS["buckets"][_name] = {"num_nodes": _cfg.get("num_nodes", 1), "user_config": _cfg,
                               "max_concurrent": int(_cap) if _cap else None}
 _default_bucket = next(iter(_SYS["buckets"]))
+
+# Total jobs in flight, across all buckets. Defaults to the sum of the bucket caps.
+_bucket_sum = sum(b["max_concurrent"] or 1 for b in _SYS["buckets"].values())
+MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT",
+                                    _cam.get("max_concurrent",
+                                             _sys_cfg.get("max_concurrent", _bucket_sum))))
 
 # TARGET is handed to the task's remote_fn. Everything the remote side needs must be
 # in here: the function is shipped source-only and cannot read this module.
