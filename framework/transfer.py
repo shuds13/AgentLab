@@ -47,6 +47,7 @@ Two things about the local side that have to be right:
 import json
 import os
 import subprocess
+import time
 
 from claude_agent_sdk import tool
 
@@ -206,6 +207,18 @@ def _cpath(posix_path):
     return posix_path
 
 
+def _remote_exists(coll, path):
+    """True if `path` is a directory, or a name present in its parent. Checked before a
+    get so a missing file is an immediate answer rather than a transfer Globus retries."""
+    if _remote_is_dir(coll, path):
+        return True
+    parent, _, name = path.rpartition("/")
+    rc, out, _ = _globus("ls", f"{coll}:{parent or '/'}", timeout=120)
+    if rc != 0:
+        return True     # cannot tell -- let the transfer decide rather than block a get
+    return name in {line.strip().rstrip("/") for line in out.splitlines()}
+
+
 def _remote_is_dir(coll, path):
     """globus ls succeeds on a directory and fails on a file, which is the cheapest
     way to decide whether a get needs --recursive."""
@@ -223,12 +236,41 @@ def _under(path, root):
     return p == r or p.startswith(r + "/")
 
 
+# Faults Globus keeps retrying that will never clear on their own. Waiting out the full
+# timeout on one of these turns a wrong path into a ten-minute stall.
+_FATAL = {"FILE_NOT_FOUND", "PERMISSION_DENIED", "ENDPOINT_NOT_FOUND", "NO_CREDENTIALS",
+          "AUTHENTICATION_FAILED", "SUBJECT_MISMATCH", "QUOTA_EXCEEDED"}
+
+
 def _wait(task_id):
-    rc, out, err = _globus("task", "wait", task_id, "--timeout", str(_WAIT_SECONDS),
-                           "--polling-interval", "2")
-    if rc != 0:
-        return False, f"transfer {task_id} did not complete: {err or out}"
-    return True, task_id
+    """Wait in slices, giving up early on a fault that retrying cannot fix."""
+    deadline = time.time() + _WAIT_SECONDS
+    while True:
+        slice_s = max(1, int(min(15, deadline - time.time())))
+        rc, out, err = _globus("task", "wait", task_id, "--timeout", str(slice_s),
+                               "--polling-interval", "2", timeout=slice_s + 30)
+        if rc == 0:
+            return True, task_id
+        status, nice = "", ""
+        rc2, out2, _ = _globus("task", "show", task_id, "--format", "json", timeout=60)
+        if rc2 == 0:
+            try:
+                d = json.loads(out2)
+                status = d.get("status") or ""
+                nice = d.get("nice_status") or ""
+            except Exception:
+                pass
+        if status == "SUCCEEDED":
+            return True, task_id
+        if status == "FAILED":
+            return False, f"transfer {task_id} failed: {nice or err or out}"
+        if nice in _FATAL:
+            _globus("task", "cancel", task_id, timeout=60)
+            return False, (f"transfer {task_id} cancelled after {nice}: retrying cannot "
+                           "fix this. Check the path exists and is readable.")
+        if time.time() >= deadline:
+            return False, (f"transfer {task_id} did not complete within {_WAIT_SECONDS}s"
+                           + (f" (last status {nice})" if nice else ""))
 
 
 TRANSFER_DESC = """
@@ -301,6 +343,8 @@ async def transfer(args):
         if dest is None:
             return _err("refusing to write outside the campaign and workspace "
                         f"directories: {local_path}")
+        if not _remote_exists(rc_coll, _cpath(path)):
+            return _err(f"no such path on the compute system: {path}")
         recursive = _remote_is_dir(rc_coll, _cpath(path))
         os.makedirs(dest if recursive else os.path.dirname(dest), exist_ok=True)
         cmd = ["transfer", f"{rc_coll}:{_cpath(path)}", f"{lc_coll}:{dest}",
