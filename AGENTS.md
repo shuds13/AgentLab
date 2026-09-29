@@ -1,12 +1,40 @@
 # Working in this repository
 
+AgentLab is a generic framework for an agent that runs autonomously, submitting work,
+often to other systems.
+
+**Helping someone set up or run the lab starts at "Setting someone up" below.** The rest
+of this file is that. Read the next section first only when changing the repository
+itself.
+
+## Changing this repository
+
+Two layers, and they do not mix.
+
+- `framework/`, `methods/`, `systems/`, `docs/`, `bin/` are the framework. Nothing here
+  refers to what any one campaign studies. Where an example is needed, it uses
+  placeholders.
+- `campaigns/<name>/` is one piece of work. Everything particular to it lives there.
+
+Before editing outside `campaigns/`, check the change still reads correctly for a
+campaign that has nothing in common with the one in hand.
+
+Comments match the density of the file they are in, and run to as few lines as carry the
+point — one where one will do. State what something is, not what a current default is or
+what once went wrong; both go stale. Say that it does X; do not add that it does not do
+Y.
+
+A **job** is the scheduler allocation. A **task** is one unit of work submitted into it.
+The framework's code still says "job" for the second; keep the two distinct in anything
+new.
+
+## Setting someone up
+
 Someone arriving here has something they want to run and access to a machine. Get them
 running. The aim is to be concise. Do not quibble over things unless they really matter.
 
 Setting up raises questions, and answering one often means leaving the steps below.
 Answer it, then bring them back to the step they were on.
-
-## Setting someone up
 
 Ask which they want, and say the first is the one for anyone new here:
 
