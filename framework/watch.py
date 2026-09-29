@@ -497,12 +497,19 @@ PAGE = """<!doctype html>
  #labsvc { display:none; padding:12px; margin-bottom:8px;
             border-bottom:1px solid #2b3946; }
  #labsvc .svcs { display:flex; flex-wrap:wrap; gap:18px; align-items:center; }
+ #labsvc #svclist { display:flex; gap:18px; }
  #labsvc .svc { color:#888; }
  #labsvc .svc.up { color:#7aa87a; }
  #labsvc .dot { display:inline-block; width:7px; height:7px; border-radius:50%%;
                 background:#3a3a3a; margin-right:7px; vertical-align:middle; }
  #labsvc .svc.up .dot { background:#3d7a3d; }
- #labsvc .acts { margin-left:auto; display:flex; gap:8px; }
+ #labsvc .labtabs { display:flex; gap:4px; margin-right:18px; }
+ #labsvc .labtabs button { background:#222; color:#bbb; border:1px solid #333; }
+ #labsvc .labtabs button.on { background:#2d4a2d; color:#fff; }
+ #labsvc .acts { margin-left:auto; display:flex; gap:12px; align-items:center; }
+ #labsvc .lbl { color:#4d5c6b; text-transform:uppercase; font-size:11px;
+                letter-spacing:.06em; }
+ #labsvc .acts .div { align-self:stretch; border-left:1px solid #2b3946; }
  #labsvc button { background:#1b2836; color:#cfe0f0; border:1px solid #2b3946;
                   padding:3px 12px; cursor:pointer; font:inherit; }
  #labsvc button:hover:enabled { background:#24374b; color:#fff; }
@@ -526,12 +533,8 @@ PAGE = """<!doctype html>
  #lab .quiet { color:#888; }
  #lab .none { color:#666; padding:12px 0; }
  /* People share the campaign table's grid and its click-the-whole-row behaviour, so
-    the two read as one page. The separator earns its keep: without it the heading
-    reads as an overflow of the table above rather than a section of its own. */
- #labusers { display:none; padding:12px; margin-top:26px;
-             border-top:1px solid #2b3946; }
- #labusers h3 { color:#6f8296; font-weight:normal; font-size:13px;
-                margin:14px 0 10px; letter-spacing:.06em; text-transform:uppercase; }
+    the two read as one page. */
+ #labusers { display:none; padding:12px; }
  #labusers table { width:100%%; margin:0; }
  #labusers th { text-align:left; color:#6f8296; font-weight:normal;
                 padding:0 18px 5px 0; border-bottom:1px solid #2b3946; }
@@ -622,8 +625,12 @@ PAGE = """<!doctype html>
 <span id="head">connecting\u2026</span></header>
 <div id="tabs"></div>
 <div id="pane"><pre id="view">loading\u2026</pre>\
-<div id="labsvc"><div class="svcs"><span id="svclist"></span>\
-<span class="acts"><button id="labrun">start lab</button></span></div></div>\
+<div id="labsvc"><div class="svcs">\
+<span class="labtabs"><button id="tabcamps" class="on">campaigns</button>\
+<button id="tabpeople">users</button></span>\
+<span class="acts"><span class="lbl">services</span>\
+<span id="svclist"></span><span class="div"></span>\
+<button id="labrun">start</button></span></div></div>\
 <div id="lab"></div><div id="labusers"></div></div>
 <button id="newest">\u2193 newest</button>
 <div id="chat">
@@ -1001,11 +1008,21 @@ const svcPane = document.getElementById("labsvc");
 // Paint the frame for where we are. The lab has no file tabs and no chat: there is no
 // one agent to read them for. The chat bar names the campaign it would write to, so a
 // line meant for one agent cannot reach another unnoticed.
+let labTab = "campaigns";
+function showLabTab() {
+  const camps = labTab === "campaigns";
+  labPane.style.display = camps ? "block" : "none";
+  usersPane.style.display = camps ? "none" : "block";
+  document.getElementById("tabcamps").className = camps ? "on" : "";
+  document.getElementById("tabpeople").className = camps ? "" : "on";
+}
+document.getElementById("tabcamps").onclick = () => { labTab = "campaigns"; showLabTab(); };
+document.getElementById("tabpeople").onclick = () => { labTab = "people"; showLabTab(); };
+
 function showScope() {
   const lab = scope === "lab";
   svcPane.style.display = lab ? "block" : "none";
-  labPane.style.display = lab ? "block" : "none";
-  usersPane.style.display = lab ? "block" : "none";
+  if (lab) showLabTab(); else { labPane.style.display = "none"; usersPane.style.display = "none"; }
   view.style.display = lab ? "none" : "";
   document.getElementById("tabs").style.display = lab ? "none" : "";
   // The chat is shown in both places, but it writes to different readers: a campaign's
@@ -1126,7 +1143,7 @@ const userOpen = new Set();
 
 function renderLabUsers(people) {
   if (!people.length) {
-    usersPane.innerHTML = `<h3>people</h3><div class="none">` +
+    usersPane.innerHTML = `<div class="none">` +
       `no user files yet \u2014 add users/&lt;you&gt;/&lt;system&gt;.json</div>`;
     usersPane.dataset.key = "none";
     return;
@@ -1135,7 +1152,7 @@ function renderLabUsers(people) {
     p.systems.map(a => a.system).join(","))).join("|");
   if (usersPane.dataset.key !== key) {
     usersPane.dataset.key = key;
-    usersPane.innerHTML = `<h3>people</h3><table>` +
+    usersPane.innerHTML = `<table>` +
       `<tr><th>user</th><th>systems</th><th>transfer</th></tr>` +
       people.map(p => {
         // A person whose directory this process cannot read is still in the lab, so
@@ -1232,7 +1249,7 @@ function renderServices(rows) {
   const running = rows.length > 0 && rows.every(r => r.running);
   if (!button.disabled) {
     button.dataset.act = running ? "stop" : "start";
-    button.textContent = running ? "stop lab" : "start lab";
+    button.textContent = running ? "stop" : "start";
   }
 }
 
