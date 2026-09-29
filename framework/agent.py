@@ -207,9 +207,8 @@ def _bool_env(name, default=False):
     v = os.environ.get(name)
     return default if v is None else v.strip().lower() in ("1", "true", "yes", "on")
 
-# What the run consumed, reported beside the context figure. Tokens always; dollars
-# only where the price is the serving model's own -- see _note_cost.
-SHOW_COST = _bool_env("SHOW_COST", False)
+# Tokens always; dollars only where the price is the serving model's own, see _note_cost.
+SHOW_COST = _bool_env("SHOW_COST", True)
 
 # A browser view of this run: the log as it is written and the files it writes. Off
 # unless asked for, and it never affects the run -- it only reads the workspace.
