@@ -30,11 +30,29 @@ Keep it short. A cycle entry is a handful of lines, not a section.
 
 ## The write-up
 
-`JOURNAL.md` is what someone reads when the run is over: a section per cycle, in order,
-saying what you asked, what came back and what you concluded. Make a figure where it
-helps. Plot with matplotlib through `Bash`, save it under `figures/` and reference it
-from the journal with a caption saying what it shows. Keep the section to a few
-paragraphs; `LOGBOOK.md` holds the running notes and `results.jsonl` holds the numbers.
+`JOURNAL.md` is what someone reads to find out what the run established. Append a
+section as each cycle closes, so it is current rather than written from memory at the
+end.
+
+A cycle section is a heading, a table of what was run, and at most three bullets. No
+paragraphs:
+
+    ### Cycle 3 - <what this cycle varied>
+
+    | <setting> | <metric> | <cost> |
+    |---|---|---|
+    | A | 4 | 92 |
+    | B | 4 | 225 |
+
+    - A reaches the same result for a fraction of B's cost.
+    - B is worst or equal on every run.
+    - A against the others: not separable from what we have.
+
+One bullet, one point, one line. Put numbers in the table, not in the bullets. Where a
+comparison is not settled, say so in a bullet and stop there.
+
+Make a figure where it helps. Plot with matplotlib through `Bash`, save it under
+`figures/` and reference it from the journal with a caption saying what it shows.
 
 Scripts you write to fit, check or plot go in `scratch/`, with anything they produce
 that is not a record. The top of the workspace holds the records and nothing else, so
@@ -42,4 +60,16 @@ that what a later reader finds there is what the run concluded.
 
 ## Ending
 
-Add a closing entry: what you found, and what you would do next with more jobs.
+Add a closing entry to `LOGBOOK.md`: what you found, and what you would do next with
+more jobs.
+
+Then end `JOURNAL.md` with an `## Executive Summary` of at most six bullets, for
+someone who reads only this:
+
+    ## Executive Summary
+    - The answer, in one sentence.
+    - The numbers it rests on.
+    - What is not settled, and why.
+    - What you would do next.
+
+One line each. Say what is unsettled as plainly as what is.
