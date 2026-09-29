@@ -95,8 +95,12 @@ if HAS_REMOTE:
     if _sys_cfg.get("needs_account", True):
         _needs += ("account",)
     _usr = _read_json(_user_path, f"your access to '{SYSTEM}'", needs=_needs)
-    # Where this campaign's jobs write. `work_dir` names it outright and wins;
-    # `work_root` is the directory campaigns sit under, with the campaign appended.
+    # Where this campaign's jobs write. WORK_DIR in the environment wins, so a run can
+    # be given its own directory the way WORKSPACE_DIR gives it its own workspace;
+    # `work_dir` in the user file names it outright; `work_root` is the directory
+    # campaigns sit under, with the campaign appended.
+    if os.environ.get("WORK_DIR"):
+        _usr["work_dir"] = os.environ["WORK_DIR"]
     if not _usr.get("work_dir"):
         _root = _usr.get("work_root")
         if not _root:
@@ -107,14 +111,16 @@ if HAS_REMOTE:
 else:
     _usr = (_read_json(_user_path, f"your access to '{SYSTEM}'")
             if os.path.isfile(_user_path) else {})
-    _usr.setdefault("work_dir", os.path.join(LAB_DIR, "workspace", CAMPAIGN))
+    _usr.setdefault("work_dir", os.environ.get("WORK_DIR")
+                    or os.path.join(LAB_DIR, "workspace", CAMPAIGN))
 
 ENDPOINT_ID = _usr.get("endpoint", "")
 
 # Globus Transfer is optional: configured per user, and simply absent otherwise. It is
 # how the agent reads files on the compute system when the two do not share a filesystem.
-_transfer.CFG = _transfer.configure(_usr, os.path.join(LAB_DIR, "workspace", CAMPAIGN),
-                                   _CAMPAIGN_DIR, _sys_cfg)
+# WORKSPACE_DIR rather than the default path under workspace/: a run pointed at another
+# workspace fetches into that one, so its files sit with the rest of what it wrote.
+_transfer.CFG = _transfer.configure(_usr, WORKSPACE_DIR, _CAMPAIGN_DIR, _sys_cfg)
 HAS_TRANSFER = _transfer.CFG is not None
 # Named resource shapes on one system (e.g. a small quick queue and a large long one).
 # A task routes a job to one with bucket_for(args); otherwise the default is used.

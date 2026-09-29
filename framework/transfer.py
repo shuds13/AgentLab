@@ -46,7 +46,8 @@ Two things about the local side that have to be right:
 
 import json
 import os
-import subprocess
+import sqlite3
+import sys
 import time
 
 from claude_agent_sdk import tool
@@ -56,6 +57,7 @@ from claude_agent_sdk import tool
 _HEAD_BYTES = 4000
 _TAIL_BYTES = 12000
 _WAIT_SECONDS = 600
+_POLL_SECONDS = 2
 
 
 def _as_list(v):
@@ -104,26 +106,115 @@ def configure(user_cfg, workspace_dir, campaign_dir=None, sys_cfg=None):
 CFG = None          # set by tools.py at import; None disables the tools
 
 
-def _globus(*argv, timeout=_WAIT_SECONDS):
-    """Run the globus CLI. It already holds the user's login, so this module never
-    implements an auth flow of its own."""
+# --- the Transfer client --------------------------------------------------------------
+# One client for the life of the process, built from the tokens `globus login` already
+# stored. The CLI remains the setup step; this reads its token store instead of running
+# it, so an operation costs one HTTPS request rather than a Python process start. The
+# tokens are read, never written: a refresh is held in memory for this process only, so
+# nothing here contends with the CLI or another agent for the same file.
+
+_CLIENT = None
+_CLIENT_ERROR = None
+
+
+def _cli_storage_path():
+    """Where the Globus CLI keeps its tokens, per globus_cli.login_manager.storage."""
+    if sys.platform == "win32":
+        datadir = (os.getenv("LOCALAPPDATA") or os.getenv("APPDATA")
+                   or os.path.join(os.path.expanduser("~"), "AppData", "Local"))
+        return os.path.join(datadir, "globus", "cli", "storage.db")
+    return os.path.expanduser("~/.globus/cli/storage.db")
+
+
+def _cli_namespace():
+    """The CLI's token namespace: userprofile/<environment>[/<profile>]."""
+    env = os.environ.get("GLOBUS_SDK_ENVIRONMENT") or "production"
+    profile = os.environ.get("GLOBUS_PROFILE")
+    return "userprofile/" + env + (f"/{profile}" if profile else "")
+
+
+def _build_client():
+    from globus_sdk import (ConfidentialAppAuthClient, RefreshTokenAuthorizer,
+                            TransferClient)
+    from globus_sdk.token_storage import SQLiteTokenStorage
+
+    db = _cli_storage_path()
+    login = "\n  run: globus login"
+    if not os.path.isfile(db):
+        raise RuntimeError(f"no Globus login found at {db}{login}")
+    ns = _cli_namespace()
+    store = SQLiteTokenStorage(filepath=db, namespace=ns)
     try:
-        p = subprocess.run(["globus", *argv], capture_output=True, text=True,
-                           timeout=timeout)
-    except FileNotFoundError:
-        return 127, "", "the 'globus' CLI is not on PATH (pip install globus-cli)"
-    except subprocess.TimeoutExpired:
-        return -1, "", f"globus {' '.join(argv)} timed out after {timeout}s"
-    return p.returncode, (p.stdout or "").strip(), (p.stderr or "").strip()
+        tokens = store.get_token_data_by_resource_server()
+    finally:
+        store.close()
+    td = tokens.get("transfer.api.globus.org")
+    if td is None:
+        raise RuntimeError(f"the Globus login in {db} holds no Transfer token{login}")
+    if not td.refresh_token:
+        raise RuntimeError(f"the stored Transfer token cannot be refreshed{login}")
+
+    # The CLI logs in as a templated confidential client, so refreshing its tokens needs
+    # that client's own credentials. They sit beside the tokens in the same file.
+    with sqlite3.connect(db) as conn:
+        row = conn.execute("SELECT config_data_json FROM config_storage "
+                           "WHERE namespace = ? AND config_name = 'auth_client_data'",
+                           (ns,)).fetchone()
+    if row is None:
+        raise RuntimeError(f"no client credentials in {db} for {ns}{login}")
+    data = json.loads(row[0])
+    auth = ConfidentialAppAuthClient(data["client_id"], data["client_secret"],
+                                     app_name="AgentLab")
+    return TransferClient(app_name="AgentLab", authorizer=RefreshTokenAuthorizer(
+        td.refresh_token, auth, access_token=td.access_token,
+        expires_at=td.expires_at_seconds))
 
 
-def _authenticated():
-    """Checked at use rather than at startup: a network call per run start would slow
-    every campaign, including those that never transfer anything."""
-    rc, out, err = _globus("whoami", timeout=30)
-    if rc != 0:
-        return False, (err or out or "not logged in") + "\n  run: globus login"
-    return True, out
+def _client():
+    """The shared client, or None with the reason in _CLIENT_ERROR.
+
+    Built at first use rather than at startup: a network call per run start would slow
+    every campaign, including those that never transfer anything.
+    """
+    global _CLIENT, _CLIENT_ERROR
+    if _CLIENT is None and _CLIENT_ERROR is None:
+        try:
+            _CLIENT = _build_client()
+        except Exception as exc:
+            _CLIENT_ERROR = (str(exc) if isinstance(exc, RuntimeError)
+                             else f"{type(exc).__name__}: {exc}")
+    return _CLIENT
+
+
+def _fault(exc):
+    """A Globus exception as something the agent can act on.
+
+    The structured fields say what the service wants, which the message text alone does
+    not: a missing consent names the scope to grant, and a lapsed session names the
+    identity domain to refresh.
+    """
+    info = getattr(exc, "info", None)
+    consent = getattr(info, "consent_required", None)
+    if consent:
+        scopes = " ".join(getattr(consent, "required_scopes", None) or [])
+        return ("this collection needs a one-off consent.\n"
+                f"  run: globus session consent '{scopes}'")
+    params = getattr(info, "authorization_parameters", None)
+    if params:
+        domains = getattr(params, "session_required_single_domain", None) or []
+        if domains:
+            return ("the Globus session has lapsed for this collection.\n"
+                    f"  run: globus session update {domains[0]}")
+        identities = getattr(params, "session_required_identities", None) or []
+        if identities:
+            return ("the Globus session has lapsed for this collection.\n"
+                    f"  run: globus session update {identities[0]}")
+        message = getattr(params, "session_message", None)
+        if message:
+            return f"{message}\n  run: globus session update"
+    code = getattr(exc, "code", "") or ""
+    detail = getattr(exc, "message", None) or str(exc)
+    return f"{code}: {detail}" if code else detail
 
 
 def preflight():
@@ -134,27 +225,32 @@ def preflight():
     the path is usable.
 
     A local collection is most often a Globus Connect Personal that is simply not
-    running, which `ls` reports rather than the login check: `whoami` succeeds while the
-    collection is unreachable, and the first transfer of the run is then what discovers
-    it.
+    running, which `ls` reports rather than the client build: building a client from
+    stored tokens succeeds while the collection is unreachable, and the first transfer
+    of the run is then what discovers it.
+
+    The remote side is checked at the write root, not at "/": a compute system's
+    collection is rooted where every project on the machine is visible, and listing
+    that is both slow and more than the check needs.
     """
     if CFG is None:
         return []
-    ok, msg = _authenticated()
-    if not ok:
-        return [f"Globus Transfer is configured but not usable: {msg}"]
+    tc = _client()
+    if tc is None:
+        return [f"Globus Transfer is configured but not usable: {_CLIENT_ERROR}"]
     problems = []
-    for role in ("local_collection", "remote_collection"):
+    for role, probe in (("local_collection", "/"),
+                        ("remote_collection", _cpath(CFG["remote_write_root"] or "/"))):
         coll = CFG[role]
-        rc, out, err = _globus("ls", f"{coll}:/", timeout=60)
-        if rc != 0:
-            detail = (err or out or "no detail").splitlines()[0]
+        try:
+            tc.operation_ls(coll, path=probe)
+        except Exception as exc:
             hint = ("\n    If this is Globus Connect Personal, start it: "
                     "globusconnectpersonal -start &"
                     if role == "local_collection" else
                     "\n    Check the collection id and that any required consent is granted.")
             problems.append(f"Globus {role.split('_')[0]} collection {coll} is not "
-                            f"reachable: {detail}{hint}")
+                            f"reachable at {probe}: {_fault(exc)}{hint}")
     return problems
 
 
@@ -207,22 +303,22 @@ def _cpath(posix_path):
     return posix_path
 
 
-def _remote_in_parent(coll, path):
-    """True if `path`'s name is listed in its parent. Only called once a path is known
-    not to be a directory, so a missing file is answered here rather than becoming a
-    transfer Globus retries."""
-    parent, _, name = path.rpartition("/")
-    rc, out, _ = _globus("ls", f"{coll}:{parent or '/'}", timeout=120)
-    if rc != 0:
-        return True     # cannot tell -- let the transfer decide rather than block a get
-    return name in {line.strip().rstrip("/") for line in out.splitlines()}
+def _stat(tc, coll, path):
+    """(type, size) for a collection path, or (None, None) when it is not there.
 
-
-def _remote_is_dir(coll, path):
-    """globus ls succeeds on a directory and fails on a file, which is the cheapest
-    way to decide whether a get needs --recursive."""
-    rc, _, _ = _globus("ls", f"{coll}:{path}", timeout=120)
-    return rc == 0
+    One request answers both questions a get has: whether the path is there at all, and
+    whether it is a directory. A missing path is answered here rather than becoming a
+    transfer, because Globus retries FILE_NOT_FOUND as though it were transient and the
+    get would otherwise hang for the full wait instead of saying so at once.
+    """
+    from globus_sdk import TransferAPIError
+    try:
+        r = tc.operation_stat(coll, path)
+    except TransferAPIError as exc:
+        if exc.http_status == 404:
+            return None, None
+        raise
+    return r.get("type"), r.get("size")
 
 
 def _under(path, root):
@@ -241,35 +337,50 @@ _FATAL = {"FILE_NOT_FOUND", "PERMISSION_DENIED", "ENDPOINT_NOT_FOUND", "NO_CREDE
           "AUTHENTICATION_FAILED", "SUBJECT_MISMATCH", "QUOTA_EXCEEDED"}
 
 
-def _wait(task_id):
-    """Wait in slices, giving up early on a fault that retrying cannot fix."""
+def _submit(tc, src_coll, dst_coll, items, label):
+    """One task carrying every (src, dst, recursive) in `items`. Globus bills a round
+    trip per task, so batching n paths into one is n times cheaper in latency."""
+    from globus_sdk import TransferData
+    data = TransferData(source_endpoint=src_coll, destination_endpoint=dst_coll,
+                        label=label, notify_on_succeeded=False, notify_on_failed=False,
+                        notify_on_inactive=False)
+    for src, dst, recursive in items:
+        data.add_item(src, dst, recursive=recursive)
+    return tc.submit_transfer(data)["task_id"]
+
+
+def _requested(args):
+    """[(path, local_path)] from either the single pair or the `items` list."""
+    items = args.get("items")
+    if isinstance(items, list) and items:
+        return [(str(i.get("path", "")).strip(), str(i.get("local_path", "")).strip())
+                for i in items if isinstance(i, dict)]
+    return [(str(args.get("path", "")).strip(), str(args.get("local_path", "")).strip())]
+
+
+def _wait(tc, task_id):
+    """Poll until the task settles, giving up early on a fault retrying cannot fix."""
     deadline = time.time() + _WAIT_SECONDS
     while True:
-        slice_s = max(1, int(min(15, deadline - time.time())))
-        rc, out, err = _globus("task", "wait", task_id, "--timeout", str(slice_s),
-                               "--polling-interval", "2", timeout=slice_s + 30)
-        if rc == 0:
-            return True, task_id
-        status, nice = "", ""
-        rc2, out2, _ = _globus("task", "show", task_id, "--format", "json", timeout=60)
-        if rc2 == 0:
-            try:
-                d = json.loads(out2)
-                status = d.get("status") or ""
-                nice = d.get("nice_status") or ""
-            except Exception:
-                pass
+        task = tc.get_task(task_id)
+        status = task.get("status") or ""
         if status == "SUCCEEDED":
             return True, task_id
+        nice = task.get("nice_status") or ""
         if status == "FAILED":
-            return False, f"transfer {task_id} failed: {nice or err or out}"
+            detail = nice or task.get("fatal_error") or "no detail"
+            return False, f"transfer {task_id} failed: {detail}"
         if nice in _FATAL:
-            _globus("task", "cancel", task_id, timeout=60)
+            try:
+                tc.cancel_task(task_id)
+            except Exception:
+                pass
             return False, (f"transfer {task_id} cancelled after {nice}: retrying cannot "
                            "fix this. Check the path exists and is readable.")
         if time.time() >= deadline:
             return False, (f"transfer {task_id} did not complete within {_WAIT_SECONDS}s"
                            + (f" (last status {nice})" if nice else ""))
+        time.sleep(_POLL_SECONDS)
 
 
 TRANSFER_DESC = """
@@ -293,8 +404,18 @@ Operations (`op`):
                        absolute and inside the campaign or workspace directory
            path        destination on the compute system
 
+Several paths go in one task through `items`, a list of {local_path, path} used in place
+of the single pair. One task costs the same whether it carries one path or twenty, so
+staging four trial directories as one call takes about as long as staging one:
+
+    transfer(op="put", items=[{"local_path": "libe_scripts", "path": "<work_dir>/t30"},
+                              {"local_path": "libe_scripts", "path": "<work_dir>/t31"}])
+
+`get` takes the same list. Stage everything a cycle needs in a single call.
+
 A directory is moved whole, in one task -- send a set of scripts by naming the directory
-that holds them.
+that holds them. One task for the directory costs far less than one task per file, so
+prefer naming the directory over transferring its files one at a time.
 
 `get` on a file saves it whole and returns its path, with the inline text truncated head
 and tail for anything large -- grep the saved copy rather than asking for more. `get` on
@@ -304,16 +425,30 @@ Transfers are waited on, so a result means the bytes have landed. A file already
 filesystem this machine can see needs no transfer -- read it directly.
 """
 
-TRANSFER_SCHEMA = {"op": str, "path": str, "local_path": str}
+# JSON Schema, so `op` alone is required and `items` can be a list.
+TRANSFER_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "op": {"type": "string", "enum": ["ls", "get", "put"]},
+        "path": {"type": "string"},
+        "local_path": {"type": "string"},
+        "items": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"path": {"type": "string"},
+                           "local_path": {"type": "string"}},
+            "required": ["path"]}},
+    },
+    "required": ["op"],
+}
 
 
 @tool("transfer", TRANSFER_DESC, TRANSFER_SCHEMA)
 async def transfer(args):
     if CFG is None:
         return _err("Globus Transfer is not configured for this user/system.")
-    ok, who = _authenticated()
-    if not ok:
-        return _err(f"Globus Transfer is not usable: {who}")
+    tc = _client()
+    if tc is None:
+        return _err(f"Globus Transfer is not usable: {_CLIENT_ERROR}")
 
     op = str(args.get("op", "")).strip()
     path = str(args.get("path", "")).strip()
@@ -324,47 +459,60 @@ async def transfer(args):
     if op == "ls":
         if not path:
             return _err("ls needs `path`.")
-        rc, out, err = _globus("ls", f"{rc_coll}:{_cpath(path)}", timeout=120)
-        if rc != 0:
-            return _err(f"ls failed: {err or out}")
-        return _ok(out or "(empty directory)")
+        try:
+            listing = tc.operation_ls(rc_coll, path=_cpath(path))
+        except Exception as exc:
+            return _err(f"ls failed: {_fault(exc)}")
+        names = [f"{e['name']}/" if e["type"] == "dir" else e["name"] for e in listing]
+        return _ok("\n".join(names) if names else "(empty directory)")
 
     if op == "get":
-        if not path:
-            return _err("get needs `path`.")
-        # Straight to where it belongs: GCP must be able to write the workspace anyway,
-        # and a staging hop only adds a second place for permissions to be wrong.
-        if CFG["remote_read_root"] and not _under(path, CFG["remote_read_root"]):
-            return _err(f"refusing to read outside {CFG['remote_read_root']}: {path}")
-        rel = local_path or os.path.join("scratch", "transfers",
-                                         os.path.basename(path.rstrip("/")))
-        dest = _local_dest(rel, CFG["local_roots"])
-        if dest is None:
-            return _err("refusing to write outside the campaign and workspace "
-                        f"directories: {local_path}")
-        recursive = _remote_is_dir(rc_coll, _cpath(path))
-        if not recursive and not _remote_in_parent(rc_coll, _cpath(path)):
-            return _err(f"no such path on the compute system: {path}")
-        os.makedirs(dest if recursive else os.path.dirname(dest), exist_ok=True)
-        cmd = ["transfer", f"{rc_coll}:{_cpath(path)}", f"{lc_coll}:{dest}",
-               "--label", "agentlab-get", "--notify", "off", "--format", "json"]
-        if recursive:
-            cmd.insert(1, "--recursive")
-        rc, out, err = _globus(*cmd, timeout=120)
-        if rc != 0:
-            return _err(f"transfer submit failed: {err or out}\n"
+        want = [(pa, lp) for pa, lp in _requested(args) if pa]
+        if not want:
+            return _err("get needs `path`, or `items` with a path in each entry.")
+        fetch, dests = [], []
+        for path, local_path in want:
+            if CFG["remote_read_root"] and not _under(path, CFG["remote_read_root"]):
+                return _err(f"refusing to read outside {CFG['remote_read_root']}: {path}")
+            rel = local_path or os.path.join("scratch", "transfers",
+                                             os.path.basename(path.rstrip("/")))
+            dest = _local_dest(rel, CFG["local_roots"])
+            if dest is None:
+                return _err("refusing to write outside the campaign and workspace "
+                            f"directories: {local_path}")
+            try:
+                kind, _size = _stat(tc, rc_coll, _cpath(path))
+            except Exception as exc:
+                return _err(f"could not check {path}: {_fault(exc)}")
+            if kind is None:
+                return _err(f"no such path on the compute system: {path}")
+            recursive = kind == "dir"
+            os.makedirs(dest if recursive else os.path.dirname(dest), exist_ok=True)
+            fetch.append((_cpath(path), dest, recursive))
+            dests.append((path, dest, recursive))
+        try:
+            task_id = _submit(tc, rc_coll, lc_coll, fetch, "agentlab-get")
+        except Exception as exc:
+            return _err(f"transfer submit failed: {_fault(exc)}\n"
                         "If the local collection is not connected, start Globus Connect "
                         "Personal. If the destination is refused, the workspace path is "
                         "not writable in ~/.globusonline/lta/config-paths.")
-        try:
-            task_id = json.loads(out)["task_id"]
-        except Exception:
-            return _err(f"could not read task id from: {out}")
-        done, msg = _wait(task_id)
+        done, msg = _wait(tc, task_id)
         if not done:
             return _err(msg)
-        if not os.path.exists(dest):
-            return _err(f"transfer reported success but {dest} is not there.")
+        missing = [d for _, d, _ in dests if not os.path.exists(d)]
+        if missing:
+            return _err("transfer reported success but these are not there: "
+                        + ", ".join(missing))
+
+        if len(dests) > 1:
+            lines = [f"{len(dests)} paths in one task ({task_id})"]
+            for path, dest, recursive in dests:
+                n = (sum(len(f) for _, _, f in os.walk(dest)) if recursive else 1)
+                lines.append(f"  {path}\n    -> {dest}  ({n} file{'s' if n != 1 else ''})")
+            return _ok("\n".join(lines))
+
+        path, dest, recursive = dests[0]
         if recursive:
             n = sum(len(f) for _, _, f in os.walk(dest))
             return _ok(f"{path}\n  -> {dest}  ({n} files)")
@@ -384,35 +532,44 @@ async def transfer(args):
         return _ok(f"{path}\n  -> {dest} ({size} bytes)\n\n{body}")
 
     if op == "put":
-        if not path or not local_path:
-            return _err("put needs both `local_path` and `path`.")
-        if not _under(path, CFG["remote_write_root"]):
-            return _err(f"refusing to write outside {CFG['remote_write_root']}: {path}\n"
-                        "Widen remote_write_root in your user file if that is intended.")
-        src = _local_dest(local_path, CFG["local_roots"], must_exist=True)
-        if src is None:
-            return _err("refusing to send from outside the campaign and workspace "
-                        f"directories: {local_path}")
-        if not os.path.exists(src):
-            return _err(f"no such local path: {src}")
-        recursive = os.path.isdir(src)
-        cmd = ["transfer", f"{lc_coll}:{src}", f"{rc_coll}:{_cpath(path)}",
-               "--label", "agentlab-put", "--notify", "off", "--format", "json"]
-        if recursive:
-            cmd.insert(1, "--recursive")
-        rc, out, err = _globus(*cmd, timeout=120)
-        if rc != 0:
-            return _err(f"transfer submit failed: {err or out}")
+        want = [(pa, lp) for pa, lp in _requested(args) if pa or lp]
+        if not want or any(not pa or not lp for pa, lp in want):
+            return _err("put needs both `local_path` and `path` in every entry.")
+        send, sent = [], []
+        for path, local_path in want:
+            if not _under(path, CFG["remote_write_root"]):
+                return _err(f"refusing to write outside {CFG['remote_write_root']}: "
+                            f"{path}\nWiden remote_write_root in your user file if that "
+                            "is intended.")
+            src = _local_dest(local_path, CFG["local_roots"], must_exist=True)
+            if src is None:
+                return _err("refusing to send from outside the campaign and workspace "
+                            f"directories: {local_path}")
+            if not os.path.exists(src):
+                return _err(f"no such local path: {src}")
+            recursive = os.path.isdir(src)
+            send.append((src, _cpath(path), recursive))
+            sent.append((src, path, recursive))
         try:
-            task_id = json.loads(out)["task_id"]
-        except Exception:
-            return _err(f"could not read task id from: {out}")
-        done, msg = _wait(task_id)
+            task_id = _submit(tc, lc_coll, rc_coll, send, "agentlab-put")
+        except Exception as exc:
+            return _err(f"transfer submit failed: {_fault(exc)}")
+        done, msg = _wait(tc, task_id)
         if not done:
             return _err(msg)
+
+        def _count(src, recursive):
+            return sum(len(f) for _, _, f in os.walk(src)) if recursive else 1
+
+        if len(sent) > 1:
+            lines = [f"{len(sent)} paths in one task ({task_id})"]
+            for src, path, recursive in sent:
+                n = _count(src, recursive)
+                lines.append(f"  {src}\n    -> {path}  ({n} file{'s' if n != 1 else ''})")
+            return _ok("\n".join(lines))
+        src, path, recursive = sent[0]
         if recursive:
-            n = sum(len(f) for _, _, f in os.walk(src))
-            return _ok(f"{src}\n  -> {path}  ({n} files, task {task_id})")
+            return _ok(f"{src}\n  -> {path}  ({_count(src, True)} files, task {task_id})")
         return _ok(f"{src}\n  -> {path} ({os.path.getsize(src)} bytes, task {task_id})")
 
     return _err(f"unknown op {op!r}; use ls, get or put.")
