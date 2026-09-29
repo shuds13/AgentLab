@@ -10,6 +10,7 @@
 
 engine:
   type: GlobusComputeEngine
+  job_status_kwargs: {max_idletime: 600}   # hold an idle block for 10 min
   max_workers_per_node: 1
 
   provider:

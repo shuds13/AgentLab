@@ -19,6 +19,7 @@ idle_heartbeats_soft: 20
 
 engine:
   type: GlobusComputeEngine
+  job_status_kwargs: {max_idletime: 600}   # hold an idle block for 10 min
   max_workers_per_node: 1
 
   provider:
@@ -33,13 +34,13 @@ engine:
 
     # Batch-job settings the scheduler needs, not the worker. GPUs must be requested
     # explicitly -- constraint "gpu" alone does not allocate them, and vLLM then reports
-    # no CUDA device. A containerised job declares its image here too, e.g.
-    #   scheduler_options: |
-    #     #SBATCH --gpus-per-node=4
+    # no CUDA device. The request is conditional on the constraint because a cpu node
+    # has no GPUs to give and Slurm refuses the job. A containerised job declares its
+    # image here too, e.g.
     #     #SBATCH --image=<registry>/<image>:<tag>
     #     #SBATCH --module=gpu,nccl-cu13-plugin
     scheduler_options: |
-      #SBATCH --gpus-per-node=4
+      {% if (constraint | default("gpu")).startswith("gpu") %}#SBATCH --gpus-per-node={{ gpus_per_node | default(4) }}{% endif %}
 
     nodes_per_block: {{ num_nodes | default(1) }}
     init_blocks: 0
