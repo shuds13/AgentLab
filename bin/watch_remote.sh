@@ -7,21 +7,32 @@
 # Usage: ./watch_remote.sh [host] [remote-repo-path] [--no-open]
 #
 #   host               what you would type after `ssh`, e.g. gce, or user@host
-#   remote-repo-path   where AgentLab is on that machine
+#   remote-repo-path   the directory WATCHER is given relative to
 #
-# Set HOST, REPO and ACTIVATE below and it takes no arguments at all; an argument
-# overrides what is set there. ACTIVATE runs on the far side before the watcher.
+# Set HOST, REPO, WATCHER and ACTIVATE below and it takes no arguments at all; an
+# argument overrides what is set there. ACTIVATE runs on the far side before the watcher.
 #
-# E.g.,
+# WATCHER is where watch.py is on that machine. A full lab keeps it in the framework, so
+# the default suits one. A workspace copied somewhere on its own is watched by putting
+# watch.py beside it and naming it here -- nothing else of the lab need be there.
+#
+# E.g., a lab:
 #   HOST="compute-386-07.cels.anl.gov"
 #   REPO="<path>/AgentLab"
 #   ACTIVATE="source \$HOME/miniconda3/etc/profile.d/conda.sh && conda activate agentlab"
+#
+# E.g., a workspace on its own, with watch.py next to it:
+#   HOST="polaris.alcf.anl.gov"
+#   REPO="/lus/eagle/projects/<project>/<mirror>"
+#   WATCHER="watch.py"
+#   ACTIVATE="module use /soft/modulefiles; module load conda; conda activate"
 set -euo pipefail
 
 AUTO_OPEN=true
 
 HOST=""
 REPO="\$HOME/AgentLab"
+WATCHER="framework/watch.py"
 ACTIVATE=""
 # Seconds the remote watcher will sit with nobody looking before stopping itself. An
 # open page polls every second or so, so this only runs down once the tunnel is gone --
@@ -83,7 +94,7 @@ REMOTE_LOG="/tmp/watch_remote.$USER.$$.log"
 # keeps the channel open, and this ssh would never return.
 REMOTE_PID="$(ssh -n -S "$CTL" "$HOST" \
     "{ cd '$REPO' && ${ACTIVATE:+$ACTIVATE && } \
-       exec setsid python3 framework/watch.py --no-open --exit-when-idle=$IDLE ; } \
+       exec setsid python3 '$WATCHER' --no-open --exit-when-idle=$IDLE ; } \
      > $REMOTE_LOG 2>&1 </dev/null & echo \$!")"
 [ -n "$REMOTE_PID" ] || { echo "the watcher did not start" >&2; exit 1; }
 

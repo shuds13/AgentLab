@@ -34,7 +34,15 @@ import webbrowser
 from datetime import datetime
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-LAB_DIR = os.path.abspath(os.environ.get("LAB_DIR", os.path.join(SCRIPT_DIR, "..")))
+# The lab is the directory holding workspace/. In a lab that is the parent, since this
+# lives in framework/. A workspace copied elsewhere is watched by putting this file
+# beside it, and then it is this file's own directory -- so whichever has a workspace
+# under it wins, and LAB_DIR overrides both.
+if os.path.isdir(os.path.join(SCRIPT_DIR, "workspace")):
+    _default_lab = SCRIPT_DIR
+else:
+    _default_lab = os.path.join(SCRIPT_DIR, "..")
+LAB_DIR = os.path.abspath(os.environ.get("LAB_DIR", _default_lab))
 # Files worth opening while a run is in flight. Anything else in the workspace is
 # listed but not offered as a tab: run directories, caches, figures.
 READABLE = ("LOGBOOK.md", "JOURNAL.md", "REVIEWS.md", "results.jsonl",
