@@ -106,6 +106,31 @@ def newest_run(campaign):
     return os.path.dirname(max(live or metas, key=os.path.getmtime))
 
 
+# What a run was handed: its prompts, its method, the campaign as it stood. Written at
+# startup and belonging to that run, unlike the campaign's records, which every run of
+# it appends to. What status already reports is left to status.
+RUN_HIDDEN = ("meta.json",)
+RUN_SUFFIXES = (".md", ".json")
+
+
+def run_files(campaign):
+    """The snapshots the newest run left in its own directory.
+
+    This is also the set a request is checked against: a name not listed here is not
+    served, so the name cannot be used to reach outside the run."""
+    run = newest_run(campaign)
+    if not run:
+        return []
+    try:
+        names = os.listdir(run)
+    except OSError:
+        return []
+    return sorted(n for n in names
+                  if n not in RUN_HIDDEN
+                  and n.endswith(RUN_SUFFIXES)
+                  and os.path.isfile(os.path.join(run, n)))
+
+
 def _count_lines(path):
     try:
         with open(path, errors="replace") as f:
@@ -575,7 +600,18 @@ PAGE = """<!doctype html>
  #tabs button.on { background:#2d4a2d; color:#fff; }
  #tabs .div { align-self:stretch; border-left:1px solid #3a4a5a; margin:0 8px; }
  /* The pane scrolls, not the page, so the tabs stay put wherever you are in a file. */
+ #main { flex:1; display:flex; min-height:0; }
  #pane { flex:1; overflow:auto; position:relative; }
+ /* What the run was handed, beside what it is doing. */
+ #side { flex:none; width:var(--side-w, 0px); overflow:auto; background:#141414;
+         border-left:1px solid #333; padding:8px 0; }
+ #side .grp { color:#6f8296; padding:6px 12px 3px; letter-spacing:.06em; }
+ #side button { display:block; width:100%%; text-align:left; background:none;
+                color:#bbb; border:0; border-left:3px solid transparent;
+                padding:3px 12px; cursor:pointer; font:inherit; }
+ #side button:hover { background:#1c1c1c; color:#ddd; }
+ #side button.on { background:#2d4a2d; color:#fff; border-left-color:#7aa87a; }
+ #side .none { color:#666; padding:3px 12px; }
  pre { margin:0; padding:12px; white-space:pre-wrap; word-break:break-word; }
  .doc { padding:12px 16px; white-space:normal; max-width:60em; }
  .doc h1,.doc h2,.doc h3 { color:#fff; margin:1.2em 0 .4em; line-height:1.3; }
@@ -598,7 +634,7 @@ PAGE = """<!doctype html>
         border:1px solid #333; vertical-align:middle; margin-right:8px; }
  .bar i { display:block; height:100%%; background:#3d7a3d; }
  /* Clear of the chat panel, whichever of its height and its floor is in force. */
- #newest { position:fixed; right:18px;
+ #newest { position:fixed; right:calc(18px + var(--side-w, 0px));
            bottom:calc(max(var(--chat-h, 30vh), 120px) + 14px); display:none;
            background:#2d4a2d; color:#fff; border:1px solid #4a7a4a; padding:5px 12px;
            cursor:pointer; font:inherit; }
@@ -632,14 +668,15 @@ PAGE = """<!doctype html>
 <select id="camp"><option>%(campaign)s</option></select>\
 <span id="head">connecting\u2026</span></header>
 <div id="tabs"></div>
-<div id="pane"><pre id="view">loading\u2026</pre>\
+<div id="main"><div id="pane"><pre id="view">loading\u2026</pre>\
 <div id="labsvc"><div class="svcs">\
 <span class="labtabs"><button id="tabcamps" class="on">campaigns</button>\
 <button id="tabpeople">users</button></span>\
 <span class="acts"><span class="lbl">services</span>\
 <span id="svclist"></span><span class="div"></span>\
 <button id="labrun">start</button></span></div></div>\
-<div id="lab"></div><div id="labusers"></div></div>
+<div id="lab"></div><div id="labusers"></div></div>\
+<aside id="side" hidden></aside></div>
 <button id="newest">\u2193 newest</button>
 <div id="chat">
   <div id="chathead">CHAT</div>
@@ -649,6 +686,11 @@ PAGE = """<!doctype html>
 </div>
 <script>
 let tab = "status", offset = 0, logText = "", rawMode = false;
+// The run's own files, kept so refresh() knows which route a tab reads from.
+let runFiles = [], sideOpen = false;
+const SIDE_W = "210px";
+// Whether a record can be read as it was written as well as rendered.
+const SHOW_RAW = false;
 // Which campaign the page is showing. Every request says so, and the address bar
 // carries it, so a reload or a bookmark comes back to the same one. The server has
 // already checked the name it served this page with, so that is what it opens on.
@@ -688,24 +730,70 @@ function setTabs(files) {
     // The log is what the agent said and did; the file name is not the point.
     b.textContent = n === "log" ? "agent log" : n;
     b.className = n === tab ? "on" : "";
-    b.onclick = () => {
-      // Every tab starts clean: the log re-reads from the beginning, and the styling
-      // of a rendered record does not follow you to the next tab.
-      tab = n; offset = 0; logText = "";
-      view.innerHTML = ""; view.className = ""; view.dataset.body = "";
-      delete view.dataset.statusSig;
-      pane.scrollTop = 0; newest.style.display = "none";
-      setTabs(files); refresh();
-    };
+    b.onclick = () => { openTab(n); setTabs(files); };
     t.appendChild(b);
   }
-  if (tab.endsWith(".md")) {
+  // The files the run was handed open in a panel: several of them, each read once and
+  // referred back to while the log moves.
+  const f = document.createElement("button");
+  f.textContent = "inputs";
+  f.className = sideOpen ? "on" : "";
+  f.style.marginLeft = "auto";
+  f.onclick = () => { sideOpen = !sideOpen; showSide(); setTabs(files); };
+  t.appendChild(f);
+  if (SHOW_RAW && tab.endsWith(".md")) {
     const r = document.createElement("button");
     r.textContent = rawMode ? "rendered" : "raw";
-    r.style.marginLeft = "auto";
     r.onclick = () => { rawMode = !rawMode; view.dataset.body = ""; setTabs(files); refresh(); };
     t.appendChild(r);
   }
+}
+
+// The width goes on the root, so anything fixed to the viewport clears the panel.
+function showSide() {
+  const el = document.getElementById("side");
+  const open = sideOpen && scope === "campaign";
+  el.hidden = !open;
+  document.documentElement.style.setProperty("--side-w", open ? SIDE_W : "0px");
+  if (open) drawSide();
+}
+
+function drawSide() {
+  const el = document.getElementById("side");
+  const key = JSON.stringify(runFiles) + tab;
+  if (el.dataset.key === key) return;
+  el.dataset.key = key;
+  el.innerHTML = "";
+  const h = document.createElement("div");
+  h.className = "grp";
+  h.textContent = "this run";
+  el.appendChild(h);
+  if (!runFiles.length) {
+    const n = document.createElement("div");
+    n.className = "none";
+    n.textContent = "nothing yet";
+    el.appendChild(n);
+    return;
+  }
+  for (const n of runFiles) {
+    const b = document.createElement("button");
+    b.textContent = n;
+    b.className = n === tab ? "on" : "";
+    b.onclick = () => { openTab(n); };
+    el.appendChild(b);
+  }
+}
+
+// Opening a file is the same wherever it was clicked: the pane starts clean, so no
+// styling or scroll position follows from what was there before.
+function openTab(n) {
+  tab = n; offset = 0; logText = "";
+  view.innerHTML = ""; view.className = ""; view.dataset.body = "";
+  delete view.dataset.statusSig;
+  pane.scrollTop = 0; newest.style.display = "none";
+  document.getElementById("tabs").dataset.key = "";
+  document.getElementById("side").dataset.key = "";
+  showSide(); refresh();
 }
 
 const short = n => n == null ? "?"
@@ -883,8 +971,9 @@ async function refresh() {
       // The board is a list of lines, not a document: rendered as Markdown, consecutive
       // messages run together into one paragraph.
       const md = tab.endsWith(".md") && !rawMode && tab !== "ANNOUNCEMENTS.md";
+      const route = runFiles.includes(tab) ? "/runfile" : "/file";
       const body = await (await fetch(url(
-        "/file?name=" + encodeURIComponent(tab) + (md ? "" : "&raw=1")))).text();
+        route + "?name=" + encodeURIComponent(tab) + (md ? "" : "&raw=1")))).text();
       if (!here()) return;
       if (body !== view.dataset.body) {                // keep where you were reading
         const at = pane.scrollTop;
@@ -930,8 +1019,13 @@ async function files() {
   if (scope === "lab") return;
   const mine = campaign;
   try {
-    const list = await (await fetch(url("/files"))).json();
-    if (mine === campaign && scope === "campaign") setTabs(list);
+    const [list, runs] = await Promise.all([
+      fetch(url("/files")).then(r => r.json()),
+      fetch(url("/runfiles")).then(r => r.json()),
+    ]);
+    if (mine === campaign && scope === "campaign") {
+      runFiles = runs; setTabs(list); showSide();
+    }
   } catch (e) {}
 }
 // The lab conversation: questions asked here and what the secretary answered. Every
@@ -1033,6 +1127,7 @@ function showScope() {
   if (lab) showLabTab(); else { labPane.style.display = "none"; usersPane.style.display = "none"; }
   view.style.display = lab ? "none" : "";
   document.getElementById("tabs").style.display = lab ? "none" : "";
+  showSide();
   // The chat is shown in both places, but it writes to different readers: a campaign's
   // board, or the secretary's inbox. The bar says which, so a line meant for one cannot
   // reach the other unnoticed.
@@ -1070,11 +1165,13 @@ function setChatBar() {
 // Nothing carries over between places: the log, the file being read and the
 // conversation all belong to the campaign that was showing.
 function resetPane() {
-  tab = "status"; offset = 0; logText = ""; chatText = "";
+  tab = "status"; offset = 0; logText = ""; chatText = ""; runFiles = [];
   view.innerHTML = ""; view.className = ""; view.dataset.body = "";
   delete view.dataset.statusSig;
   const t = document.getElementById("tabs");
   t.dataset.key = ""; t.innerHTML = "";    // else the last campaign's tabs flash first
+  const sd = document.getElementById("side");
+  sd.dataset.key = ""; sd.innerHTML = "";
   labPane.dataset.key = "";
   usersPane.dataset.key = "";
   pane.scrollTop = 0; newest.style.display = "none";
@@ -1502,6 +1599,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(json.dumps([f for f in READABLE
                                    if os.path.isfile(os.path.join(ws, f))]),
                        "application/json")
+        elif url.path == "/runfiles":
+            self._send(json.dumps(run_files(campaign)), "application/json")
         elif url.path == "/messages":
             # The conversation, not a file tab: served whether or not it exists yet.
             try:
@@ -1512,9 +1611,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._send("")
         elif url.path == "/image":
             self._send_image(campaign, q.get("name", [""])[0])
-        elif url.path == "/file":
+        elif url.path in ("/file", "/runfile"):
             name = q.get("name", [""])[0]
-            text = self._file(campaign, name)
+            text = (self._runfile(campaign, name) if url.path == "/runfile"
+                    else self._file(campaign, name))
             if q.get("raw") or not name.endswith(".md") or _markdown is None:
                 self._send(text)
             else:
@@ -1567,10 +1667,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except OSError:
             self.send_error(404)
 
+    def _runfile(self, campaign, name):
+        run = newest_run(campaign)
+        if not run or name not in run_files(campaign):
+            return "not a file this watcher serves"
+        return self._read(os.path.join(run, name), name)
+
     def _file(self, campaign, name):
         if name not in READABLE:
             return "not a file this watcher serves"
-        path = os.path.join(workspace(campaign), name)
+        return self._read(os.path.join(workspace(campaign), name), name)
+
+    def _read(self, path, name):
         try:
             size = os.path.getsize(path)
             with open(path, errors="replace") as f:
