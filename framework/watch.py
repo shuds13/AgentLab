@@ -254,7 +254,7 @@ def secretary_live():
 
 # What `lab.sh status` last said, and when. The page polls, and each ask is a bash and
 # a python3; a few seconds stale is not worth spawning those every second.
-_services = {"at": 0.0, "rows": []}
+_services = {"at": 0.0, "rows": [], "none": False}
 SERVICES_TTL = 3
 
 
@@ -271,16 +271,17 @@ def lab_services(force=False):
     try:
         out = subprocess.run(["./lab.sh", "status"], cwd=os.path.join(LAB_DIR, "bin"),
                              capture_output=True, text=True, timeout=60).stdout
-    except Exception as e:
+    except Exception:
         out = ""
-        rows.append({"service": "lab.sh", "running": False, "detail": str(e)})
+        _services.update(at=now, rows=[], none=True)
+        return []
     for line in out.splitlines():
         name, _, rest = line.strip().partition(":")
         rest = rest.strip()
         if name and rest:
             rows.append({"service": name, "running": rest.startswith("running"),
                          "detail": rest})
-    _services.update(at=now, rows=rows)
+    _services.update(at=now, rows=rows, none=False)
     return rows
 
 
@@ -1341,40 +1342,47 @@ async function labRefresh() {
 
 // The lab's own processes. Polled with everything else, and driven by the button beside
 // them: the dots are the answer, so what the script printed is not shown.
-function renderServices(rows) {
+function renderServices(rows, none) {
   const list = document.getElementById("svclist");
-  const html = rows.length
+  const html = none
+    ? `<span class="svc">none</span>`
+    : rows.length
     ? rows.map(r => `<span class="svc${r.running ? " up" : ""}" title="${esc(r.detail)}">` +
                     `<span class="dot"></span>${esc(r.service)}</span>`).join(" ")
     : `<span class="svc">nothing switched on in lab.yaml</span>`;
   if (list.innerHTML !== html) list.innerHTML = html;
   // One button, because there is one thing to do: whatever is not running, start it;
-  // when it all is, the only move left is stopping it.
+  // when it all is, the only move left is stopping it. A lab with no lab.sh has
+  // neither, so the button has nothing to act on.
   const button = document.getElementById("labrun");
   const running = rows.length > 0 && rows.every(r => r.running);
-  if (!button.disabled) {
-    button.dataset.act = running ? "stop" : "start";
-    button.textContent = running ? "stop" : "start";
-  }
+  // A poll lands while the script is still running, and the label it set stands.
+  if (button.dataset.busy) return;
+  button.disabled = !!none;
+  if (none) { button.textContent = "start"; return; }
+  button.dataset.act = running ? "stop" : "start";
+  button.textContent = running ? "stop" : "start";
 }
 
 async function servicesRefresh() {
-  let rows;
-  try { rows = await (await fetch("/services")).json(); } catch (e) { return; }
-  if (scope === "lab") renderServices(rows);
+  let d;
+  try { d = await (await fetch("/servicestate")).json(); } catch (e) { return; }
+  if (scope === "lab") renderServices(d.rows, d.none);
 }
 
 // A start waits for each service to come up, so the button says so rather than looking
 // ignored. It stays in place throughout -- disabled while the script runs, never gone.
 async function labControl(action) {
   const button = document.getElementById("labrun");
+  button.dataset.busy = "1";
   button.disabled = true;
   button.textContent = action === "start" ? "starting\u2026" : "stopping\u2026";
   try {
-    const d = await (await fetch("/services?do=" + action, {method: "POST"})).json();
-    if (d.services) renderServices(d.services);
+    var d = await (await fetch("/services?do=" + action, {method: "POST"})).json();
   } catch (e) {}
+  delete button.dataset.busy;
   button.disabled = false;
+  if (d && d.services) renderServices(d.services, false);
   chat();
 }
 
@@ -1578,6 +1586,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(json.dumps({"text": lab_messages(),
                                    "secretary": secretary_live(),
                                    "slack": slack_attached()}),
+                       "application/json")
+        elif url.path == "/servicestate":
+            rows = lab_services()
+            self._send(json.dumps({"rows": rows, "none": _services["none"]}),
                        "application/json")
         elif url.path == "/services":
             self._send(json.dumps(lab_services()), "application/json")
