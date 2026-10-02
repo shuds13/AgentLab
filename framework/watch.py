@@ -48,6 +48,32 @@ LAB_DIR = os.path.abspath(os.environ.get("LAB_DIR", _default_lab))
 READABLE = ("LOGBOOK.md", "JOURNAL.md", "REVIEWS.md", "results.jsonl",
             "ANNOUNCEMENTS.md", "jobs.jsonl")
 TAIL_BYTES = 400_000        # of a file view; the log is followed from an offset instead
+# Browsing the whole workspace, as against the records above. Caches are listed by the
+# filesystem but are never what was being looked for.
+TREE_SKIP = {"__pycache__", ".git", ".ipynb_checkpoints", ".mypy_cache"}
+SNIFF_BYTES = 8192          # enough to decide whether a file is text
+
+
+def is_binary(path):
+    """Decided from the bytes rather than from the name, so a format nobody thought to
+    list is still not spilled into the pane as mojibake."""
+    try:
+        with open(path, "rb") as f:
+            chunk = f.read(SNIFF_BYTES)
+    except OSError:
+        return False
+    if b"\0" in chunk:
+        return True
+    try:
+        chunk.decode("utf-8")
+    except UnicodeDecodeError:
+        # A multi-byte character split by the read boundary is not a binary file, so
+        # the tail is dropped before calling it one.
+        try:
+            chunk[:-3].decode("utf-8")
+        except UnicodeDecodeError:
+            return True
+    return False
 
 try:                        # in requirements.txt; without it records are plain text
     import markdown as _markdown
@@ -57,6 +83,69 @@ except Exception:
 
 def workspace(campaign):
     return os.path.join(LAB_DIR, "workspace", campaign)
+
+
+def tree_roots(campaign):
+    """The two places a campaign's files live: the workspace its runs write into, and
+    the campaign directory it was started from. A workspace copied without its campaign
+    has only the first, so the page is told which roots exist rather than assuming."""
+    roots = {"ws": workspace(campaign)}
+    defn = os.path.join(LAB_DIR, "campaigns", campaign)
+    if os.path.isdir(defn):
+        roots["camp"] = defn
+    return roots
+
+
+def root_path(campaign, root, rel):
+    """Resolve `rel` under one of the campaign's roots, or None if it lands outside it.
+    Resolved before the check, so neither a path from the page nor a symlink under the
+    root reaches the rest of the filesystem."""
+    base = tree_roots(campaign).get(root)
+    if base is None:
+        return None
+    base = os.path.realpath(base)
+    path = os.path.realpath(os.path.join(base, rel))
+    if path != base and not path.startswith(base + os.sep):
+        return None
+    return path
+
+
+def listing(campaign, root, rel):
+    """One directory. Unsorted: the page orders it, so switching between name and date
+    costs no round trip."""
+    path = root_path(campaign, root, rel)
+    if path is None or not os.path.isdir(path):
+        return {"dirs": [], "files": [], "error": "no such directory"}
+    dirs, files = [], []
+    try:
+        for e in os.scandir(path):
+            if e.name in TREE_SKIP:
+                continue
+            try:
+                st = e.stat()
+                if e.is_dir():
+                    dirs.append({"name": e.name, "mtime": int(st.st_mtime)})
+                else:
+                    files.append({"name": e.name, "size": st.st_size,
+                                  "mtime": int(st.st_mtime)})
+            except OSError:          # vanished mid-scan, or unreadable
+                continue
+    except OSError as e:
+        return {"dirs": [], "files": [], "error": str(e)}
+    return {"dirs": dirs, "files": files}
+
+
+def tree(campaign, keys):
+    """Every directory the page currently has open, in one answer. Keys are
+    `root:relative/path`. One request per redraw rather than one per node, so an
+    expanded tree costs a single round trip."""
+    roots = tree_roots(campaign)
+    out = {"roots": [r for r in ("ws", "camp") if r in roots], "nodes": {}}
+    for k in keys:
+        root, _, rel = k.partition(":")
+        if root in roots:
+            out["nodes"][k] = listing(campaign, root, rel)
+    return out
 
 
 def campaigns():
@@ -613,6 +702,29 @@ PAGE = """<!doctype html>
  #side button:hover { background:#1c1c1c; color:#ddd; }
  #side button.on { background:#2d4a2d; color:#fff; border-left-color:#7aa87a; }
  #side .none { color:#666; padding:3px 12px; }
+ /* The workspace as it is on disk: a list of links, one directory at a time. */
+ .crumbs { padding:6px 14px; border-bottom:1px solid #2b2b2b; color:#6f8296; }
+ .crumbs .crumb { background:none; border:0; color:#7aa8c8; cursor:pointer;
+                  font:inherit; padding:0; }
+ .crumbs .crumb:hover { text-decoration:underline; }
+ .crumbs b { color:#ddd; font-weight:normal; }
+ .crumbs .lbl { color:#6f8296; }
+ .crumbs .crumb.on { color:#9ec89e; }
+ .tree { padding:0; }
+ .tree .trow { display:flex; align-items:baseline; gap:10px; padding:1px 14px; }
+ .tree .trow:hover { background:#1c1c1c; }
+ .tree .trow button { background:none; border:0; color:#cfcfcf; cursor:pointer;
+                      font:inherit; padding:1px 0; text-align:left; }
+ .tree .trow button[data-t] { color:#9ec89e; }
+ .tree .thead { border-bottom:1px solid #2b2b2b; padding-bottom:3px;
+                margin-bottom:3px; }
+ .tree .thead button { color:#6f8296; }
+ .tree .thead button:hover { color:#9ab4cc; }
+ .tree .root { border-top:1px solid #262626; margin-top:4px; padding-top:3px; }
+ .tree .root button { color:#9ec89e; }
+ .tree .sz { color:#666; margin-left:auto; text-align:right; }
+ .tree .dt { color:#5f5f5f; min-width:9.5em; text-align:right; }
+ .tree .none { color:#666; padding:6px 14px; }
  pre { margin:0; padding:12px; white-space:pre-wrap; word-break:break-word; }
  .doc { padding:12px 16px; white-space:normal; max-width:60em; }
  .doc h1,.doc h2,.doc h3 { color:#fff; margin:1.2em 0 .4em; line-height:1.3; }
@@ -687,6 +799,12 @@ PAGE = """<!doctype html>
 </div>
 <script>
 let tab = "status", offset = 0, logText = "", rawMode = false;
+// The file browser. A tab of "tree" is the browser itself; a tab of "f:<root>:<path>"
+// is one file opened out of it, which is how it stays distinct from the record tabs,
+// whose names are bare. `treeOpen` is which directories are expanded, keyed the same
+// way, and the workspace root starts open because it is what there is to look at.
+let treeOpen = {"ws:": true}, treeSort = "name", treeDesc = false, treeData = null;
+const ROOT_LABEL = {ws: "workspace", camp: "campaign"};
 // The run's own files, kept so refresh() knows which route a tab reads from.
 let runFiles = [], sideOpen = false;
 const SIDE_W = "210px";
@@ -714,7 +832,7 @@ pane.addEventListener("scroll", () => {
 
 function setTabs(files) {
   const t = document.getElementById("tabs");
-  const key = JSON.stringify(files) + tab + rawMode;
+  const key = JSON.stringify(files) + tab + rawMode + sideOpen;
   if (t.dataset.key === key) return;
   t.dataset.key = key;
   t.innerHTML = "";
@@ -734,6 +852,13 @@ function setTabs(files) {
     b.onclick = () => { openTab(n); setTabs(files); };
     t.appendChild(b);
   }
+  // Everything else the campaign holds. Another view of the pane, so it sits with
+  // the tabs that choose one rather than with the panel toggle on the right.
+  const w = document.createElement("button");
+  w.textContent = "all files";
+  w.className = (tab === "tree" || tab.startsWith("f:")) ? "on" : "";
+  t.appendChild(w);
+  w.onclick = () => { openTab("tree"); setTabs(files); };
   // The files the run was handed open in a panel: several of them, each read once and
   // referred back to while the log moves.
   const f = document.createElement("button");
@@ -942,6 +1067,126 @@ function selecting() {
   return pane.contains(n) || document.getElementById("chatlog").contains(n);
 }
 
+const sizeof = n => n < 1000 ? n + " B"
+                  : n < 1e6 ? (n / 1e3).toFixed(1) + " KB"
+                  : (n / 1e6).toFixed(1) + " MB";
+const isImage = n => /\\.(png|jpe?g|gif|svg|webp)$/i.test(n);
+const stamp = t => when(new Date(t * 1000).toISOString());
+// A key is root and path together, because the same relative path means a different
+// file under each root.
+const keyOf = (root, rel) => root + ":" + rel;
+const splitKey = k => [k.slice(0, k.indexOf(":")), k.slice(k.indexOf(":") + 1)];
+
+// Which way each column runs when you first pick it: names read from A, while for a
+// size or a date the big and the recent are what you went looking for.
+const SORT_DESC = {name: false, size: true, date: true};
+
+// Directories stay grouped at the top whichever column is sorted, as they do in every
+// other file listing. They have no size, so under that column they hold their names.
+function rowsOf(d) {
+  const sign = treeDesc ? -1 : 1;
+  const byName = (a, b) =>
+    sign * (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1);
+  const by = treeSort === "date" ? (a, b) => sign * (a.mtime - b.mtime)
+           : treeSort === "size" ? (a, b) => sign * (a.size - b.size)
+           : byName;
+  // Under the size column the directories have nothing to order by, so they keep a
+  // plain A-to-Z whichever way the files are running.
+  const byNameAsc = (a, b) => a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1;
+  const dirs = d.dirs.map(x => Object.assign({dir: true}, x))
+                     .sort(treeSort === "size" ? byNameAsc : by);
+  const files = d.files.map(x => Object.assign({dir: false}, x)).sort(by);
+  return dirs.concat(files);
+}
+
+function treeRow(pad, body, size, mtime) {
+  return '<div class="trow" style="padding-left:' + pad + 'px">' + body +
+    '<span class="sz">' + size + '</span>' +
+    '<span class="dt">' + (mtime ? stamp(mtime) : "") + "</span></div>";
+}
+
+// Recursive, but only into what is open: a collapsed directory costs nothing and was
+// never asked for.
+function renderNode(root, rel, depth, out) {
+  const d = treeData.nodes[keyOf(root, rel)];
+  if (!d) return;
+  if (d.error) {
+    out.push('<div class="trow none" style="padding-left:' + (14 + depth * 14) + 'px">' +
+             esc(d.error) + "</div>");
+    return;
+  }
+  for (const r of rowsOf(d)) {
+    const sub = rel ? rel + "/" + r.name : r.name;
+    const k = keyOf(root, sub), pad = 14 + depth * 14;
+    if (r.dir) {
+      const open = !!treeOpen[k];
+      out.push(treeRow(pad, '<button data-t="' + esc(k) + '">' +
+        (open ? "\\u25be " : "\\u25b8 ") + esc(r.name) + "</button>", "", r.mtime));
+      if (open) renderNode(root, sub, depth + 1, out);
+    } else {
+      out.push(treeRow(pad, '<button data-f="' + esc(k) + '">' + esc(r.name) +
+        "</button>", sizeof(r.size), r.mtime));
+    }
+  }
+}
+
+// One handler for every control the browser draws, so a row behaves the same wherever
+// it is in the tree.
+function wireTree() {
+  const again = () => { view.dataset.body = ""; refresh(); };
+  view.querySelectorAll("[data-t]").forEach(b => b.onclick = () => {
+    const k = b.dataset.t;
+    if (treeOpen[k]) delete treeOpen[k]; else treeOpen[k] = true;
+    again();
+  });
+  view.querySelectorAll("[data-s]").forEach(b => b.onclick = () => {
+    const v = b.dataset.s;
+    treeDesc = treeSort === v ? !treeDesc : SORT_DESC[v];
+    treeSort = v; again();
+  });
+  view.querySelectorAll("[data-f]").forEach(b => b.onclick = () => {
+    openTab("f:" + b.dataset.f);
+  });
+  view.querySelectorAll("[data-back]").forEach(b => b.onclick = () => openTab("tree"));
+}
+
+// Column headings, clicked to sort. A second click on the one already sorted turns
+// it round, and the arrow says which way it is running -- so the order is readable
+// without comparing two rows to work it out.
+function treeHead() {
+  const col = (v, label) => '<button data-s="' + v + '">' + label +
+    (treeSort === v ? (treeDesc ? " \\u25be" : " \\u25b4") : "") + "</button>";
+  return '<div class="trow thead">' + col("name", "name") +
+    '<span class="sz">' + col("size", "size") + "</span>" +
+    '<span class="dt">' + col("date", "modified") + "</span></div>";
+}
+
+async function renderTree() {
+  const mine = campaign;
+  // The roots are always asked for, so a tree collapsed to nothing still knows what it
+  // would expand into -- and whether this campaign has a definition directory at all.
+  const keys = Array.from(new Set(Object.keys(treeOpen).concat(["ws:", "camp:"])));
+  const d = await (await fetch(url(
+    "/tree?open=" + encodeURIComponent(keys.join(","))))).json();
+  if (mine !== campaign || scope !== "campaign" || tab !== "tree") return;
+  treeData = d;
+  const out = [treeHead()];
+  for (const root of d.roots) {
+    const k = keyOf(root, ""), open = !!treeOpen[k];
+    out.push('<div class="trow root"><button data-t="' + esc(k) + '">' +
+      (open ? "\\u25be " : "\\u25b8 ") + ROOT_LABEL[root] + "</button></div>");
+    if (open) renderNode(root, "", 1, out);
+  }
+  const html = out.join("");
+  if (html === view.dataset.body) return;
+  const at = pane.scrollTop;
+  view.dataset.body = html;
+  view.className = "tree";
+  view.innerHTML = html;
+  wireTree();
+  pane.scrollTop = at;
+}
+
 async function refresh() {
   if (scope === "lab") return labRefresh();
   // The campaign this pass is about. A reply that arrives after the page has moved on
@@ -956,6 +1201,7 @@ async function refresh() {
       ? (s.status === "running" ? "running \u00b7 " : s.status + " \u00b7 ") + (s.handle || s.run)
       : "no run yet";
     if (tab === "status") { view.className = ""; renderStatus(s); return; }
+    if (tab === "tree") { await renderTree(); return; }
     if (tab === "log") {
       view.className = "";
       const stick = atBottom();
@@ -969,18 +1215,40 @@ async function refresh() {
       else if (j.text) newest.style.display = "block";
     } else {
       if (selecting()) return;
+      // A file opened out of the browser is read by root and path rather than by
+      // name, and carries the way back to the tree it was clicked in.
+      const ws = tab.startsWith("f:");
+      const [root, name] = ws ? splitKey(tab.slice(2)) : ["ws", tab];
+      const head = ws ? '<div class="crumbs">' +
+        '<button class="crumb" data-back="1">\\u2190 all files</button> / ' +
+        '<span class="lbl">' + ROOT_LABEL[root] + "</span> / <b>" + esc(name) +
+        "</b></div>" : "";
+      // An image is the file, not a rendering of it, so it is shown rather than read.
+      if (ws && isImage(name)) {
+        const u = esc(url("/image?root=" + root + "&name=" + encodeURIComponent(name)));
+        const shown = head + '<a href="' + u + '" target="_blank"><img src="' + u +
+          '" style="max-width:100%%;max-height:80vh;display:block;margin:10px 14px;' +
+          'border:1px solid #333;background:#fff;cursor:zoom-in"></a>';
+        if (shown !== view.dataset.body) {
+          view.dataset.body = shown; view.className = "";
+          view.innerHTML = shown; wireTree();
+        }
+        return;
+      }
       // The board is a list of lines, not a document: rendered as Markdown, consecutive
       // messages run together into one paragraph.
-      const md = tab.endsWith(".md") && !rawMode && tab !== "ANNOUNCEMENTS.md";
-      const route = runFiles.includes(tab) ? "/runfile" : "/file";
+      const md = name.endsWith(".md") && !rawMode && name !== "ANNOUNCEMENTS.md";
+      const route = ws ? "/wsfile?root=" + root + "&path=" : (
+        (runFiles.includes(tab) ? "/runfile" : "/file") + "?name=");
       const body = await (await fetch(url(
-        route + "?name=" + encodeURIComponent(tab) + (md ? "" : "&raw=1")))).text();
+        route + encodeURIComponent(name) + (md ? "" : "&raw=1")))).text();
       if (!here()) return;
       if (body !== view.dataset.body) {                // keep where you were reading
         const at = pane.scrollTop;
         view.dataset.body = body;
         view.className = md ? "doc" : "";
-        view.innerHTML = md ? body : withFigures(body);
+        view.innerHTML = head + (md ? body : withFigures(body));
+        if (ws) wireTree();
         pane.scrollTop = at;
       }
     }
@@ -1166,7 +1434,8 @@ function setChatBar() {
 // Nothing carries over between places: the log, the file being read and the
 // conversation all belong to the campaign that was showing.
 function resetPane() {
-  tab = "status"; offset = 0; logText = ""; chatText = ""; runFiles = [];
+  tab = "status"; offset = 0; logText = ""; chatText = ""; runFiles = []; treeOpen = {"ws:": true}; treeData = null;
+  treeSort = "name"; treeDesc = false;
   view.innerHTML = ""; view.className = ""; view.dataset.body = "";
   delete view.dataset.statusSig;
   const t = document.getElementById("tabs");
@@ -1611,6 +1880,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(json.dumps([f for f in READABLE
                                    if os.path.isfile(os.path.join(ws, f))]),
                        "application/json")
+        elif url.path == "/tree":
+            keys = [k for k in q.get("open", [""])[0].split(",") if k]
+            self._send(json.dumps(tree(campaign, keys)), "application/json")
+        elif url.path == "/wsfile":
+            name = q.get("path", [""])[0]
+            text = self._wsfile(campaign, q.get("root", ["ws"])[0], name)
+            if q.get("raw") or not name.endswith(".md") or _markdown is None:
+                self._send(text)
+            else:
+                self._send(_render(text, campaign), "text/html; charset=utf-8")
         elif url.path == "/runfiles":
             self._send(json.dumps(run_files(campaign)), "application/json")
         elif url.path == "/messages":
@@ -1622,7 +1901,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except OSError:
                 self._send("")
         elif url.path == "/image":
-            self._send_image(campaign, q.get("name", [""])[0])
+            self._send_image(campaign, q.get("name", [""])[0],
+                             q.get("root", ["ws"])[0])
         elif url.path in ("/file", "/runfile"):
             name = q.get("name", [""])[0]
             text = (self._runfile(campaign, name) if url.path == "/runfile"
@@ -1663,14 +1943,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                    ".gif": "image/gif", ".svg": "image/svg+xml", ".webp": "image/webp"}
 
-    def _send_image(self, campaign, name):
-        """Serve a figure the records point at. Confined to the campaign's workspace:
-        the name is resolved and checked to be inside it, so a path from a file cannot
-        reach out of it."""
-        ws = os.path.realpath(workspace(campaign))
-        path = os.path.realpath(os.path.join(ws, name))
-        ext = os.path.splitext(path)[1].lower()
-        if not path.startswith(ws + os.sep) or ext not in self.IMAGE_TYPES:
+    def _send_image(self, campaign, name, root="ws"):
+        """Serve a figure the records point at. Confined to the campaign's root: the
+        name is resolved and checked to be inside it, so a path from a file cannot reach
+        out of it."""
+        path = root_path(campaign, root, name)
+        ext = os.path.splitext(path)[1].lower() if path else ""
+        if path is None or ext not in self.IMAGE_TYPES:
             self.send_error(404)
             return
         try:
@@ -1684,6 +1963,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not run or name not in run_files(campaign):
             return "not a file this watcher serves"
         return self._read(os.path.join(run, name), name)
+
+    def _wsfile(self, campaign, root, rel):
+        """Any file under one of the campaign's roots, as against the records `_file`
+        serves. Confined to that root by `root_path`."""
+        path = root_path(campaign, root, rel)
+        if path is None or not os.path.isfile(path):
+            return "not a file of this campaign"
+        if is_binary(path):
+            return "[%s \u2014 binary, %d KB]" % (os.path.basename(path),
+                                                  os.path.getsize(path) // 1000)
+        return self._read(path, rel)
 
     def _file(self, campaign, name):
         if name not in READABLE:
