@@ -825,7 +825,9 @@ def _start_run_dir():
     # it was launched in.
     # The resource shapes this run had, so anything reading it later can say what a job
     # was given without the campaign file to hand.
-    _buckets = {name: {"queue": b["user_config"].get("queue", ""),
+    # Slurm sites name it qos, PBS sites queue.
+    _buckets = {name: {"queue": b["user_config"].get("queue")
+                                or b["user_config"].get("qos", ""),
                        "num_nodes": b.get("num_nodes"),
                        "walltime": b["user_config"].get("walltime", ""),
                        "max_concurrent": b.get("max_concurrent")}

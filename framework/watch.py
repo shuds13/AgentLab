@@ -237,6 +237,10 @@ def _submits(path, run_id):
     done = {"remote": 0, "local": 0}
     # Per bucket, for a campaign whose jobs come in more than one resource shape.
     buckets = {}
+    # Still out: submitted and not yet returned. A completed row names the job but not
+    # its bucket, so the bucket is taken from the submit that opened it.
+    job_bucket = {}
+    inflight = {}
     try:
         with open(path, errors="replace") as f:
             for line in f:
@@ -251,6 +255,9 @@ def _submits(path, run_id):
                 where = "local" if event.startswith("local_") else "remote"
                 if event.endswith("completed"):
                     done[where] += mine
+                    b = job_bucket.pop(row.get("job_id"), None)
+                    if b:
+                        inflight[b] = inflight.get(b, 0) - 1
                     continue
                 if not event.endswith("submit"):
                     continue
@@ -259,9 +266,11 @@ def _submits(path, run_id):
                 b = row.get("bucket")
                 if mine and where == "remote" and b:
                     buckets[b] = buckets.get(b, 0) + 1
+                    job_bucket[row.get("job_id")] = b
+                    inflight[b] = inflight.get(b, 0) + 1
     except OSError:
         pass
-    return total, this_run, done, buckets
+    return total, this_run, done, buckets, {k: v for k, v in inflight.items() if v > 0}
 
 
 def _phase(run_dir):
@@ -501,7 +510,7 @@ def status(campaign):
                 age = int(time.time() - float(f.read().strip()))
         except Exception:
             age = None
-    submits_total, submits_run, done_run, submits_bucket = _submits(
+    submits_total, submits_run, done_run, submits_bucket, inflight_bucket = _submits(
         os.path.join(ws, "jobs.jsonl"), meta.get("run_id"))
     ran_here = sum(submits_run.values())
     phase, phase_age = _phase(run_dir)
@@ -525,6 +534,7 @@ def status(campaign):
         "results": _count_lines(os.path.join(ws, "results.jsonl")),
         "jobs": submits_total, "jobs_run": ran_here,
         "jobs_bucket": submits_bucket,
+        "inflight_bucket": inflight_bucket,
         "buckets": meta.get("buckets") or {},
         "default_bucket": meta.get("default_bucket"),
         "jobs_done": sum(done_run.values()),
@@ -972,13 +982,18 @@ function renderStatus(s) {
         // even when there is only one of them. The name and the default marker are
         // only meaningful where there is a choice.
         + (shapes.length
-           ? `<br><span style="color:#777">` + shapes.map(([k, b]) =>
-               (shapes.length > 1 ? `${k}: ` : "") +
-               `${b.num_nodes} node${b.num_nodes === 1 ? "" : "s"}` +
-               (b.queue ? ` on ${b.queue}` : "") + (b.walltime ? `, ${b.walltime}` : "") +
-               (b.max_concurrent ? `, max ${b.max_concurrent}` : "") +
-               (shapes.length > 1 && k === s.default_bucket ? " (default)" : "")
-             ).join("<br>") + `</span>` : "")],
+           ? `<br>` + shapes.map(([k, b]) => {
+               const out = (s.inflight_bucket || {})[k] || 0;
+               const text = (shapes.length > 1 ? `${k}: ` : "") +
+                 `${b.num_nodes} node${b.num_nodes === 1 ? "" : "s"}` +
+                 (b.queue || b.qos ? ` on ${b.queue || b.qos}` : "") + (b.walltime ? `, ${b.walltime}` : "") +
+                 (b.max_concurrent ? `, max ${b.max_concurrent}` : "") +
+                 (shapes.length > 1 && k === s.default_bucket ? " (default)" : "") +
+                 (out ? ` \u00b7 ${out} in flight` : "");
+               return out
+                 ? `<span style="color:#2e7d32">` + esc(text) + `</span>`
+                 : `<span style="color:#777">` + esc(text) + `</span>`;
+             }).join("<br>") : "")],
     ["jobs submitted", bar(s.jobs_run, s.max_submits)
         // Every configured shape, so one that has taken no work yet still shows as zero.
         + (shapes.length > 1
