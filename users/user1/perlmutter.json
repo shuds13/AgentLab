@@ -1,0 +1,24 @@
+{
+  "_comment": "Copy to users/<you>/perlmutter.json. Top level is the default access; `profiles` names alternatives for the same machine, picked by \"profile\" in campaign.json.",
+  "endpoint": "<globus-compute-endpoint-uuid>",
+  "account": "<project-to-charge>",
+  "work_root": "/global/cfs/cdirs/<project>/<you>/agentlab",
+  "globus": {
+    "_comment": "Optional. See docs/globus_transfer.md.",
+    "remote_collection": "<nersc-dtn-collection-uuid>",
+    "local_collection": "<this-machine's-collection-uuid>"
+  },
+  "profiles": {
+    "<profile-name>": {
+      "_comment": "A second allocation. Unset keys fall through to the top level.",
+      "account": "<other-project-to-charge>",
+      "work_root": "/global/cfs/cdirs/<other-project>/<you>/agentlab"
+    },
+    "<facility-endpoint-profile>": {
+      "_comment": "A facility multi-user endpoint instead of your own.",
+      "endpoint": "<facility-multi-user-endpoint-uuid>",
+      "account": "<project-to-charge>",
+      "work_root": "/global/cfs/cdirs/<project>/<you>/agentlab"
+    }
+  }
+}
