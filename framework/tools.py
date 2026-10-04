@@ -172,12 +172,9 @@ for _name, _over in _cam_buckets.items():
     # A bucket's own cap on jobs in flight. Popped out: user_config goes to the endpoint
     # as the batch system's configuration and this is not one of its settings.
     _cap = _cfg.pop("max_concurrent", None)
-    # Parsl's name. `num_nodes` is the older spelling and still accepted; with
-    # max_blocks above 1 it reads wrongly, since the bucket's total is this times
-    # max_blocks. Both are passed to the endpoint, so a template may use either.
-    _npb = _cfg.get("nodes_per_block", _cfg.get("num_nodes", 1))
-    _cfg.setdefault("nodes_per_block", _npb)
-    _cfg.setdefault("num_nodes", _npb)
+    # num_nodes is the old spelling; send only nodes_per_block, which MEPs expect.
+    _npb = _cfg.pop("num_nodes", None)
+    _npb = _cfg.setdefault("nodes_per_block", 1 if _npb is None else _npb)
     _SYS["buckets"][_name] = {"num_nodes": _npb, "nodes_per_block": _npb,
                               "user_config": _cfg,
                               "max_concurrent": int(_cap) if _cap else None}
