@@ -985,6 +985,7 @@ function renderStatus(s) {
            ? `<br>` + shapes.map(([k, b]) => {
                const out = (s.inflight_bucket || {})[k] || 0;
                const text = (shapes.length > 1 ? `${k}: ` : "") +
+                 ((b.max_blocks || 1) > 1 ? `${b.max_blocks} blocks of ` : "") +
                  `${b.num_nodes} node${b.num_nodes === 1 ? "" : "s"}` +
                  (b.queue || b.qos ? ` on ${b.queue || b.qos}` : "") + (b.walltime ? `, ${b.walltime}` : "") +
                  (b.max_concurrent ? `, max ${b.max_concurrent}` : "") +

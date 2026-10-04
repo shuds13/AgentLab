@@ -40,7 +40,7 @@ engine:
     # These are the ceilings on what an agent can consume. default() is only a
     # fallback -- hard-code a value, or clamp it, to make it an enforced limit
     # (see endpoints/README.md). max_blocks caps concurrent batch jobs.
-    nodes_per_block: {{ num_nodes|default(1) }}
+    nodes_per_block: {{ nodes_per_block | default(1) }}
     init_blocks: {{ init_blocks|default(0) }}
     min_blocks: {{ min_blocks|default(0) }}
     max_blocks: {{ max_blocks|default(1) }}

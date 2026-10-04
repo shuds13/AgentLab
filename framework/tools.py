@@ -172,7 +172,14 @@ for _name, _over in _cam_buckets.items():
     # A bucket's own cap on jobs in flight. Popped out: user_config goes to the endpoint
     # as the batch system's configuration and this is not one of its settings.
     _cap = _cfg.pop("max_concurrent", None)
-    _SYS["buckets"][_name] = {"num_nodes": _cfg.get("num_nodes", 1), "user_config": _cfg,
+    # Parsl's name. `num_nodes` is the older spelling and still accepted; with
+    # max_blocks above 1 it reads wrongly, since the bucket's total is this times
+    # max_blocks. Both are passed to the endpoint, so a template may use either.
+    _npb = _cfg.get("nodes_per_block", _cfg.get("num_nodes", 1))
+    _cfg.setdefault("nodes_per_block", _npb)
+    _cfg.setdefault("num_nodes", _npb)
+    _SYS["buckets"][_name] = {"num_nodes": _npb, "nodes_per_block": _npb,
+                              "user_config": _cfg,
                               "max_concurrent": int(_cap) if _cap else None}
 _default_bucket = next(iter(_SYS["buckets"]))
 
@@ -193,7 +200,7 @@ TARGET.update(_cam_target)
 TARGET["work_dir"] = _usr["work_dir"]
 WORK_DIR = _usr["work_dir"]     # surfaced at preflight and recorded in meta.json
 TARGET.setdefault("ppn", _sys_cfg.get("ppn", 1))
-TARGET["nranks"] = _SYS["buckets"][_default_bucket].get("num_nodes", 1) * TARGET["ppn"]
+TARGET["nranks"] = _SYS["buckets"][_default_bucket]["nodes_per_block"] * TARGET["ppn"]
 
 REMOTE_TIMEOUT = int(os.environ.get("JOB_TIMEOUT", "43200"))   # 12h client-side wait
 LOCAL_TIMEOUT = int(os.environ.get("LOCAL_JOB_TIMEOUT", "14400"))     # 4h
@@ -555,10 +562,10 @@ def _fire_remote(args):
                          f"{sorted(_SYS['buckets'])} -- check bucket_for in task.py."}
     target = dict(TARGET)
     _b = _SYS["buckets"][bucket]
-    target["nranks"] = _b.get("num_nodes", 1) * target["ppn"]
+    target["nranks"] = _b.get("nodes_per_block", 1) * target["ppn"]
     # The shape the job actually got, so it can size itself to the allocation it is in.
     target["bucket"] = bucket
-    target["num_nodes"] = _b.get("num_nodes", 1)
+    target["num_nodes"] = _b.get("nodes_per_block", 1)
     target["walltime"] = _b.get("user_config", {}).get("walltime", "")
     try:
         fut = get_executor(bucket).submit(task.remote_fn, args, target)

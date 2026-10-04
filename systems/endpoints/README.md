@@ -32,7 +32,7 @@ users/<you>/<system>.json                    the endpoint's template
   buckets.small.user_config      ---->     user_config_template.yaml.j2
     account: MYPROJECT                       account: {{ account }}
     queue: debug-scaling                     queue: {{ queue }}
-    num_nodes: 6                             nodes_per_block: {{ num_nodes }}
+    nodes_per_block: 6                       nodes_per_block: {{ nodes_per_block }}
 ```
 
 So the keys you put in `user_config` are not scheduler keys — they are whatever
@@ -79,7 +79,7 @@ def hello():
 
 ex = Executor(endpoint_id="your-uuid",
               user_endpoint_config={"account": "MYPROJECT", "queue": "debug",
-                                    "num_nodes": 1, "walltime": "00:10:00"})
+                                    "nodes_per_block": 1, "walltime": "00:10:00"})
 print(ex.submit(hello).result())
 ```
 
@@ -109,7 +109,7 @@ either hard-code it:
 or clamp what is passed:
 
 ```yaml
-    nodes_per_block: {{ [num_nodes|default(1), 8]|min }}     # never more than 8
+    nodes_per_block: {{ [nodes_per_block|default(1), 8]|min }}   # never more than 8
 ```
 
 ## Notes worth knowing
@@ -124,4 +124,6 @@ or clamp what is passed:
   function and you want the worker distributed for you, use `MpiExecLauncher`
   instead. Two nested MPI launches will not work.
 - **One template, many shapes.** You do not need an endpoint per job size. Buckets
-  in `config.json` pass different `num_nodes`/`walltime` to the same endpoint.
+  in `config.json` pass different `nodes_per_block`/`max_blocks`/`walltime` to
+  the same endpoint. `num_nodes` is accepted as an older spelling of
+  `nodes_per_block`; both reach the template with the same value.

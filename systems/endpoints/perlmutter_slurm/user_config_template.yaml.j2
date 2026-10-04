@@ -42,10 +42,10 @@ engine:
     scheduler_options: |
       {% if (constraint | default("gpu")).startswith("gpu") %}#SBATCH --gpus-per-node={{ gpus_per_node | default(4) }}{% endif %}
 
-    nodes_per_block: {{ num_nodes | default(1) }}
+    nodes_per_block: {{ nodes_per_block | default(1) }}
     init_blocks: 0
     min_blocks: 0
-    max_blocks: 1
+    max_blocks: {{ max_blocks | default(1) }}
 
     # EDIT: activate the environment holding globus-compute-endpoint. The worker
     # starts in a bare shell. This does NOT have to be the environment the job runs

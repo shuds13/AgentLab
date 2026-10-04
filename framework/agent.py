@@ -828,7 +828,8 @@ def _start_run_dir():
     # Slurm sites name it qos, PBS sites queue.
     _buckets = {name: {"queue": b["user_config"].get("queue")
                                 or b["user_config"].get("qos", ""),
-                       "num_nodes": b.get("num_nodes"),
+                       "num_nodes": b.get("nodes_per_block"),
+                       "max_blocks": b["user_config"].get("max_blocks", 1),
                        "walltime": b["user_config"].get("walltime", ""),
                        "max_concurrent": b.get("max_concurrent")}
                 for name, b in tools._SYS["buckets"].items()}
