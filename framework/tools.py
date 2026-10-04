@@ -88,13 +88,43 @@ HAS_REMOTE = hasattr(task, "remote_fn") and _sys_cfg.get("remote", True)
 # defines local_fn alone runs without either -- and without a user file at all. Its
 # work_dir then defaults to the campaign workspace.
 _user_path = os.path.join(LAB_DIR, "users", USER_NAME, f"{SYSTEM}.json")
+
+# Named access to the same machine: a second allocation, a facility endpoint. The user
+# file's top level is the default, `profiles` the alternatives, the campaign picks one.
+PROFILE = os.environ.get("PROFILE") or _cam.get("profile") or ""
+
+
+def _apply_profile(usr):
+    """Merge the named profile over the user file's top level, one key deep."""
+    if not PROFILE:
+        return usr
+    available = usr.get("profiles") or {}
+    chosen = available.get(PROFILE)
+    if chosen is None:
+        sys.exit(f"campaign '{CAMPAIGN}' asks for profile '{PROFILE}', which is not in "
+                 f"{_user_path}. It has: {sorted(available) or 'no profiles'}.")
+    merged = {k: v for k, v in usr.items() if k != "profiles"}
+    merged.update({k: v for k, v in chosen.items() if k != "_comment"})
+    return merged
+
+
+def _check_needed(usr, needs):
+    """The same check _read_json makes, after the profile has been merged in."""
+    missing = [k for k in needs if not usr.get(k) or str(usr[k]).startswith("<")]
+    if missing:
+        where = f"{_user_path} (profile '{PROFILE}')" if PROFILE else _user_path
+        sys.exit(f"your access to '{SYSTEM}' needs {', '.join(missing)} filled in: {where}")
+
+
 if HAS_REMOTE:
     # A system with no batch scheduler has nothing to charge, so it says so and the
     # account is not asked for.
     _needs = ("endpoint",)
     if _sys_cfg.get("needs_account", True):
         _needs += ("account",)
-    _usr = _read_json(_user_path, f"your access to '{SYSTEM}'", needs=_needs)
+    # Check after merging: a profile may be the only place account or endpoint is set.
+    _usr = _apply_profile(_read_json(_user_path, f"your access to '{SYSTEM}'"))
+    _check_needed(_usr, _needs)
     # Where this campaign's jobs write. WORK_DIR in the environment wins, so a run can
     # be given its own directory the way WORKSPACE_DIR gives it its own workspace;
     # `work_dir` in the user file names it outright; `work_root` is the directory
@@ -109,8 +139,8 @@ if HAS_REMOTE:
                 f"(the directory campaigns sit under; '{CAMPAIGN}' is appended).")
         _usr["work_dir"] = os.path.join(_root, CAMPAIGN)
 else:
-    _usr = (_read_json(_user_path, f"your access to '{SYSTEM}'")
-            if os.path.isfile(_user_path) else {})
+    _usr = _apply_profile(_read_json(_user_path, f"your access to '{SYSTEM}'")
+                          if os.path.isfile(_user_path) else {})
     _usr.setdefault("work_dir", os.environ.get("WORK_DIR")
                     or os.path.join(LAB_DIR, "workspace", CAMPAIGN))
 

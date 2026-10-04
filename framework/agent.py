@@ -1056,6 +1056,9 @@ def preflight():
                else "local execution only")
     print(f"preflight OK: task_dir={tools.TASK_DIR}, method.md, WORKSPACE_DIR, {backend}.", flush=True)
     if tools.HAS_REMOTE:
+        if tools.PROFILE:
+            print(f"profile:      {tools.PROFILE} (users/{tools.USER_NAME}/{tools.SYSTEM}.json)",
+                  flush=True)
         print(f"work_dir:     {tools.WORK_DIR}", flush=True)
     # The gateway converts between the Messages API and a backend that does not speak
     # it. The agent needs it whenever it is pointed at one, whether or not there is a
