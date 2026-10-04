@@ -983,7 +983,10 @@ function renderStatus(s) {
         // only meaningful where there is a choice.
         + (shapes.length
            ? `<br>` + shapes.map(([k, b]) => {
-               const out = (s.inflight_bucket || {})[k] || 0;
+               // Only while the run is live: a run killed with work outstanding never
+               // logs those completions, so the count would stay up for good.
+               const out = s.status === "running"
+                 ? ((s.inflight_bucket || {})[k] || 0) : 0;
                const text = (shapes.length > 1 ? `${k}: ` : "") +
                  ((b.max_blocks || 1) > 1 ? `${b.max_blocks} blocks of ` : "") +
                  `${b.num_nodes} node${b.num_nodes === 1 ? "" : "s"}` +
