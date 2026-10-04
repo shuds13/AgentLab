@@ -235,7 +235,9 @@ Create the endpoint, then replace the generated
 `systems/endpoints/`, editing account, filesystem declarations, and the `worker_init`
 line that activates their environment.
 
-Choose the launcher deliberately. `SimpleLauncher` gives one worker per allocation and
+Choose the launcher deliberately. `SimpleLauncher` gives one worker pool on the block's
+first node -- so `max_workers_per_node` spreads tasks within that node, never across a
+multi-node block -- and
 the job's own launcher spans the nodes — correct when the application manages devices
 itself. `MpiExecLauncher` with `available_accelerators` fans out one worker per device —
 correct for many independent single-device tasks. `SimpleLauncher` should be

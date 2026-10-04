@@ -15,7 +15,7 @@ idle_heartbeats_soft: 20
 engine:
   type: GlobusComputeEngine
   job_status_kwargs: {max_idletime: 600}   # hold an idle block for 10 min
-  max_workers_per_node: 1          # vLLM spans the tiles itself via tensor parallelism
+  max_workers_per_node: {{ max_workers_per_node | default(1) }}
 
   provider:
     type: PBSProProvider
@@ -27,7 +27,7 @@ engine:
     cpus_per_node: 208
     # ALCF requires the filesystems you touch to be declared.
     scheduler_options: "#PBS -l filesystems=home:flare"
-    # Edit: activate the environment providing `vllm`. One line.
+    # Edit: activate the environment the job runs in. One line.
     worker_init: "module load frameworks && source ~/venvs/agentlab/bin/activate"
     walltime: {{ walltime|default("01:00:00") }}
 

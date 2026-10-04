@@ -10,13 +10,13 @@
 # begins the moment it is submitted and there is no queue, no account and no
 # walltime. Everything the endpoint can run at once is running at once.
 #
-# EDIT: max_workers, worker_init.
+# EDIT: max_workers_per_node, worker_init.
 
 engine:
   type: GlobusComputeEngine
   # One worker per concurrent job. Match it to what the machine can carry, and set
   # max_concurrent in the system's JSON file to the same number.
-  max_workers_per_node: {{ max_workers | default(1) }}
+  max_workers_per_node: {{ max_workers_per_node | default(1) }}
 
   provider:
     type: LocalProvider

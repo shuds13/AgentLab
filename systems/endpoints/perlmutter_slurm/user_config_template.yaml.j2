@@ -20,7 +20,7 @@ idle_heartbeats_soft: 20
 engine:
   type: GlobusComputeEngine
   job_status_kwargs: {max_idletime: 600}   # hold an idle block for 10 min
-  max_workers_per_node: 1
+  max_workers_per_node: {{ max_workers_per_node | default(1) }}
 
   provider:
     type: SlurmProvider
@@ -33,8 +33,8 @@ engine:
     walltime: {{ walltime | default("00:30:00") }}
 
     # Batch-job settings the scheduler needs, not the worker. GPUs must be requested
-    # explicitly -- constraint "gpu" alone does not allocate them, and vLLM then reports
-    # no CUDA device. The request is conditional on the constraint because a cpu node
+    # explicitly -- constraint "gpu" alone does not allocate them, and the job then
+    # sees no CUDA device. The request is conditional on the constraint because a cpu node
     # has no GPUs to give and Slurm refuses the job. A containerised job declares its
     # image here too, e.g.
     #     #SBATCH --image=<registry>/<image>:<tag>
@@ -57,9 +57,9 @@ engine:
       # export HF_TOKEN=$(cat ~/.hf_token)
       export TMPDIR=/tmp
 
-# SimpleLauncher gives one worker for the whole allocation, and whatever the job
-# launches spans the node itself -- correct when the application places work on the
-# GPUs itself.
+# SimpleLauncher gives one worker pool on the block's first node, and whatever the job
+# launches spans the allocation itself -- correct when the application places work on
+# the GPUs itself. max_workers_per_node spreads tasks within that one node only.
 #
 # For many independent single-GPU tasks instead, fan out one worker per device.
 # A Perlmutter GPU node has 4:

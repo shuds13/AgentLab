@@ -94,8 +94,16 @@ regardless of what any agent asks for.
 
 - **`max_blocks`** — caps how many batch jobs this endpoint has outstanding at
   once, whatever the agent submits. Extra tasks queue inside the existing blocks.
-  Both templates ship with `max_blocks: 1`.
-- **`nodes_per_block`** — how big each job is.
+  Templates ship with `max_blocks: 1`. Raising it only adds a block when the
+  existing ones are full, which depends on `max_workers_per_node`.
+- **`nodes_per_block`** — how big each job is. The bucket's total nodes is this
+  times `max_blocks`.
+- **`max_workers_per_node`** — how many tasks run at once on one node. At 1, a
+  second task waits for a free node and Parsl asks for another block; raise it and
+  tasks share a node instead, which is usually what you want when a task uses only
+  part of it. The templates default to 1. With `SimpleLauncher` the pool runs on the
+  block's first node only, so this spreads tasks within that node and not across a
+  multi-node block — there, the task spans the allocation itself with mpiexec.
 - **`walltime`** — how long each job may run.
 
 Note that `{{ walltime|default("00:30:00") }}` is a **fallback, not a ceiling**: it

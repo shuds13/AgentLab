@@ -48,6 +48,33 @@ what the run is for.
 If a rerun needs an edit outside `user_prompt.md`, that is usually a sign something
 durable was written in the wrong place.
 
+## Resources
+
+`campaign.json` gives either `resources` (one shape) or `buckets` (named shapes, the
+first being the default). A task routes to one with `bucket_for(args)`.
+
+The keys are passed to the endpoint as its configuration, so they must be names that
+endpoint's template accepts. A facility multi-user endpoint validates them and rejects
+anything it does not declare; `systems/endpoints/README.md` lists the common ones.
+
+Three decide how much runs at once:
+
+- `max_workers_per_node` — tasks sharing one node. Raise it when a task uses only part
+  of a node; at 1 a second task waits for a second node. **It only spreads tasks within
+  one node.** With `SimpleLauncher`, which the templates use, Parsl starts one worker
+  pool on the block's first node, so with `nodes_per_block` above 1 the other nodes get
+  no workers and raising this buys nothing — the task is expected to span the allocation
+  itself, with mpiexec. More nodes per task means `nodes_per_block`; more tasks at once
+  on one node means this; more tasks at once on separate nodes means `max_blocks`.
+- `max_blocks` — batch jobs this bucket may have outstanding. Parsl adds one only when
+  the existing blocks are full, so it does nothing until `max_workers_per_node` is
+  exhausted.
+- `max_concurrent` — tasks the agent may have in flight for this bucket. Agent-side,
+  unlike the other two.
+
+Machine-specific keys belong in `systems/<system>.json` rather than here, or the
+campaign will not run anywhere else.
+
 ## prompt.md
 
 Standing, and reread every run as part of the system prompt.
