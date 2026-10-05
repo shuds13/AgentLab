@@ -649,13 +649,19 @@ PAGE = """<!doctype html>
  #labsvc button:disabled { opacity:.5; cursor:default; }
  #lab { display:none; padding:12px; }
  #lab table { width:100%%; margin:0; }
- #lab th { text-align:left; color:#6f8296; font-weight:normal;
+ /* The headings are the sort control, so they answer to the pointer, and the arrow on
+    the one in use says which way it is running. */
+ #lab th { text-align:left; color:#6f8296; font-weight:normal; cursor:pointer;
            padding:0 18px 5px 0; border-bottom:1px solid #2b3946; }
+ #lab th:hover { color:#9cc4e8; }
  #lab td { padding:7px 18px 7px 0; border-bottom:1px solid #1e1e1e; }
  /* A name and a duration read as one thing; broken over two lines they do not. The
     free text -- what stopped it, what it is doing -- is what gives way instead. */
  #lab th, #lab td { white-space:nowrap; }
  #lab .state, #lab .doing { white-space:normal; }
+ /* Where the running campaigns end: the row line that is there anyway, in the frame's
+    blue rather than the near-black the other rows get. */
+ #lab tr.edge td { border-bottom-color:#3a4a5a; }
  #lab tr.row { cursor:pointer; }
  #lab tr.row:hover td { background:#1a2430; }
  #lab .name { color:#fff; }
@@ -1488,25 +1494,107 @@ const when = t => {
   return m ? `${m[2]}-${m[3]} ${m[4]}` : "\u2014";
 };
 
+// The campaign table's columns, in the order they are drawn, and which way each one
+// runs when first picked: a name or a state reads from A, while for a duration or a
+// date the long and the recent are what you went looking for.
+const LAB_COLS = [["campaign", "campaign"], ["state", "state"], ["doing", "doing"],
+                  ["run", "run"], ["took", "took"], ["last", "last active"]];
+const LAB_DESC = {campaign: false, state: false, doing: false, run: false,
+                  took: true, last: true};
+// By name, the order the lab has always opened on. A heading changes it, and changes
+// it for both sections at once: they are two parts of one list, not two lists.
+let labSort = "campaign", labDesc = false;
+// Kept so a click on a heading reorders what is already on screen rather than waiting
+// on the next poll to say the same thing again.
+let labRows = [];
+
+// Orders one section's rows. Which campaigns are running is not the sort's business --
+// they are listed apart, above -- so this is only ever asked to order like with like.
+function labOrder(rows) {
+  const sign = labDesc ? -1 : 1;
+  const state = r => !r.run ? "never run"
+                   : r.live ? "running" : (r.status || "stopped");
+  // A run still going was last active now, which is what its cell says. A run that was
+  // killed never wrote down that it ended, so it is last active when it started. One
+  // that has never run has no answer at all.
+  const last = r => r.live ? Date.now()
+                  : (Date.parse(r.ended_at || r.started_at || "") || 0);
+  const str = f => (a, b) => {
+    const x = String(f(a) || "").toLowerCase(), y = String(f(b) || "").toLowerCase();
+    return x === y ? 0 : sign * (x < y ? -1 : 1);
+  };
+  const num = f => (a, b) => sign * ((f(a) || 0) - (f(b) || 0));
+  const by = labSort === "state" ? str(state)
+           : labSort === "doing" ? str(r => r.phase)
+           : labSort === "run" ? str(r => r.handle)
+           : labSort === "took" ? num(r => r.elapsed_s)
+           : labSort === "last" ? num(last)
+           : str(r => r.campaign);
+  // A row showing "--" under the column being sorted has nothing to order it by, and an
+  // empty value would otherwise win it a place at one end: sorted by what it is doing,
+  // every campaign that is doing nothing would come before the one that is. So the
+  // blanks sink to a block at the bottom whichever way the column runs, and the rows
+  // with something to say hold the order between them. Name and state are never blank.
+  const has = labSort === "doing" ? (r => !!(r.live && r.phase))
+            : labSort === "took" ? (r => r.elapsed_s != null)
+            : labSort === "run" ? (r => !!r.handle)
+            : labSort === "last" ? (r => !!(r.live || r.ended_at || r.started_at))
+            : (r => true);
+  const blank = r => has(r) ? 0 : 1;
+  // Ties keep a plain A-to-Z, so a column many rows share still reads in a settled
+  // order rather than shuffling from one poll to the next -- and the block at the
+  // bottom reads that way whichever direction the column is running.
+  const byName = (a, b) => a.campaign.toLowerCase() < b.campaign.toLowerCase() ? -1 : 1;
+  return rows.slice().sort((a, b) =>
+    (blank(a) - blank(b)) || by(a, b) || byName(a, b));
+}
+
 function renderLab(rows) {
   if (!rows.length) {
     labPane.innerHTML = `<div class="none">no campaigns have run yet</div>`;
     labPane.dataset.key = "";
     return;
   }
+  labRows = rows;
+  // What is running is listed first whatever the sort, so it cannot be ordered or
+  // scrolled out of sight: a run nobody knows is going is the one thing this page
+  // exists to prevent. A lab with nothing running is just the list, with nothing to
+  // mark off.
+  const live = labOrder(rows.filter(r => r.live));
+  const rest = labOrder(rows.filter(r => !r.live));
+  rows = live.concat(rest);
   // Same reason the status table is built once and its cells rewritten: a table
-  // rebuilt every second cannot hold a selection, and these rows tick.
-  const key = rows.map(r => r.campaign).join("|");
+  // rebuilt every second cannot hold a selection, and these rows tick. The sort and
+  // which campaigns are running are both part of the key, so picking a column that
+  // happens to leave the rows where they are still moves the arrow, and a run starting
+  // still lifts it above the rule.
+  const key = labSort + labDesc + "|" +
+    rows.map(r => r.campaign + (r.live ? "*" : "")).join("|");
   if (labPane.dataset.key !== key) {
     labPane.dataset.key = key;
-    labPane.innerHTML = "<table><tr><th>campaign</th><th>state</th><th>doing</th>" +
-      "<th>run</th><th>took</th><th>last active</th></tr>" +
-      rows.map(r => `<tr class="row" data-c="${esc(r.campaign)}">` +
-        `<td class="name"></td><td class="state"></td><td class="doing"></td>` +
-        `<td class="run"></td><td class="took"></td><td class="last"></td></tr>`
-      ).join("") + "</table>";
+    // The last of the running campaigns carries the line that marks them off. They are
+    // already the ones with the lit dot, so a heading saying so would only repeat the
+    // rows above it.
+    const cut = live.length && rest.length ? live.length - 1 : -1;
+    const row = (r, i) => `<tr class="row${i === cut ? " edge" : ""}"` +
+      ` data-c="${esc(r.campaign)}">` +
+      `<td class="name"></td><td class="state"></td><td class="doing"></td>` +
+      `<td class="run"></td><td class="took"></td><td class="last"></td></tr>`;
+    labPane.innerHTML = "<table><tr>" +
+      LAB_COLS.map(([v, label]) => `<th data-s="${v}">${label}` +
+        (labSort === v ? (labDesc ? " ▾" : " ▴") : "") + `</th>`).join("") +
+      "</tr>" + rows.map(row).join("") + "</table>";
     for (const tr of labPane.querySelectorAll("tr.row"))
       tr.onclick = () => enterCampaign(tr.dataset.c);
+    // A second click on the column already sorted turns it round, as the file tree's
+    // headings do.
+    for (const th of labPane.querySelectorAll("th[data-s]"))
+      th.onclick = () => {
+        const v = th.dataset.s;
+        labDesc = labSort === v ? !labDesc : LAB_DESC[v];
+        labSort = v;
+        renderLab(labRows);
+      };
   }
   const trs = labPane.querySelectorAll("tr.row");
   rows.forEach((r, i) => {
@@ -1884,9 +1972,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif url.path == "/users":
             self._send(json.dumps(lab_users()), "application/json")
         elif url.path == "/lab":
-            # Ordered as the lab reads: what is running first, then by name.
+            # By name: the page orders it, so which column it is sorted on survives a
+            # poll rather than being undone by one.
             rows = [lab_summary(c) for c in self._choices()]
-            rows.sort(key=lambda r: (not r.get("live"), r["campaign"]))
+            rows.sort(key=lambda r: r["campaign"])
             self._send(json.dumps(rows), "application/json")
         elif url.path == "/log":
             self._send(json.dumps(
