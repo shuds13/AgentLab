@@ -192,7 +192,8 @@ def newest_run(campaign):
         age = _beat_age(os.path.dirname(m))
         if age is not None and age < AGENT_ALIVE_WITHIN:
             live.append(m)
-    return os.path.dirname(max(live or metas, key=os.path.getmtime))
+    return os.path.dirname(max(live or metas,
+                               key=lambda m: _run_time(os.path.dirname(m))))
 
 
 # What a run was handed: its prompts, its method, the campaign as it stood. Written at
@@ -561,6 +562,24 @@ def _mtime(path):
         return 0.0
 
 
+def _run_time(run_dir):
+    """When a run last mattered: when it ended, or when it started if it has not.
+
+    Taken from meta.json's own timestamps, which belong to the run and outlive any
+    copy of it. The file's mtime is the fallback for a meta that cannot be read or
+    carries no timestamp."""
+    meta_path = os.path.join(run_dir, "meta.json")
+    try:
+        with open(meta_path) as f:
+            meta = json.load(f)
+        stamp = meta.get("ended_at") or meta.get("started_at")
+        if stamp:
+            return datetime.fromisoformat(stamp).timestamp()
+    except (OSError, ValueError, TypeError):
+        pass
+    return _mtime(meta_path)
+
+
 # Liveness is a RECENT heartbeat, not the file existing: a run killed outright leaves
 # its heartbeat behind, and a stale one must not read as alive. The convention, and the
 # override, are the agent's that writes it.
@@ -581,7 +600,7 @@ def latest_campaign():
 
     A campaign whose run is still beating comes first, whenever that run began, since
     that is the one there is something to watch. The rest are ranked by when their last
-    run wrote. A campaign that has never run sorts last; there is nothing of it to
+    run ended. A campaign that has never run sorts last; there is nothing of it to
     show."""
     def rank(campaign):
         run_dir = newest_run(campaign)
@@ -590,7 +609,7 @@ def latest_campaign():
         age = _beat_age(run_dir)
         if age is not None and age <= AGENT_ALIVE_WITHIN:
             return (2, -age)            # beating: the freshest of them first
-        return (1, _mtime(os.path.join(run_dir, "meta.json")))
+        return (1, _run_time(run_dir))
 
     names = campaigns()
     return max(names, key=rank) if names else None
