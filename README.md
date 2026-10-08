@@ -6,12 +6,10 @@
 
 **[Presentation →](https://github.com/shuds13/agentlab_slides/blob/main/agentlab.pdf)** &nbsp;|&nbsp; **[Tutorial →](https://github.com/shuds13/agentlab_slides/blob/main/agentlab_tutorial.pdf)**
 
-An experimental lab for persistent agent tasks that submit work to HPC systems.
+A lab for autonomous agentic workflows that submit work to HPC systems.
 
-Built on the same machinery as
-[CAS framework](https://github.com/shuds13/cas-framework), which coordinates many
-agents on a single search campaign. AgentLab allows a user or team to run any number of
-investigations side by side, all visible and steerable from one UI or Slack channel.
+A user or team can run any number of investigations side by side, and coordinate many
+agents on a single campaign, all visible and steerable from one UI or Slack channel.
 
 You give an agent a goal and a system. It submits the work, reads what comes back,
 decides what to try next, and keeps going until it has an answer.
