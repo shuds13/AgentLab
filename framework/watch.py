@@ -267,6 +267,7 @@ def _submits(path, run_id):
     total = 0
     this_run = {"remote": 0, "local": 0}
     done = {"remote": 0, "local": 0}
+    abandoned = 0
     # Per bucket, for a campaign whose jobs come in more than one resource shape.
     buckets = {}
     # Still out: submitted and not yet returned. A completed row names the job but not
@@ -285,8 +286,12 @@ def _submits(path, run_id):
                 # Remote and local jobs are logged to the same file and are different
                 # work: one went to a compute system, the other ran here.
                 where = "local" if event.startswith("local_") else "remote"
-                if event.endswith("completed"):
-                    done[where] += mine
+                # An abandoned job is out of flight without having returned.
+                if event.endswith("completed") or event == "abandoned":
+                    if event == "abandoned":
+                        abandoned += mine
+                    else:
+                        done[where] += mine
                     b = job_bucket.pop(row.get("job_id"), None)
                     if b:
                         inflight[b] = inflight.get(b, 0) - 1
@@ -302,7 +307,8 @@ def _submits(path, run_id):
                     inflight[b] = inflight.get(b, 0) + 1
     except OSError:
         pass
-    return total, this_run, done, buckets, {k: v for k, v in inflight.items() if v > 0}
+    return (total, this_run, done, buckets,
+            {k: v for k, v in inflight.items() if v > 0}, abandoned)
 
 
 def _phase(run_dir):
@@ -542,7 +548,8 @@ def status(campaign, run=None):
                 age = int(time.time() - float(f.read().strip()))
         except Exception:
             age = None
-    submits_total, submits_run, done_run, submits_bucket, inflight_bucket = _submits(
+    (submits_total, submits_run, done_run, submits_bucket, inflight_bucket,
+     abandoned) = _submits(
         os.path.join(ws, "jobs.jsonl"), meta.get("run_id"))
     ran_here = sum(submits_run.values())
     phase, phase_age = _phase(run_dir)
@@ -569,7 +576,7 @@ def status(campaign, run=None):
         "inflight_bucket": inflight_bucket,
         "buckets": meta.get("buckets") or {},
         "default_bucket": meta.get("default_bucket"),
-        "jobs_done": sum(done_run.values()),
+        "jobs_done": sum(done_run.values()), "jobs_abandoned": abandoned,
         "jobs_remote": submits_run["remote"], "jobs_local": submits_run["local"],
         "done_remote": done_run["remote"], "done_local": done_run["local"],
         "endpoint": meta.get("endpoint"), "has_local": meta.get("has_local"),
@@ -1095,8 +1102,9 @@ function renderStatus(s) {
         + (s.endpoint && s.has_local
            ? ` <span style="color:#777">(${s.jobs_remote} on ${s.system || "endpoint"}, `
              + `${s.jobs_local} here)</span>` : "")],
-    ["still running", `${s.jobs_run - s.jobs_done} of ${s.jobs_run} submitted, `
-        + `${s.jobs_done} returned`],
+    ["still running", `${s.jobs_run - s.jobs_done - (s.jobs_abandoned || 0)} of `
+        + `${s.jobs_run} submitted, ${s.jobs_done} returned`
+        + (s.jobs_abandoned ? `, ${s.jobs_abandoned} abandoned` : "")],
     ["elapsed", bar(s.elapsed_s, s.max_runtime_s, hms)],
     ["model", `${s.model || "\u2014"} \u00b7 context ` + (s.context_tokens == null
         ? "no data"

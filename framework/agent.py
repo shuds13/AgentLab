@@ -176,8 +176,10 @@ EXPLORE_PROMPT = _prompt("EXPLORE_PROMPT",
 )
 WINDDOWN_PROMPT = _prompt("WINDDOWN_PROMPT",
     "Wind-down requested: this run is ending. Submit no new work -- the submit tools "
-    "will refuse it. Collect and log the jobs already in flight as they finish. Once "
-    "everything is collected you get a final turn to write up the cycle."
+    "will refuse it. Collect and log the jobs already in flight as they finish; a job "
+    "that will not return, because its batch job was cancelled, abandon with "
+    "abandon_job. Once everything is collected you get a final turn to write up the "
+    "cycle."
 )
 FINALIZE_PROMPT = _prompt("FINALIZE_PROMPT",
     # Which records a cycle is written up in is the method's business, not the

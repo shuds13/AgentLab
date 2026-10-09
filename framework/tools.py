@@ -798,6 +798,31 @@ async def release_claim(args):
     return {"content": [{"type": "text", "text": f"released claim on {args['key']}"}]}
 
 
+ABANDON_JOB_DESC = (
+    "Stop waiting for a remote job that will not return: its batch job was cancelled, or "
+    "you have been told it is cancelled. Pass its job_id and why. The run stops waiting "
+    "for it, so a wind-down can finish, and jobs.jsonl records it as abandoned. Globus "
+    "Compute cannot withdraw a submitted task: while the endpoint is running it may "
+    "request a new batch job for it, which whoever stops the endpoint has to know."
+)
+
+
+@tool("abandon_job", ABANDON_JOB_DESC, {"job_id": int, "reason": str})
+async def abandon_job(args):
+    job_id = args.get("job_id")
+    info = _jobs.pop(job_id, None)
+    if info is None:
+        return {"content": [{"type": "text", "text":
+                             f"job {job_id} is not in flight; in flight: {sorted(_jobs)}"}],
+                "is_error": True}
+    info["future"].cancel()
+    _append_jobs_log({"event": "abandoned", "job_id": job_id, "key": info["key"],
+                      "reason": (args.get("reason") or "").strip()})
+    _release_claim(info["key"])
+    return {"content": [{"type": "text", "text":
+                         f"job {job_id} abandoned; {len(_jobs)} remote job(s) still in flight"}]}
+
+
 NOTIFY_DESC = (
     "Post a short status message (1-2 lines) to the team's chat channel, in your own words. "
     "Use it for: (a) the periodic status summary when asked to report; (b) a notable "
@@ -853,7 +878,8 @@ GOAL_MET_DESC = (
     "question is answered to the standard that prompt sets. A good result is not a met "
     "goal, and neither is a result you have not yet recorded -- write the evidence "
     "first, then call this. Pass what settles it, in one or two lines. The run stops "
-    "taking new work, finishes what is in flight, and gives you a turn to write up."
+    "taking new work, finishes what is in flight, and gives you a turn to write up. A "
+    "job that will not return holds the run open: abandon it with abandon_job."
 )
 
 _goal_met = None        # what the agent said settles the goal, or None
@@ -877,7 +903,8 @@ async def goal_met(args):
 END_RUN_DESC = (
     "Call this when you have been asked to stop, rather than because the goal is met. "
     "Pass who asked and what they asked for, in a line. The run stops taking new work, "
-    "finishes what is in flight, and gives you a turn to write up what it reached."
+    "finishes what is in flight, and gives you a turn to write up what it reached. A job "
+    "that will not return holds the run open: abandon it with abandon_job."
 )
 
 _end_requested = None   # what the agent was asked to stop for, or None
@@ -941,7 +968,7 @@ def create_server():
     tools = []
     if HAS_REMOTE:
         tools += [submit_job_batch if BATCH_MODE else submit_job,
-                  get_completed_jobs, release_claim]
+                  get_completed_jobs, release_claim, abandon_job]
     if HAS_LOCAL:
         tools += [submit_local_batch if BATCH_MODE else submit_local,
                   get_local_completed]
@@ -961,7 +988,7 @@ def tool_names():
     names = []
     if HAS_REMOTE:
         names += ["submit_job_batch" if BATCH_MODE else "submit_job",
-                  "get_completed_jobs", "release_claim"]
+                  "get_completed_jobs", "release_claim", "abandon_job"]
     if HAS_LOCAL:
         names += ["submit_local_batch" if BATCH_MODE else "submit_local",
                   "get_local_completed"]
