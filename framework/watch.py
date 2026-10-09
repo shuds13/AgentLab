@@ -968,11 +968,18 @@ const hms = s => s == null ? "\u2014" :
 // What the run consumed. A dash for the money means the price was not the serving
 // model's own, not that the run was free -- the runner drops a figure it cannot stand
 // behind rather than printing a catalog price for a model the catalog does not cover.
+// With more than one model, each gets a row labelled "cost", the model named first in
+// the value (without its date suffix), the largest consumer at the top.
 function costRows(models) {
   if (!models || !models.length) return [];
-  return models.map(m => [
-    models.length > 1 ? `cost · ${m.model}` : "cost",
-    `${short(m.input_tokens)} in / ${short(m.output_tokens)} out · `
+  const rows = models.length > 1
+    ? [...models].sort((a, b) => (b.usd || 0) - (a.usd || 0)
+                                 || (b.input_tokens || 0) - (a.input_tokens || 0))
+    : models;
+  return rows.map(m => [
+    "cost",
+    (models.length > 1 ? `${m.model.replace(/-\\d{8}$/, "")} · ` : "")
+      + `${short(m.input_tokens)} in / ${short(m.output_tokens)} out · `
       + (m.usd == null ? "—"
          : "$" + m.usd.toFixed(2))]);
 }
