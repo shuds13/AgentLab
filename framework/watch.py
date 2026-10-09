@@ -196,6 +196,37 @@ def newest_run(campaign):
                                key=lambda m: _run_time(os.path.dirname(m))))
 
 
+def run_path(campaign, run=None):
+    """The run a request is about: the one named, if the campaign has it, else the
+    newest. The name becomes a path, so only a run directory that exists is accepted;
+    any other name finds no run."""
+    if not run:
+        return newest_run(campaign)
+    d = os.path.join(workspace(campaign), "runs", run)
+    if os.path.basename(run) == run and os.path.isfile(os.path.join(d, "meta.json")):
+        return d
+    return None
+
+
+def runs(campaign):
+    """Every run of the campaign, newest first: enough to choose one by."""
+    out = []
+    for m in glob.glob(os.path.join(workspace(campaign), "runs", "*", "meta.json")):
+        d = os.path.dirname(m)
+        try:
+            with open(m) as f:
+                meta = json.load(f)
+        except Exception:
+            meta = {}
+        usd = [c.get("usd") for c in meta.get("cost_models") or [] if c.get("usd") is not None]
+        out.append({"run": os.path.basename(d), "started_at": meta.get("started_at"),
+                    "status": meta.get("status"), "stop_reason": meta.get("stop_reason"),
+                    "model": meta.get("model"), "turns": meta.get("turns"),
+                    "usd": sum(usd) if usd else None, "_t": _run_time(d)})
+    out.sort(key=lambda r: r.pop("_t"), reverse=True)
+    return out
+
+
 # What a run was handed: its prompts, its method, the campaign as it stood. Written at
 # startup and belonging to that run, unlike the campaign's records, which every run of
 # it appends to. What status already reports is left to status.
@@ -203,12 +234,12 @@ RUN_HIDDEN = ("meta.json",)
 RUN_SUFFIXES = (".md", ".json")
 
 
-def run_files(campaign):
-    """The snapshots the newest run left in its own directory.
+def run_files(campaign, run=None):
+    """The snapshots a run (the newest, unless one is named) left in its own directory.
 
     This is also the set a request is checked against: a name not listed here is not
     served, so the name cannot be used to reach outside the run."""
-    run = newest_run(campaign)
+    run = run_path(campaign, run)
     if not run:
         return []
     try:
@@ -492,10 +523,10 @@ def lab_summary(campaign):
     }
 
 
-def status(campaign):
-    """Where this run has got to, in terms any campaign has: work done against the
-    budgets it stops at, and whether it is still going."""
-    run_dir = newest_run(campaign)
+def status(campaign, run=None):
+    """Where a run (the newest, unless one is named) has got to, in terms any campaign
+    has: work done against the budgets it stops at, and whether it is still going."""
+    run_dir = run_path(campaign, run)
     if not run_dir:
         return {"run": None}
     try:
@@ -724,6 +755,9 @@ PAGE = """<!doctype html>
                 cursor:pointer; font:inherit; }
  #tabs button.on { background:#2d4a2d; color:#fff; }
  #tabs .div { align-self:stretch; border-left:1px solid #3a4a5a; margin:0 8px; }
+ #tabs select { background:#222; color:#bbb; border:1px solid #333; padding:2px 4px;
+                font:inherit; cursor:pointer; }
+ #tabs select.past { background:#3a3220; color:#fff; border-color:#6a5a30; }
  /* The pane scrolls, not the page, so the tabs stay put wherever you are in a file. */
  #main { flex:1; display:flex; min-height:0; }
  #pane { flex:1; overflow:auto; position:relative; }
@@ -850,7 +884,13 @@ const SHOW_RAW = false;
 // already checked the name it served this page with, so that is what it opens on.
 const HOME = %(campaign_json)s;
 let campaign = HOME;
-const url = p => p + (p.includes("?") ? "&" : "?") + "c=" + encodeURIComponent(campaign);
+// Which run the left-hand tabs show: blank for the newest, which follows a new run
+// when it starts, or a past one by name. The address carries it, like the campaign.
+let run = new URLSearchParams(location.search).get("run") || "", runList = [];
+const url = p => p + (p.includes("?") ? "&" : "?") + "c=" + encodeURIComponent(campaign)
+  + (run ? "&run=" + encodeURIComponent(run) : "");
+const address = () => "?c=" + encodeURIComponent(campaign)
+  + (run ? "&run=" + encodeURIComponent(run) : "");
 // Two places to be: the lab, which lists the campaigns it has, and one campaign's own
 // page. The address bar says which, so a reload comes back to where you were.
 let scope = %(scope_json)s;
@@ -867,10 +907,27 @@ pane.addEventListener("scroll", () => {
 
 function setTabs(files) {
   const t = document.getElementById("tabs");
-  const key = JSON.stringify(files) + tab + rawMode + sideOpen;
+  const key = JSON.stringify(files) + tab + rawMode + sideOpen + run
+    + JSON.stringify(runList);
   if (t.dataset.key === key) return;
   t.dataset.key = key;
   t.innerHTML = "";
+  // The run the next two tabs are about: the newest, or one picked from the history.
+  const sel = document.createElement("select");
+  sel.className = run ? "past" : "";
+  // The newest run is "latest", which follows a new one when it starts; the rest by
+  // when they started.
+  sel.innerHTML = `<option value="">latest</option>` + runList.slice(1).map(r =>
+    `<option value="${esc(r.run)}">${esc(when(r.started_at))}</option>`).join("");
+  sel.value = run;
+  sel.onchange = () => {
+    run = sel.value;
+    history.replaceState(null, "", address());
+    // A file the run was handed may not exist in the other run.
+    openTab(runFiles.includes(tab) ? "status" : tab);
+    files();
+  };
+  t.appendChild(sel);
   for (const n of ["status", "log"].concat(files)) {
     // The first two are this run; the files after them are the campaign's records,
     // written by every run of it. Marked off, because the counts differ for the same
@@ -1339,12 +1396,13 @@ async function files() {
   if (scope === "lab") return;
   const mine = campaign;
   try {
-    const [list, runs] = await Promise.all([
+    const [list, runs, past] = await Promise.all([
       fetch(url("/files")).then(r => r.json()),
       fetch(url("/runfiles")).then(r => r.json()),
+      fetch(url("/runs")).then(r => r.json()),
     ]);
     if (mine === campaign && scope === "campaign") {
-      runFiles = runs; setTabs(list); showSide();
+      runFiles = runs; runList = past; setTabs(list); showSide();
     }
   } catch (e) {}
 }
@@ -1501,8 +1559,8 @@ function resetPane() {
 }
 
 function enterCampaign(name) {
-  campaign = name; scope = "campaign"; camp.value = name;
-  history.replaceState(null, "", "?c=" + encodeURIComponent(name));
+  campaign = name; scope = "campaign"; camp.value = name; run = ""; runList = [];
+  history.replaceState(null, "", address());
   resetPane(); showScope();
   files(); refresh(); chat();
 }
@@ -1798,9 +1856,9 @@ async function campaignList() {
   // The campaign being shown has gone from the lab -- its workspace removed while the
   // page was open. The server is answering for the one it started on, so show that.
   if (!names.includes(campaign)) {
-    campaign = HOME;
+    campaign = HOME; run = "";
     if (scope === "campaign") {
-      history.replaceState(null, "", "?c=" + encodeURIComponent(campaign));
+      history.replaceState(null, "", address());
     }
     showScope();
   }
@@ -1975,6 +2033,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # blanks are kept.
         q = urllib.parse.parse_qs(url.query, keep_blank_values=True)
         campaign = self._campaign(q)
+        run = (q.get("run") or [""])[0] or None    # a past run, else the newest
         if url.path == "/":
             # The page opens where the address says, so a bookmark is showing the right
             # place before the first poll rather than a moment after it.
@@ -2005,10 +2064,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(json.dumps(rows), "application/json")
         elif url.path == "/log":
             self._send(json.dumps(
-                self._log_from(campaign, int(q.get("from", ["0"])[0] or 0))),
+                self._log_from(campaign, int(q.get("from", ["0"])[0] or 0), run)),
                 "application/json")
         elif url.path == "/status":
-            self._send(json.dumps(status(campaign)), "application/json")
+            self._send(json.dumps(status(campaign, run)), "application/json")
+        elif url.path == "/runs":
+            self._send(json.dumps(runs(campaign)), "application/json")
         elif url.path == "/files":
             ws = workspace(campaign)
             self._send(json.dumps([f for f in READABLE
@@ -2025,7 +2086,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else:
                 self._send(_render(text, campaign), "text/html; charset=utf-8")
         elif url.path == "/runfiles":
-            self._send(json.dumps(run_files(campaign)), "application/json")
+            self._send(json.dumps(run_files(campaign, run)), "application/json")
         elif url.path == "/messages":
             # The conversation, not a file tab: served whether or not it exists yet.
             try:
@@ -2039,7 +2100,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                              q.get("root", ["ws"])[0])
         elif url.path in ("/file", "/runfile"):
             name = q.get("name", [""])[0]
-            text = (self._runfile(campaign, name) if url.path == "/runfile"
+            text = (self._runfile(campaign, name, run) if url.path == "/runfile"
                     else self._file(campaign, name))
             if q.get("raw") or not name.endswith(".md") or _markdown is None:
                 self._send(text)
@@ -2050,10 +2111,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     # Per campaign: one watcher serves them all, and a page on one must not reset a
     # page on another.
-    _serving = {}              # campaign -> the log file it is currently being fed
+    _serving = {}              # (campaign, run) -> the log file it is being fed
 
-    def _log_from(self, campaign, offset):
+    def _log_from(self, campaign, offset, run=None):
         path = newest_log(campaign)
+        if run:
+            d = run_path(campaign, run)
+            named = os.path.join(workspace(campaign), "logs",
+                                 "run_" + os.path.basename(d) + ".log") if d else None
+            path = named if named and os.path.isfile(named) else None
         if not path:
             return {"text": "", "offset": 0, "name": "no run log yet", "running": False}
         size = os.path.getsize(path)
@@ -2061,9 +2127,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # log, and a truncated one is no longer what we were reading. Either way,
         # splicing two logs together would be a lie.
         cls = type(self)
-        was = cls._serving.get(campaign)
+        was = cls._serving.get((campaign, run))
         reset = offset > size or (was is not None and was != path)
-        cls._serving[campaign] = path
+        cls._serving[(campaign, run)] = path
         if reset:
             offset = 0
         with open(path, errors="replace") as f:
@@ -2092,11 +2158,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except OSError:
             self.send_error(404)
 
-    def _runfile(self, campaign, name):
-        run = newest_run(campaign)
-        if not run or name not in run_files(campaign):
+    def _runfile(self, campaign, name, run=None):
+        d = run_path(campaign, run)
+        if not d or name not in run_files(campaign, run):
             return "not a file this watcher serves"
-        return self._read(os.path.join(run, name), name)
+        return self._read(os.path.join(d, name), name)
 
     def _wsfile(self, campaign, root, rel):
         """Any file under one of the campaign's roots, as against the records `_file`
