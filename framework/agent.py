@@ -543,7 +543,7 @@ def load_framework():
     reads, and the two ways a run ends. Not copied into a campaign -- a campaign owns
     its method, but the framework it runs in is the framework's to state."""
     with open(os.path.join(SCRIPT_DIR, "framework_prompt.md")) as f:
-        return f.read()
+        return f.read().replace("{framework_dir}", SCRIPT_DIR)
 
 
 def load_user_prompt():

@@ -98,13 +98,20 @@ regardless of what any agent asks for.
   existing ones are full, which depends on `max_workers_per_node`.
 - **`nodes_per_block`** — how big each job is. The bucket's total nodes is this
   times `max_blocks`.
-- **`max_workers_per_node`** — how many tasks run at once on one node. At 1, a
-  second task waits for a free node and Parsl asks for another block; raise it and
-  tasks share a node instead, which is usually what you want when a task uses only
-  part of it. The templates default to 1. With `SimpleLauncher` the pool runs on the
-  block's first node only, so this spreads tasks within that node and not across a
-  multi-node block — there, the task spans the allocation itself with mpiexec.
-- **`walltime`** — how long each job may run.
+- **`max_workers_per_node`** — how many tasks run at once on one node. Raise it and
+  tasks share a node, which is usually what you want when a task uses only part of
+  it. The templates default to 1. With `SimpleLauncher` the pool runs on the block's
+  first node only, so a block runs `max_workers_per_node` tasks however many nodes it
+  has, and a multi-node task spans the allocation itself with mpiexec.
+- **`parallelism`** — a bucket setting, 1 by default as on facility endpoints. Parsl
+  opens a new block when its count of slots, `nodes_per_block × max_workers_per_node`
+  per block, falls short of `parallelism × tasks waiting` (`parsl/jobs/strategy.py`).
+  With `SimpleLauncher` a block really has `max_workers_per_node` slots, so at 1 a
+  second task waits for the first block and runs in it as soon as it frees, which keeps
+  the block busy. Set it to `nodes_per_block` for a block per task, up to `max_blocks`:
+  long multi-node tasks then run at once, each with a block's full walltime. Whether
+  requested blocks run is up to the scheduler's per-user job limits, so set
+  `max_blocks` within them.
 
 Note that `{{ walltime|default("00:30:00") }}` is a **fallback, not a ceiling**: it
 applies only when the agent supplies nothing. To make a value an enforced limit,
@@ -122,7 +129,7 @@ or clamp what is passed:
 
 ## Notes worth knowing
 
-- **Idle timeout.** The PBS template sets `idle_heartbeats_soft: 20`, so ~10 idle
+- **Idle timeout.** The templates set `idle_heartbeats_soft: 20`, so ~10 idle
   minutes with no outstanding tasks releases the nodes. It deliberately does not
   set `idle_heartbeats_hard`, which shuts down when tasks exist but are not
   moving — indistinguishable from a job sitting in a long queue, and it would kill
@@ -131,6 +138,13 @@ or clamp what is passed:
   runs its own `mpiexec` across the allocation. If your task is a plain serial
   function and you want the worker distributed for you, use `MpiExecLauncher`
   instead. Two nested MPI launches will not work.
+- **Facility multi-user endpoints.** A multi-user endpoint run by the facility (for
+  example ALCF's on Polaris) renders the facility's template, and a user can set only
+  the variables it reads. The ALCF Polaris template, checked October 2026, exposes
+  `launcher_type` (`SimpleLauncher` by default), `max_workers_per_node` (100 by
+  default) and the usual block settings, and leaves out `parallelism`. On it, set
+  `max_workers_per_node: 1` for tasks that run their own mpiexec, and expect a second
+  multi-node task in a bucket to wait for the first rather than open another block.
 - **One template, many shapes.** You do not need an endpoint per job size. Buckets
   in `config.json` pass different `nodes_per_block`/`max_blocks`/`walltime` to
   the same endpoint. `num_nodes` is accepted as an older spelling of

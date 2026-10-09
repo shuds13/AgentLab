@@ -2,8 +2,7 @@
 #
 # Lives on the machine that runs the work, at
 #   ~/.globus_compute/<endpoint-name>/user_config_template.yaml.j2
-# The placeholders below are filled per job from the "user_config" block of the
-# matching bucket in the system's JSON file.
+# Placeholders are filled from the bucket's settings (README: "How the pieces fit together").
 #
 # For a machine with no batch system: a workstation, a VM, a cluster node you hold
 # directly. LocalProvider starts the workers on the endpoint's own host, so a job
@@ -11,6 +10,9 @@
 # walltime. Everything the endpoint can run at once is running at once.
 #
 # EDIT: max_workers_per_node, worker_init.
+
+# Stop the user endpoint after ~10 idle minutes, ending its blocks (README: "Idle timeout").
+idle_heartbeats_soft: 20
 
 engine:
   type: GlobusComputeEngine

@@ -57,7 +57,7 @@ The keys are passed to the endpoint as its configuration, so they must be names 
 endpoint's template accepts. A facility multi-user endpoint validates them and rejects
 anything it does not declare; `systems/endpoints/README.md` lists the common ones.
 
-Three decide how much runs at once:
+Four decide how much runs at once:
 
 - `max_workers_per_node` — tasks sharing one node. Raise it when a task uses only part
   of a node; at 1 a second task waits for a second node. **It only spreads tasks within
@@ -66,11 +66,13 @@ Three decide how much runs at once:
   no workers and raising this buys nothing — the task is expected to span the allocation
   itself, with mpiexec. More nodes per task means `nodes_per_block`; more tasks at once
   on one node means this; more tasks at once on separate nodes means `max_blocks`.
-- `max_blocks` — batch jobs this bucket may have outstanding. Parsl adds one only when
-  the existing blocks are full, so it does nothing until `max_workers_per_node` is
-  exhausted.
+- `max_blocks` — batch jobs this bucket may have outstanding.
+- `parallelism` — 1 by default, as on facility endpoints: a multi-node bucket runs its
+  tasks one after another in the same block, which keeps the block busy. Set it to
+  `nodes_per_block` for a block per task, up to `max_blocks`, when long tasks should run
+  at once, each with a full walltime. `systems/endpoints/README.md` explains why.
 - `max_concurrent` — tasks the agent may have in flight for this bucket. Agent-side,
-  unlike the other two.
+  unlike the other three.
 
 Machine-specific keys belong in `systems/<system>.json` rather than here, or the
 campaign will not run anywhere else.

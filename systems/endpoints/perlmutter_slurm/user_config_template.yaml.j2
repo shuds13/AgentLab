@@ -2,19 +2,14 @@
 #
 # Lives on the machine that runs the work, at
 #   ~/.globus_compute/<endpoint-name>/user_config_template.yaml.j2
-# The placeholders below are filled per job from bucket_defaults in
-# systems/perlmutter.json, overridden by the campaign's `resources`.
+# Placeholders are filled from the bucket's settings (README: "How the pieces fit together").
 #
 # EDIT: worker_init. The account arrives from users/<you>/perlmutter.json.
 #
 # Perlmutter selects nodes by constraint ("gpu" or "cpu") and queue by QOS
 # ("debug", "regular", "interactive"), not by partition.
 
-# Shut the endpoint down after 20 idle heartbeats (~10 min) with no outstanding tasks,
-# releasing the Slurm allocation. Without this the block holds the node until walltime
-# expires whether or not work is running, and the idle time is charged.
-# idle_heartbeats_hard is left unset: it triggers on tasks that are outstanding but not
-# progressing, which is what a queued job looks like.
+# Stop the user endpoint after ~10 idle minutes, ending its blocks (README: "Idle timeout").
 idle_heartbeats_soft: 20
 
 engine:
@@ -43,6 +38,9 @@ engine:
       {% if (constraint | default("gpu")).startswith("gpu") %}#SBATCH --gpus-per-node={{ gpus_per_node | default(4) }}{% endif %}
 
     nodes_per_block: {{ nodes_per_block | default(1) }}
+    # 1 as on facility endpoints; set to nodes_per_block for a block per task
+    # (README: parallelism).
+    parallelism: {{ parallelism | default(1) }}
     init_blocks: 0
     min_blocks: 0
     max_blocks: {{ max_blocks | default(1) }}

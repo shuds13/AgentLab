@@ -2,14 +2,12 @@
 #
 # Install on Aurora at:
 #   ~/.globus_compute/<endpoint-name>/user_config_template.yaml.j2
-# The placeholders below are filled per job from the bucket's user_config block.
+# Placeholders are filled from the bucket's settings (README: "How the pieces fit together").
 #
 # Edit before use: the worker_init environment. The account arrives from
 # users/<you>/aurora.json -- there is no default, because it is charged to someone.
 
-# Shut the endpoint down after 20 idle heartbeats (~10 min) with no outstanding tasks,
-# releasing the PBS block. idle_heartbeats_hard is left unset: it triggers on tasks that
-# are outstanding but not progressing, which is what a queued job looks like.
+# Stop the user endpoint after ~10 idle minutes, ending its blocks (README: "Idle timeout").
 idle_heartbeats_soft: 20
 
 engine:
@@ -31,9 +29,11 @@ engine:
     worker_init: "module load frameworks && source ~/venvs/agentlab/bin/activate"
     walltime: {{ walltime|default("01:00:00") }}
 
-    # Ceilings on what the agent can consume. Hard-code a value to enforce a limit
-    # rather than leaving a default() fallback. max_blocks caps concurrent batch jobs.
+    # default() is a fallback, not a ceiling; hard-code or clamp to enforce a limit.
     nodes_per_block: {{ nodes_per_block | default(1) }}
+    # 1 as on facility endpoints; set to nodes_per_block for a block per task
+    # (README: parallelism).
+    parallelism: {{ parallelism | default(1) }}
     init_blocks: {{ init_blocks|default(0) }}
     min_blocks: {{ min_blocks|default(0) }}
     max_blocks: {{ max_blocks|default(1) }}

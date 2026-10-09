@@ -13,6 +13,10 @@ and either returns immediately.
 `get_completed_jobs` and `get_local_completed` collect whatever has finished. Call one
 near the start of a turn.
 
+Where the campaign runs on a remote system, read `{framework_dir}/remote_execution.md`
+before your first submission. It explains how a task runs inside a batch allocation,
+how that allocation's walltime is shared between tasks, and what a lost task means.
+
 Submit everything a step needs at once, then end your turn. Jobs run while you are away
 and you are resumed when they finish. Submitting one job per turn spends the run waiting
 for you rather than for the work.
