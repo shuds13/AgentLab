@@ -110,6 +110,8 @@ def run_worker(args, *, repo, roles, timeout=14400):
         model         the worker's model; WORKER_MODEL, then the coordinator's, if unset
         max_per_run   how many of this kind one coordinating run may start; unlimited
                       if unset
+        records       the files a worker of this kind keeps in its worktree, such as
+                      its notes, for anything reading the run to find
     """
     kind = str(args.get("kind", "")).strip()
     branch = str(args.get("branch", "")).strip()
@@ -176,7 +178,8 @@ def run_worker(args, *, repo, roles, timeout=14400):
         "END_ON_GOAL_MET": "true",
         "NOTIFY_START": "false", "NOTIFY_DAILY": "false", "NOTIFY_FINISH": "false",
         "RUN_META": json.dumps({"parent_run": run_id, "kind": kind, "branch": branch,
-                                "parent": parent, "parent_session": parent_session}),
+                                "parent": parent, "parent_session": parent_session,
+                                "records": role.get("records", [])}),
     })
     model = role.get("model") or os.environ.get("WORKER_MODEL")
     if model:

@@ -663,6 +663,7 @@ def status(campaign, run=None):
                                  and run_path(campaign, meta["parent_run"])),
         "branch": meta.get("branch"), "parent": meta.get("parent"),
         "workers": started_runs, "tree_usd": tree_usd,
+        "records": meta.get("records") or [],
     }
 
 
@@ -840,6 +841,8 @@ PAGE = """<!doctype html>
                 cursor:pointer; font:inherit; }
  #tabs button.on { background:#2d4a2d; color:#fff; }
  #tabs .div { align-self:stretch; border-left:1px solid #3a4a5a; margin:0 8px; }
+ /* Whose tabs follow: the agent chosen, or the campaign. */
+ #tabs .grp { align-self:center; color:#6f8296; margin:0 4px 0 2px; }
  #tabs select { background:#222; color:#bbb; border:1px solid #333; padding:2px 4px;
                 font:inherit; cursor:pointer; }
  #tabs select.past { background:#3a3220; color:#fff; border-color:#6a5a30; }
@@ -975,8 +978,9 @@ PAGE = """<!doctype html>
 <script>
 let tab = "status", offset = 0, logText = "", rawMode = false;
 // In a run that started workers, the one chosen in the agents panel: what the status,
-// log and inputs show. Blank for the run itself.
-let agentSel = "";
+// log and inputs show. Blank for the run itself. With it, the name the tabs give the
+// agent chosen (blank in a run without workers) and the records it keeps.
+let agentSel = "", agentLabel = "", agentRecords = [], lastFiles = [];
 // The file browser. A tab of "tree" is the browser itself; a tab of "f:<root>:<path>"
 // is one file opened out of it, which is how it stays distinct from the record tabs,
 // whose names are bare. `treeOpen` is which directories are expanded, keyed the same
@@ -1016,8 +1020,9 @@ pane.addEventListener("scroll", () => {
 
 function setTabs(files) {
   const t = document.getElementById("tabs");
-  const key = JSON.stringify(files) + tab + rawMode + sideOpen + run
-    + JSON.stringify(runList);
+  lastFiles = files;
+  const key = JSON.stringify(files) + tab + rawMode + sideOpen + run + agentLabel
+    + JSON.stringify(agentRecords) + JSON.stringify(runList);
   if (t.dataset.key === key) return;
   t.dataset.key = key;
   t.innerHTML = "";
@@ -1049,22 +1054,31 @@ function setTabs(files) {
     files();
   };
   t.appendChild(picker);
-  for (const n of ["status", "log"].concat(files)) {
-    // The first two are this run; the files after them are the campaign's records,
-    // written by every run of it. Marked off, because the counts differ for the same
-    // reason.
-    if (n === files[0]) {
-      const d = document.createElement("span");
-      d.className = "div";
-      t.appendChild(d);
-    }
+  const group = text => {
+    if (!agentLabel) return;          // a run without workers has one agent: no names
+    const g = document.createElement("span");
+    g.className = "grp";
+    g.textContent = text + " \u25b8";
+    t.appendChild(g);
+  };
+  const button = n => {
     const b = document.createElement("button");
     // The log is what the agent said and did; the file name is not the point.
-    b.textContent = n === "log" ? "agent log" : n;
+    b.textContent = n === "log" ? "agent log" : n.startsWith("r:") ? n.slice(2) : n;
     b.className = n === tab ? "on" : "";
     b.onclick = () => { openTab(n); setTabs(files); };
     t.appendChild(b);
-  }
+  };
+  // The agent's own: its status, its log, and the records it keeps.
+  group(agentLabel);
+  for (const n of ["status", "log"].concat(agentRecords.map(r => "r:" + r))) button(n);
+  // The campaign's records, written by every run of it. Marked off, because they are
+  // the same whichever agent is chosen.
+  const d = document.createElement("span");
+  d.className = "div";
+  t.appendChild(d);
+  group("campaign");
+  for (const n of files) button(n);
   // Everything else the campaign holds. Another view of the pane, so it sits with
   // the tabs that choose one rather than with the panel toggle on the right.
   const w = document.createElement("button");
@@ -1481,6 +1495,11 @@ async function refresh() {
     renderAgents(top);
     const s = agentSel ? await (await fetch(url("/status"))).json() : top;
     if (!here()) return;
+    const label = (top.workers || []).length ? (agentSel ? s.branch || agentSel : "coordinator") : "";
+    const recs = s.records || [];
+    if (label !== agentLabel || JSON.stringify(recs) !== JSON.stringify(agentRecords)) {
+      agentLabel = label; agentRecords = recs; setTabs(lastFiles);
+    }
     document.getElementById("head").textContent = top.run
       ? (top.status === "running" ? "running \u00b7 " : top.status + " \u00b7 ")
         + (top.handle || top.run) + (agentSel ? " \u00b7 " + (s.branch || agentSel) : "")
@@ -1503,7 +1522,8 @@ async function refresh() {
       // A file opened out of the browser is read by root and path rather than by
       // name, and carries the way back to the tree it was clicked in.
       const ws = tab.startsWith("f:");
-      const [root, name] = ws ? splitKey(tab.slice(2)) : ["ws", tab];
+      const [root, name] = ws ? splitKey(tab.slice(2))
+        : ["ws", tab.startsWith("r:") ? tab.slice(2) : tab];
       const head = ws ? '<div class="crumbs">' +
         '<button class="crumb" data-back="1">\\u2190 all files</button> / ' +
         '<span class="lbl">' + ROOT_LABEL[root] + "</span> / <b>" + esc(name) +
@@ -1524,7 +1544,8 @@ async function refresh() {
       // messages run together into one paragraph.
       const md = name.endsWith(".md") && !rawMode && name !== "ANNOUNCEMENTS.md";
       const route = ws ? "/wsfile?root=" + root + "&path=" : (
-        (runFiles.includes(tab) ? "/runfile" : "/file") + "?name=");
+        (runFiles.includes(tab) ? "/runfile" : tab.startsWith("r:") ? "/agentfile" : "/file")
+        + "?name=");
       const body = await (await fetch(url(
         route + encodeURIComponent(name) + (md ? "" : "&raw=1")))).text();
       if (!here()) return;
@@ -1567,7 +1588,7 @@ document.addEventListener("click", e => {
     // Status, log and what the run was handed are the agent's own, so they start again
     // for the one chosen (a file it was handed may not exist for it). The campaign's
     // records are the same whichever agent is chosen, so they stay as they are.
-    if (tab === "status" || tab === "log" || runFiles.includes(tab))
+    if (tab === "status" || tab === "log" || tab.startsWith("r:") || runFiles.includes(tab))
       openTab(runFiles.includes(tab) ? "status" : tab);
     else
       refresh();
@@ -2298,9 +2319,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif url.path == "/image":
             self._send_image(campaign, q.get("name", [""])[0],
                              q.get("root", ["ws"])[0])
-        elif url.path in ("/file", "/runfile"):
+        elif url.path in ("/file", "/runfile", "/agentfile"):
             name = q.get("name", [""])[0]
             text = (self._runfile(campaign, name, run) if url.path == "/runfile"
+                    else self._agentfile(campaign, name, run) if url.path == "/agentfile"
                     else self._file(campaign, name))
             if q.get("raw") or not name.endswith(".md") or _markdown is None:
                 self._send(text)
@@ -2363,6 +2385,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not d or name not in run_files(campaign, run):
             return "not a file this watcher serves"
         return self._read(os.path.join(d, name), name)
+
+    def _agentfile(self, campaign, name, run=None):
+        """A record a run keeps in its own working directory: one its meta.json names
+        under `records`, as a worker's notes are."""
+        d = run_path(campaign, run)
+        meta = _meta(os.path.join(d, "meta.json")) if d else {}
+        if name not in (meta.get("records") or []) or not meta.get("cwd"):
+            return "not a record of this run"
+        path = os.path.join(meta["cwd"], name)
+        if not os.path.isfile(path):
+            return f"{name} has not been written yet"
+        return self._read(path, name)
 
     def _wsfile(self, campaign, root, rel):
         """Any file under one of the campaign's roots, as against the records `_file`
