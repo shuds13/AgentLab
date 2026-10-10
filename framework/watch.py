@@ -1564,8 +1564,13 @@ document.addEventListener("click", e => {
   const g = e.target.closest("[data-agent]");
   if (g) {
     agentSel = g.dataset.agent;
-    // What the run was handed may not exist for the agent chosen.
-    openTab(runFiles.includes(tab) ? "status" : tab);
+    // Status, log and what the run was handed are the agent's own, so they start again
+    // for the one chosen (a file it was handed may not exist for it). The campaign's
+    // records are the same whichever agent is chosen, so they stay as they are.
+    if (tab === "status" || tab === "log" || runFiles.includes(tab))
+      openTab(runFiles.includes(tab) ? "status" : tab);
+    else
+      refresh();
     files();
     return;
   }

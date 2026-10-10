@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 
 FRAMEWORK_DIR = os.path.dirname(os.path.abspath(__file__))
 # The CPUs workers may use, as a taskset list such as "0-15". Every worker is held to
@@ -32,6 +33,11 @@ FRAMEWORK_DIR = os.path.dirname(os.path.abspath(__file__))
 # own scripts and evaluations included. Unset leaves them unrestricted.
 WORKER_CPUS = os.environ.get("WORKER_CPUS", "").strip()
 SCORE_RE = re.compile(r"\|\s*score\s*=\s*([-+0-9.eE]+)")
+
+# Workers this run has started, by kind. A coordinating run is one process, and its
+# jobs start workers from several threads at once.
+_started = {}
+_started_lock = threading.Lock()
 
 
 def _git(repo, *args):
@@ -42,15 +48,20 @@ def _error(msg, args):
     return {"error": msg, "args": args}
 
 
-def _worked_by(workspace, branch):
-    """The run of an earlier worker on `branch`, or None. A campaign keeps its search
-    repo across runs, so a branch name a worker has had is taken."""
+def _metas(workspace):
+    """Every run's meta.json in the campaign workspace."""
     for path in glob.glob(os.path.join(workspace, "runs", "*", "meta.json")):
         try:
             with open(path) as f:
-                meta = json.load(f)
+                yield json.load(f)
         except (OSError, json.JSONDecodeError):
             continue
+
+
+def _worked_by(workspace, branch):
+    """The run of an earlier worker on `branch`, or None. A campaign keeps its search
+    repo across runs, so a branch name a worker has had is taken."""
+    for meta in _metas(workspace):
         if meta.get("branch") == branch and meta.get("parent_run"):
             return meta.get("run_id")
     return None
@@ -58,15 +69,8 @@ def _worked_by(workspace, branch):
 
 def _worker_run(workspace, run_id, branch):
     """The meta.json of the run this coordinator started for `branch`, or {}."""
-    found = []
-    for path in glob.glob(os.path.join(workspace, "runs", "*", "meta.json")):
-        try:
-            with open(path) as f:
-                meta = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            continue
-        if meta.get("parent_run") == run_id and meta.get("branch") == branch:
-            found.append(meta)
+    found = [m for m in _metas(workspace)
+             if m.get("parent_run") == run_id and m.get("branch") == branch]
     return max(found, key=lambda m: m.get("started_at") or "") if found else {}
 
 
@@ -104,6 +108,8 @@ def run_worker(args, *, repo, roles, timeout=14400):
         max_runtime   the worker's wall clock, in seconds
         fork          True when the kind starts from an earlier worker's session
         model         the worker's model; WORKER_MODEL, then the coordinator's, if unset
+        max_per_run   how many of this kind one coordinating run may start; unlimited
+                      if unset
     """
     kind = str(args.get("kind", "")).strip()
     branch = str(args.get("branch", "")).strip()
@@ -121,15 +127,23 @@ def run_worker(args, *, repo, roles, timeout=14400):
                       f"parent_session", args)
 
     workspace = os.environ["WORKSPACE_DIR"]
+    run_id = os.environ.get("RUN_ID", "")
     earlier = _worked_by(workspace, branch)
     if earlier:
         return _error(f"branch {branch} was worked on by {earlier}; give this worker a "
                       f"new branch name", args)
+    limit = role.get("max_per_run")
+    with _started_lock:
+        if limit is not None and _started.get(kind, 0) >= limit:
+            return _error(f"this run has started {limit} {kind} worker(s), the most it "
+                          f"may", args)
+        _started[kind] = _started.get(kind, 0) + 1
     worktree, problem = prepare_worktree(repo, branch, parent)
     if problem:
+        with _started_lock:
+            _started[kind] -= 1
         return _error(problem, args)
 
-    run_id = os.environ.get("RUN_ID", "")
     home = os.path.join(workspace, "agents", branch)
     os.makedirs(home, exist_ok=True)
     user_prompt = os.path.join(home, "user_prompt.md")

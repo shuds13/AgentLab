@@ -1279,13 +1279,16 @@ async def main():
     system_prompt = load_prompt()
     system_prompt += "\n\n" + load_framework()
     system_prompt += "\n\n" + load_method()
-    # What runs at once, which the agent cannot discover except by being refused.
-    # Not the job budget: that changes as the run goes, so each submit returns it.
+    # The run's limits, which the agent cannot discover except by being refused: what
+    # runs at once, and the job budget, which is this run's alone. Each submit reports
+    # how much of the budget is left.
     at_once = []
     if tools.HAS_REMOTE:
         at_once.append(f"jobs running at once: {tools.MAX_CONCURRENT}")
     if tools.HAS_LOCAL:
         at_once.append(f"local jobs running at once: {tools.LOCAL_MAX_CONCURRENT}")
+    at_once.append(f"{'remote ' if tools.HAS_REMOTE else ''}jobs this run may submit: "
+                   f"{tools.MAX_SUBMITS}")
     if MAX_RUNTIME:
         at_once.append(f"wall clock for this run: {MAX_RUNTIME}s")
     system_prompt += "\n\n# This run\n" + "\n".join(at_once)
@@ -1382,6 +1385,12 @@ async def main():
                              f"{CAMPAIGN or 'no campaign'} on {SYSTEM}{ROLE_NOTE} · {model}"
                              f" · critic {CRITIC_LABEL}.")
             prompt = load_user_prompt()
+            # A resumed session keeps the system prompt it was started with and ignores
+            # a new one, so a run that resumes one is given its own instructions here.
+            if RESUME_SESSION:
+                prompt = ("This run continues an earlier conversation. That conversation's "
+                          "instructions no longer apply; these are this run's, in place of "
+                          "them.\n\n" + system_prompt + "\n\n---\n\n" + prompt)
             empty_turns = 0
             last_daily = start_time
             report_due = False
