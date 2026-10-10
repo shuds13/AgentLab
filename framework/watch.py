@@ -187,6 +187,9 @@ def newest_run(campaign):
     metas = glob.glob(os.path.join(workspace(campaign), "runs", "*", "meta.json"))
     if not metas:
         return None
+    # A worker another run started is reached from that run, so the view opens on the
+    # runs nobody started.
+    metas = [m for m in metas if not _meta(m).get("parent_run")] or metas
     live = []
     for m in metas:
         age = _beat_age(os.path.dirname(m))
@@ -194,6 +197,70 @@ def newest_run(campaign):
             live.append(m)
     return os.path.dirname(max(live or metas,
                                key=lambda m: _run_time(os.path.dirname(m))))
+
+
+def _meta(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+# Workers commit each evaluation as `{description} | score = {value}`.
+SCORE_RE = re.compile(r"\|\s*score\s*=\s*([-+0-9.eE]+)")
+_scores = {}                # (cwd, span) -> (when read, score)
+
+
+def _branch_score(cwd, branch, parent):
+    """The newest score a worker committed on its branch, or None. Status is asked for
+    every second or so, so a reading is kept a few seconds."""
+    span = f"{parent}..{branch}" if parent else branch
+    hit = _scores.get((cwd, span))
+    if hit and time.time() - hit[0] < 5:
+        return hit[1]
+    score = None
+    try:
+        log = subprocess.run(["git", "-C", cwd, "log", "--format=%s", span],
+                             capture_output=True, text=True, timeout=5).stdout
+        for subject in log.splitlines():
+            found = SCORE_RE.search(subject)
+            if found:
+                score = float(found.group(1))
+                break
+    except Exception:
+        pass
+    _scores[(cwd, span)] = (time.time(), score)
+    return score
+
+
+def _usd(meta):
+    usd = [c.get("usd") for c in meta.get("cost_models") or [] if c.get("usd") is not None]
+    return sum(usd) if usd else None
+
+
+def workers(campaign, run_id):
+    """The runs `run_id` started, oldest first, with each one's score and cost."""
+    out = []
+    if not run_id:
+        return out
+    for m in glob.glob(os.path.join(workspace(campaign), "runs", "*", "meta.json")):
+        meta = _meta(m)
+        if meta.get("parent_run") != run_id:
+            continue
+        d = os.path.dirname(m)
+        age = _beat_age(d)
+        state = meta.get("status")
+        if state == "running" and (age is None or age >= AGENT_ALIVE_WITHIN):
+            state = "not responding"
+        out.append({"run": os.path.basename(d), "kind": meta.get("kind"),
+                    "branch": meta.get("branch"), "parent": meta.get("parent"),
+                    "status": state, "usd": _usd(meta),
+                    "score": _branch_score(meta["cwd"], meta["branch"], meta.get("parent"))
+                             if meta.get("cwd") and meta.get("branch") else None,
+                    "started_at": meta.get("started_at")})
+    out.sort(key=lambda w: w["started_at"] or "")
+    return out
 
 
 def run_path(campaign, run=None):
@@ -222,7 +289,9 @@ def runs(campaign):
         out.append({"run": os.path.basename(d), "started_at": meta.get("started_at"),
                     "status": meta.get("status"), "stop_reason": meta.get("stop_reason"),
                     "model": meta.get("model"), "turns": meta.get("turns"),
-                    "usd": sum(usd) if usd else None, "_t": _run_time(d)})
+                    "usd": sum(usd) if usd else None, "_t": _run_time(d),
+                    "parent_run": meta.get("parent_run"), "kind": meta.get("kind"),
+                    "branch": meta.get("branch")})
     out.sort(key=lambda r: r.pop("_t"), reverse=True)
     return out
 
@@ -554,6 +623,10 @@ def status(campaign, run=None):
     ran_here = sum(submits_run.values())
     phase, phase_age = _phase(run_dir)
     started = meta.get("started_at")
+    started_runs = workers(campaign, meta.get("run_id"))
+    own_usd = _usd(meta)
+    tree_usd = (sum(w["usd"] or 0 for w in started_runs) + (own_usd or 0)
+                if started_runs else None)
     elapsed = _elapsed(meta)
     return {
         "run": meta.get("run_id"), "handle": meta.get("handle"),
@@ -585,6 +658,11 @@ def status(campaign, run=None):
         "max_submits": meta.get("max_submits"),
         "max_runtime_s": meta.get("max_runtime_s"),
         "max_turns": meta.get("max_turns"),
+        "parent_run": meta.get("parent_run"), "kind": meta.get("kind"),
+        "parent_run_known": bool(meta.get("parent_run")
+                                 and run_path(campaign, meta["parent_run"])),
+        "branch": meta.get("branch"), "parent": meta.get("parent"),
+        "workers": started_runs, "tree_usd": tree_usd,
     }
 
 
@@ -765,6 +843,27 @@ PAGE = """<!doctype html>
  #tabs select { background:#222; color:#bbb; border:1px solid #333; padding:2px 4px;
                 font:inherit; cursor:pointer; }
  #tabs select.past { background:#3a3220; color:#fff; border-color:#6a5a30; }
+ /* Past runs: a clock, with the list opening at its own width. */
+ #tabs .runs { position:relative; display:inline-flex; }
+ #tabs .runs span { pointer-events:none; padding:2px 8px; border:1px solid #333;
+                    background:#222; color:#bbb; }
+ #tabs .runs.past span { background:#3a3220; color:#fff; border-color:#6a5a30; }
+ #tabs .runs select { position:absolute; inset:0; width:100%%; opacity:0; }
+ a[data-run], a[data-agent] { color:#7aa8c8; }
+ /* A coordinated run: its agents beside the pane. The one chosen is what the status
+    and log tabs show. */
+ #agents { flex:none; width:32em; max-width:45%%; overflow:auto; background:#141414;
+           border-right:1px solid #333; padding:8px 0; }
+ .arow { display:flex; gap:10px; padding:2px 12px; cursor:pointer; white-space:nowrap; }
+ .arow:hover { background:#1c1c1c; }
+ .arow.sel { background:#2d4a2d; }
+ .arow i { font-style:normal; color:#666; }
+ .arow i.on { color:#7ac87a; }
+ .arow i.bad { color:#d66; }
+ .arow .k { color:#6f8296; }
+ .arow .sc { margin-left:auto; color:#ddd; }
+ .arow .usd { color:#888; min-width:4.5em; text-align:right; }
+ .atotal { padding:6px 12px; margin-top:6px; color:#888; border-top:1px solid #262626; }
  /* The pane scrolls, not the page, so the tabs stay put wherever you are in a file. */
  #main { flex:1; display:flex; min-height:0; }
  #pane { flex:1; overflow:auto; position:relative; }
@@ -857,7 +956,7 @@ PAGE = """<!doctype html>
 <select id="camp"><option>%(campaign)s</option></select>\
 <span id="head">connecting\u2026</span></header>
 <div id="tabs"></div>
-<div id="main"><div id="pane"><pre id="view">loading\u2026</pre>\
+<div id="main"><aside id="agents" hidden></aside><div id="pane"><pre id="view">loading\u2026</pre>\
 <div id="labsvc"><div class="svcs">\
 <span class="labtabs"><button id="tabcamps" class="on">campaigns</button>\
 <button id="tabpeople">users</button></span>\
@@ -875,6 +974,9 @@ PAGE = """<!doctype html>
 </div>
 <script>
 let tab = "status", offset = 0, logText = "", rawMode = false;
+// In a run that started workers, the one chosen in the agents panel: what the status,
+// log and inputs show. Blank for the run itself.
+let agentSel = "";
 // The file browser. A tab of "tree" is the browser itself; a tab of "f:<root>:<path>"
 // is one file opened out of it, which is how it stays distinct from the record tabs,
 // whose names are bare. `treeOpen` is which directories are expanded, keyed the same
@@ -895,7 +997,7 @@ let campaign = HOME;
 // when it starts, or a past one by name. The address carries it, like the campaign.
 let run = new URLSearchParams(location.search).get("run") || "", runList = [];
 const url = p => p + (p.includes("?") ? "&" : "?") + "c=" + encodeURIComponent(campaign)
-  + (run ? "&run=" + encodeURIComponent(run) : "");
+  + ((agentSel || run) ? "&run=" + encodeURIComponent(agentSel || run) : "");
 const address = () => "?c=" + encodeURIComponent(campaign)
   + (run ? "&run=" + encodeURIComponent(run) : "");
 // Two places to be: the lab, which lists the campaigns it has, and one campaign's own
@@ -919,22 +1021,34 @@ function setTabs(files) {
   if (t.dataset.key === key) return;
   t.dataset.key = key;
   t.innerHTML = "";
-  // The run the next two tabs are about: the newest, or one picked from the history.
+  // The run the next tabs are about: the newest, or one picked from the history. The
+  // history is the campaign's runs; the workers a run started are in its agents tab.
+  // A worker whose starter is not among them is listed as a run of its own.
+  const tops = runList.filter(r => !r.parent_run || !runList.some(p => p.run === r.parent_run));
   const sel = document.createElement("select");
-  sel.className = run ? "past" : "";
   // The newest run is "latest", which follows a new one when it starts; the rest by
   // when they started.
-  sel.innerHTML = `<option value="">latest</option>` + runList.slice(1).map(r =>
-    `<option value="${esc(r.run)}">${esc(when(r.started_at))}</option>`).join("");
+  sel.innerHTML = `<option value="">latest</option>` + tops.slice(1).map(r =>
+    `<option value="${esc(r.run)}">${esc(when(r.started_at))}`
+    + `${r.usd == null ? "" : " \u00b7 $" + r.usd.toFixed(2)}</option>`).join("");
   sel.value = run;
+  if (run && sel.value !== run)      // a worker's own page, reached from its coordinator
+    sel.insertAdjacentHTML("beforeend", `<option value="${esc(run)}">${esc(run)}</option>`);
+  sel.value = run;
+  const picker = document.createElement("label");
+  picker.className = "runs" + (run ? " past" : "");
+  picker.title = run ? "showing " + run : "showing the latest run";
+  picker.innerHTML = "<span>\u23f2</span>";
+  picker.appendChild(sel);
   sel.onchange = () => {
     run = sel.value;
+    agentSel = "";
     history.replaceState(null, "", address());
     // A file the run was handed may not exist in the other run.
     openTab(runFiles.includes(tab) ? "status" : tab);
     files();
   };
-  t.appendChild(sel);
+  t.appendChild(picker);
   for (const n of ["status", "log"].concat(files)) {
     // The first two are this run; the files after them are the campaign's records,
     // written by every run of it. Marked off, because the counts differ for the same
@@ -1112,6 +1226,14 @@ function renderStatus(s) {
         ? `${short(s.context_tokens)} (window not known yet)`
         : `${short(s.context_tokens)}/${short(s.context_window)} (${Math.round(s.context_pct)}%%)`)],
     ...costRows(s.cost_models),
+    ...(s.tree_usd == null ? [] : [["cost with workers", "$" + s.tree_usd.toFixed(2)]]),
+    ...(s.parent_run ? [
+      // The run that started a worker is the one whose agents panel it was chosen in.
+      ["started by", s.parent_run_known
+        ? `<a href="#" data-agent="">${esc(s.parent_run)}</a>`
+        : `${esc(s.parent_run)} <span style="color:#777">(no such run here)</span>`],
+      ["works on", `${esc(s.branch || "\u2014")} (${esc(s.kind || "?")}) from `
+        + esc(s.parent || "a prepared branch")]] : []),
     ["critic", s.critic || "\u2014"],
     // The run's Claude session, to reopen afterwards with `claude -r`. Copying is
     // offered once the run has stopped: opening a session the runner still holds puts
@@ -1303,18 +1425,65 @@ async function renderTree() {
   pane.scrollTop = at;
 }
 
+// A coordinated run's agents: the run itself, then each worker under the worker whose
+// branch it built on (or under the run, when it started from anything else). Hidden for
+// a run that started none.
+function renderAgents(top) {
+  const panel = document.getElementById("agents");
+  const ws = top.workers || [];
+  if (!ws.length) {
+    if (!panel.hidden) { panel.hidden = true; panel.innerHTML = ""; }
+    return;
+  }
+  panel.hidden = false;
+  const usd = models => (models || []).reduce((t, m) => t + (m.usd || 0), 0);
+  const me = {run: "", branch: top.kind ? top.branch : "coordinator", kind: top.model || "",
+              status: top.status, usd: usd(top.cost_models), score: null};
+  const byBranch = {};
+  for (const w of ws) byBranch[w.branch] = w;
+  const dot = st => st === "running" ? '<i class="on">\u25cf</i>'
+    : st === "not responding" ? '<i class="bad">\u25cf</i>' : "<i>\u25cb</i>";
+  const row = (a, depth) =>
+    `<div class="arow${a.run === agentSel ? " sel" : ""}" data-agent="${esc(a.run)}"`
+    + ` style="padding-left:${0.8 + 1.6 * depth}em">${depth ? "\u2514 " : ""}${dot(a.status)}`
+    + ` <b>${esc(a.branch || a.run)}</b> <span class="k">${esc(a.kind || "")}</span>`
+    + `<span class="sc">${a.score == null ? "" : +a.score.toPrecision(7)}</span>`
+    + `<span class="usd">${a.usd == null ? "\u2014" : "$" + a.usd.toFixed(2)}</span></div>`;
+  const below = (branch, depth) => ws
+    .filter(w => (byBranch[w.parent] ? w.parent : null) === branch)
+    .map(w => row(w, depth) + below(w.branch, depth + 1)).join("");
+  const html = row(me, 0) + below(null, 1)
+    + `<div class="atotal">${ws.length} worker${ws.length === 1 ? "" : "s"} \u00b7 total `
+    + (top.tree_usd == null ? "\u2014" : "$" + top.tree_usd.toFixed(2)) + "</div>";
+  if (panel.innerHTML !== html) panel.innerHTML = html;
+}
+
 async function refresh() {
-  if (scope === "lab") return labRefresh();
+  if (scope === "lab") {
+    // The agents panel belongs to a campaign's run, not to the lab.
+    const panel = document.getElementById("agents");
+    if (!panel.hidden) { panel.hidden = true; panel.innerHTML = ""; }
+    return labRefresh();
+  }
   // The campaign this pass is about. A reply that arrives after the page has moved on
   // belongs to the campaign that asked for it, not to where you are now, so it is
   // dropped rather than drawn.
   const mine = campaign;
   const here = () => mine === campaign && scope === "campaign";
   try {
-    const s = await (await fetch(url("/status"))).json();
+    const top = await (await fetch("/status?c=" + encodeURIComponent(campaign)
+      + (run ? "&run=" + encodeURIComponent(run) : ""))).json();
     if (!here()) return;
-    document.getElementById("head").textContent = s.run
-      ? (s.status === "running" ? "running \u00b7 " : s.status + " \u00b7 ") + (s.handle || s.run)
+    // A worker chosen in another run, or one this run no longer lists, is let go.
+    if (agentSel && !(top.workers || []).some(w => w.run === agentSel)) {
+      agentSel = ""; openTab(tab); return;
+    }
+    renderAgents(top);
+    const s = agentSel ? await (await fetch(url("/status"))).json() : top;
+    if (!here()) return;
+    document.getElementById("head").textContent = top.run
+      ? (top.status === "running" ? "running \u00b7 " : top.status + " \u00b7 ")
+        + (top.handle || top.run) + (agentSel ? " \u00b7 " + (s.branch || agentSel) : "")
       : "no run yet";
     if (tab === "status") { view.className = ""; renderStatus(s); return; }
     if (tab === "tree") { await renderTree(); return; }
@@ -1392,6 +1561,23 @@ async function chat() {
 }
 
 document.addEventListener("click", e => {
+  const g = e.target.closest("[data-agent]");
+  if (g) {
+    agentSel = g.dataset.agent;
+    // What the run was handed may not exist for the agent chosen.
+    openTab(runFiles.includes(tab) ? "status" : tab);
+    files();
+    return;
+  }
+  const a = e.target.closest("a[data-run]");
+  if (a) {
+    e.preventDefault();
+    run = a.dataset.run;
+    history.replaceState(null, "", address());
+    openTab("status");
+    files();
+    return;
+  }
   const b = e.target.closest("button.copy");
   if (!b) return;
   navigator.clipboard.writeText(b.dataset.copy).then(() => {
@@ -1568,13 +1754,14 @@ function resetPane() {
 
 function enterCampaign(name) {
   campaign = name; scope = "campaign"; camp.value = name; run = ""; runList = [];
+  agentSel = "";
   history.replaceState(null, "", address());
   resetPane(); showScope();
   files(); refresh(); chat();
 }
 
 function goLab() {
-  scope = "lab";
+  scope = "lab"; agentSel = "";
   history.replaceState(null, "", "?lab");
   resetPane(); showScope();
   refresh();
@@ -1864,7 +2051,7 @@ async function campaignList() {
   // The campaign being shown has gone from the lab -- its workspace removed while the
   // page was open. The server is answering for the one it started on, so show that.
   if (!names.includes(campaign)) {
-    campaign = HOME; run = "";
+    campaign = HOME; run = ""; agentSel = "";
     if (scope === "campaign") {
       history.replaceState(null, "", address());
     }
