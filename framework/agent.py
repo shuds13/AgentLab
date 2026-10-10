@@ -69,6 +69,9 @@ ROLE_SET = bool(os.environ.get("ROLE"))
 ROLE_NOTE = f" ({ROLE})" if ROLE_SET else ""
 LOG_DIR = os.path.join(WORKSPACE_DIR, "logs")
 USER_PROMPT_FILE = os.environ.get("USER_PROMPT_FILE", "user_prompt.md")
+# Which of the campaign's methods this run follows. A campaign whose agents have
+# different roles keeps one method per role.
+METHOD_FILE = os.environ.get("METHOD_FILE", "method.md")
 
 # One timestamp per process, shared by the log file and this run's directory so the
 # two line up. RUN_ID names the run dir and is what kill_agent.sh targets.
@@ -76,7 +79,7 @@ RUN_STAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 RUN_ID = f"{SYSTEM}_{ROLE}_{RUN_STAMP}" if ROLE_SET else f"{SYSTEM}_{RUN_STAMP}"
 RUN_DIR = os.path.join(WORKSPACE_DIR, "runs", RUN_ID)
 os.environ["RUN_ID"] = RUN_ID      # tools stamps the job log with it
-LOG_PATH = os.path.join(LOG_DIR, f"run_{SYSTEM}_{RUN_STAMP}.log")
+LOG_PATH = os.path.join(LOG_DIR, f"run_{RUN_ID}.log")   # the name the viewer looks for
 HEARTBEAT_INTERVAL = 30   # s; minimum gap between heartbeat writes during a wait
 CRITIC_MODEL = None       # resolved in preflight()
 CRITIC_LABEL = "no critic"
@@ -192,6 +195,12 @@ FINALIZE_PROMPT = _prompt("FINALIZE_PROMPT",
 # costs what it costs and brings any stale conclusions with it, so it is off by default.
 # The session must belong to this user on this machine.
 RESUME_SESSION = (os.environ.get("RESUME_SESSION") or "").strip()
+# The directory the agent works in: the framework's own unless a run is given one, as a
+# worker on its own git worktree is.
+AGENT_CWD = os.path.abspath(os.environ.get("AGENT_CWD") or SCRIPT_DIR)
+# Fields whoever launched this run adds to its meta.json, as a JSON object: how it
+# relates to other runs, such as the run that started it and the branch it works on.
+RUN_META = json.loads(os.environ.get("RUN_META") or "{}")
 MAX_TURNS = 500           # backstop against a runaway loop
 # Largest single message the SDK accepts from the CLI, and so the largest tool result
 # the agent can receive. The reader holds a message in memory until it is complete, so
@@ -211,6 +220,11 @@ def _bool_env(name, default=False):
 
 # Tokens always; dollars only where the price is the serving model's own, see _note_cost.
 SHOW_COST = _bool_env("SHOW_COST", True)
+# A run whose method has it write up before calling goal_met, as a worker's does, ends
+# when goal_met leaves nothing in flight: there is nothing left to wind down or write.
+# Its conversation then ends with its own summary, which matters when another run is
+# started from it.
+END_ON_GOAL_MET = _bool_env("END_ON_GOAL_MET", False)
 
 # A browser view of this run: the log as it is written and the files it writes. Off
 # unless asked for, and it never affects the run -- it only reads the workspace.
@@ -520,7 +534,7 @@ def method_path():
     """How the agent works, and what records it keeps. Setup copies one of `methods/`
     into the campaign, so each campaign owns its own and can change it. The library
     default applies to a campaign created before this, or one whose copy is missing."""
-    campaign_copy = os.path.join(CAMPAIGN_DIR, "method.md")
+    campaign_copy = os.path.join(CAMPAIGN_DIR, METHOD_FILE)
     return (campaign_copy if os.path.isfile(campaign_copy)
             else os.path.join(LAB_DIR, "methods", "standard.md"))
 
@@ -847,7 +861,8 @@ def _start_run_dir():
                 started_at=datetime.now().isoformat(timespec="seconds"),
                 user_prompt_file=USER_PROMPT_FILE,
                 campaign=CAMPAIGN,
-                shared_dir=WORKSPACE_DIR, log=LOG_PATH, status="running")
+                shared_dir=WORKSPACE_DIR, log=LOG_PATH, status="running",
+                cwd=AGENT_CWD, **RUN_META)
     _heartbeat()
     print(f"Run dir: {RUN_DIR}", flush=True)
 
@@ -1139,7 +1154,7 @@ def _note_session(sid):
     global _session_id
     if sid and sid != _session_id:
         _session_id = sid
-        _write_meta(session_id=sid, session_cwd=SCRIPT_DIR)
+        _write_meta(session_id=sid, session_cwd=AGENT_CWD)
 
 
 _prov = None                # this run's provenance tracer, when flowcept is installed
@@ -1264,17 +1279,26 @@ async def main():
     system_prompt = load_prompt()
     system_prompt += "\n\n" + load_framework()
     system_prompt += "\n\n" + load_method()
-    # What runs at once, which the agent cannot discover except by being refused.
-    # Not the job budget: that changes as the run goes, so each submit returns it.
+    # The run's limits, which the agent cannot discover except by being refused: what
+    # runs at once, and the job budget, which is this run's alone. Each submit reports
+    # how much of the budget is left.
     at_once = []
     if tools.HAS_REMOTE:
         at_once.append(f"jobs running at once: {tools.MAX_CONCURRENT}")
     if tools.HAS_LOCAL:
         at_once.append(f"local jobs running at once: {tools.LOCAL_MAX_CONCURRENT}")
+    at_once.append(f"{'remote ' if tools.HAS_REMOTE else ''}jobs this run may submit: "
+                   f"{tools.MAX_SUBMITS}")
     if MAX_RUNTIME:
         at_once.append(f"wall clock for this run: {MAX_RUNTIME}s")
     system_prompt += "\n\n# This run\n" + "\n".join(at_once)
-    system_prompt += f"\n\n# This agent\nSYSTEM={SYSTEM}.{f'  ROLE={ROLE}.' if ROLE_SET else ''}\nEverything this run reads and writes lives in {WORKSPACE_DIR}: results.jsonl, LOGBOOK.md, JOURNAL.md and claims.jsonl at the top of it, figures/ and scratch/ beneath. Use full paths (e.g. {WORKSPACE_DIR}/results.jsonl, {WORKSPACE_DIR}/figures/). Follow the role rules in the Collaboration section of the prompt."
+    system_prompt += f"\n\n# This agent\nSYSTEM={SYSTEM}.{f'  ROLE={ROLE}.' if ROLE_SET else ''}\n"
+    if AGENT_CWD == SCRIPT_DIR:
+        system_prompt += f"Everything this run reads and writes lives in {WORKSPACE_DIR}: results.jsonl, LOGBOOK.md, JOURNAL.md and claims.jsonl at the top of it, figures/ and scratch/ beneath. Use full paths (e.g. {WORKSPACE_DIR}/results.jsonl, {WORKSPACE_DIR}/figures/). Follow the role rules in the Collaboration section of the prompt."
+    else:
+        # A run given its own directory works there and keeps the records its method
+        # names; the campaign's shared records belong to the run that started it.
+        system_prompt += f"Your working directory is {AGENT_CWD}, and shell commands start there. Keep the records your method names, there."
     server = create_server()
 
     options = ClaudeAgentOptions(
@@ -1291,7 +1315,7 @@ async def main():
         max_buffer_size=MAX_MESSAGE_BYTES,
         permission_mode="bypassPermissions",
         system_prompt=system_prompt,
-        cwd=SCRIPT_DIR,
+        cwd=AGENT_CWD,
         # Carry on from a conversation someone already had -- working out what to try
         # with an agent, then handing that reasoning to the run rather than restating
         # it in a prompt. Forked, so the original transcript is left as it was.
@@ -1361,6 +1385,12 @@ async def main():
                              f"{CAMPAIGN or 'no campaign'} on {SYSTEM}{ROLE_NOTE} · {model}"
                              f" · critic {CRITIC_LABEL}.")
             prompt = load_user_prompt()
+            # A resumed session keeps the system prompt it was started with and ignores
+            # a new one, so a run that resumes one is given its own instructions here.
+            if RESUME_SESSION:
+                prompt = ("This run continues an earlier conversation. That conversation's "
+                          "instructions no longer apply; these are this run's, in place of "
+                          "them.\n\n" + system_prompt + "\n\n---\n\n" + prompt)
             empty_turns = 0
             last_daily = start_time
             report_due = False
@@ -1409,6 +1439,10 @@ async def main():
                     stopping = "goal met"
                     tools.request_stop()
                     _write_meta(goal_met=tools.goal_is_met())
+                    if END_ON_GOAL_MET and tools.jobs_in_flight() == 0:
+                        print(f"Goal met: {tools.goal_is_met()}", flush=True)
+                        stop_reason = stopping
+                        break
                     print(f"Goal met -- winding down: {tools.goal_is_met()}", flush=True)
                     prompt = WINDDOWN_PROMPT
                 # The agent was asked to stop. The same wind-down, recorded as what it
