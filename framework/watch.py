@@ -848,8 +848,8 @@ PAGE = """<!doctype html>
  #tabs select.past { background:#3a3220; color:#fff; border-color:#6a5a30; }
  /* Past runs: a clock, with the list opening at its own width. */
  #tabs .runs { position:relative; display:inline-flex; }
- #tabs .runs span { pointer-events:none; padding:2px 8px; border:1px solid #333;
-                    background:#222; color:#bbb; }
+ #tabs .runs span { pointer-events:none; padding:0 6px; border:1px solid #333;
+                    background:#222; color:#bbb; font-size:19px; line-height:24px; }
  #tabs .runs.past span { background:#3a3220; color:#fff; border-color:#6a5a30; }
  #tabs .runs select { position:absolute; inset:0; width:100%%; opacity:0; }
  a[data-run], a[data-agent] { color:#7aa8c8; }
