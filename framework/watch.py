@@ -173,6 +173,17 @@ def campaigns():
     return sorted(found)
 
 
+def running_campaigns():
+    """The campaigns with a run whose heartbeat is recent: those with an agent at work."""
+    live = []
+    for name in campaigns():
+        beats = glob.glob(os.path.join(workspace(name), "runs", "*", "heartbeat"))
+        if any((_beat_age(os.path.dirname(b)) or AGENT_ALIVE_WITHIN) < AGENT_ALIVE_WITHIN
+               for b in beats):
+            live.append(name)
+    return live
+
+
 def newest_run(campaign):
     """The run to show: one that is still beating, else the most recent.
 
@@ -753,6 +764,7 @@ PAGE = """<!doctype html>
                  font-weight:bold; border:1px solid #3a4a5a; padding:1px 4px;
                  cursor:pointer; }
  header select:hover { border-color:#6a8aaa; }
+ header select option.live { color:#7ac87a; }
  /* The lab's name is the way back up to it, from inside a campaign. */
  header b.home { cursor:pointer; }
  header b.home:hover { color:#9cc4e8; }
@@ -2030,7 +2042,7 @@ function renderServices(rows, none) {
     : rows.length
     ? rows.map(r => `<span class="svc${r.running ? " up" : ""}" title="${esc(r.detail)}">` +
                     `<span class="dot"></span>${esc(r.service)}</span>`).join(" ")
-    : `<span class="svc">nothing switched on in lab.yaml</span>`;
+    : `<span class="svc">none</span>`;
   if (list.innerHTML !== html) list.innerHTML = html;
   // One button, because there is one thing to do: whatever is not running, start it;
   // when it all is, the only move left is stopping it. A lab with no lab.sh has
@@ -2071,8 +2083,9 @@ document.getElementById("labrun").onclick = e =>
   labControl(e.currentTarget.dataset.act || "start");
 
 async function campaignList() {
-  let names;
+  let names, live = [];
   try { names = await (await fetch("/campaigns")).json(); } catch (e) { return; }
+  try { live = await (await fetch("/running")).json(); } catch (e) {}
   if (!names.length) return;
   // The campaign being shown has gone from the lab -- its workspace removed while the
   // page was open. The server is answering for the one it started on, so show that.
@@ -2083,10 +2096,14 @@ async function campaignList() {
     }
     showScope();
   }
-  const key = names.join("|");
+  // Campaigns with an agent at work come first, marked, so a running one is a click away.
+  const ordered = names.filter(n => live.includes(n)).concat(names.filter(n => !live.includes(n)));
+  const key = ordered.join("|") + "#" + live.join("|");
   if (camp.dataset.key !== key) {
     camp.dataset.key = key;
-    camp.innerHTML = names.map(n => `<option>${esc(n)}</option>`).join("");
+    camp.innerHTML = ordered.map(n => live.includes(n)
+      ? `<option value="${esc(n)}" class="live">\u25cf ${esc(n)}</option>`
+      : `<option value="${esc(n)}">${esc(n)}</option>`).join("");
   }
   camp.value = campaign;
 }
@@ -2264,6 +2281,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                        "text/html; charset=utf-8")
         elif url.path == "/campaigns":
             self._send(json.dumps(self._choices()), "application/json")
+        elif url.path == "/running":
+            self._send(json.dumps(running_campaigns()), "application/json")
         elif url.path == "/labchat":
             self._send(json.dumps({"text": lab_messages(),
                                    "secretary": secretary_live(),
