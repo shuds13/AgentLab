@@ -34,10 +34,16 @@ FRAMEWORK_DIR = os.path.dirname(os.path.abspath(__file__))
 WORKER_CPUS = os.environ.get("WORKER_CPUS", "").strip()
 SCORE_RE = re.compile(r"\|\s*score\s*=\s*([-+0-9.eE]+)")
 
-# Workers this run has started, by kind. A coordinating run is one process, and its
-# jobs start workers from several threads at once.
+# Workers this run has started, by kind, and the jobs given to workers out of the
+# budget they share. A coordinating run is one process, and its jobs start workers from
+# several threads at once.
 _started = {}
 _started_lock = threading.Lock()
+# The jobs all of this run's workers may submit between them, or None for no shared
+# limit. Each worker is given a share when it starts and returns what it did not use.
+WORKER_JOB_BUDGET = (int(os.environ["WORKER_JOB_BUDGET"])
+                     if os.environ.get("WORKER_JOB_BUDGET") else None)
+_jobs_given = 0
 
 
 def _git(repo, *args):
@@ -56,6 +62,26 @@ def _metas(workspace):
                 yield json.load(f)
         except (OSError, json.JSONDecodeError):
             continue
+
+
+def drain_workers(reason=""):
+    """Ask every worker this run started that is still running to wind down, as
+    kill_agent.sh --drain does: each stops starting new work, finishes its turn and
+    ends. Returns the runs asked."""
+    workspace, run_id = os.environ.get("WORKSPACE_DIR"), os.environ.get("RUN_ID")
+    if not workspace or not run_id:
+        return []
+    asked = []
+    for meta in _metas(workspace):
+        if meta.get("parent_run") == run_id and meta.get("status") == "running":
+            run_dir = os.path.join(workspace, "runs", meta.get("run_id", ""))
+            try:
+                with open(os.path.join(run_dir, "stop"), "w") as f:
+                    f.write(f"drained by {run_id}: {reason}\n")
+                asked.append(meta.get("run_id"))
+            except OSError:
+                pass
+    return asked
 
 
 def _worked_by(workspace, branch):
@@ -104,7 +130,7 @@ def run_worker(args, *, repo, roles, timeout=14400):
     `roles` maps each kind the coordinator may ask for to its settings:
         method        the method file in the campaign directory
         task_module   the module the worker's job tools come from
-        max_submits   the worker's job budget
+        max_submits   the worker's job budget when the coordinator names none
         max_runtime   the worker's wall clock, in seconds
         fork          True when the kind starts from an earlier worker's session
         model         the worker's model; WORKER_MODEL, then the coordinator's, if unset
@@ -112,6 +138,8 @@ def run_worker(args, *, repo, roles, timeout=14400):
                       if unset
         records       the files a worker of this kind keeps in its worktree, such as
                       its notes, for anything reading the run to find
+        tools         the Claude Code tools a worker of this kind is given, as an
+                      AGENT_TOOLS value; the coordinator's set if unset
     """
     kind = str(args.get("kind", "")).strip()
     branch = str(args.get("branch", "")).strip()
@@ -134,24 +162,40 @@ def run_worker(args, *, repo, roles, timeout=14400):
     if earlier:
         return _error(f"branch {branch} was worked on by {earlier}; give this worker a "
                       f"new branch name", args)
+    global _jobs_given
     limit = role.get("max_per_run")
+    try:
+        jobs = int(args.get("jobs") or role.get("max_submits", 10))
+    except (TypeError, ValueError):
+        return _error(f"jobs must be a whole number, got {args.get('jobs')!r}", args)
     with _started_lock:
         if limit is not None and _started.get(kind, 0) >= limit:
             return _error(f"this run has started {limit} {kind} worker(s), the most it "
                           f"may", args)
+        if WORKER_JOB_BUDGET is not None:
+            jobs = min(jobs, WORKER_JOB_BUDGET - _jobs_given)
+        if jobs < 1:
+            return _error("the workers' shared job budget is spent", args)
         _started[kind] = _started.get(kind, 0) + 1
+        _jobs_given += jobs
     worktree, problem = prepare_worktree(repo, branch, parent)
     if problem:
         with _started_lock:
             _started[kind] -= 1
+            _jobs_given -= jobs
         return _error(problem, args)
 
     home = os.path.join(workspace, "agents", branch)
     os.makedirs(home, exist_ok=True)
+    # Each worker's files on the compute system sit in a directory of their own under
+    # the run's, so workers cannot overwrite one another's trials.
+    work_dir = os.path.join(os.environ["WORK_DIR"], branch) if os.environ.get("WORK_DIR") else None
     user_prompt = os.path.join(home, "user_prompt.md")
     with open(user_prompt, "w") as f:
         f.write(f"Start. Your branch is `{branch}`, checked out in `{worktree}`, which is "
                 f"your working directory.\n")
+        if work_dir:
+            f.write(f"\nYour work directory on the compute system is `{work_dir}`.\n")
         if WORKER_CPUS:
             f.write(f"\nYou and the other workers share {_cpu_count(WORKER_CPUS)} CPU cores; "
                     f"everything you run is held to them. `os.cpu_count()` reports the "
@@ -170,7 +214,7 @@ def run_worker(args, *, repo, roles, timeout=14400):
         "TASK_MODULE": role["task_module"],
         "AGENT_CWD": worktree,
         "USER_PROMPT_FILE": user_prompt,
-        "MAX_SUBMITS": str(role.get("max_submits", 10)),
+        "MAX_SUBMITS": str(jobs),
         "MAX_RUNTIME": str(role.get("max_runtime", 3600)),
         "LOCAL_MAX_CONCURRENT": "1",
         # A worker writes up before goal_met, so its run ends there. A run forked from
@@ -181,6 +225,10 @@ def run_worker(args, *, repo, roles, timeout=14400):
                                 "parent": parent, "parent_session": parent_session,
                                 "records": role.get("records", [])}),
     })
+    if work_dir:
+        env["WORK_DIR"] = work_dir
+    if role.get("tools"):
+        env["AGENT_TOOLS"] = role["tools"]
     model = role.get("model") or os.environ.get("WORKER_MODEL")
     if model:
         env["AGENT_MODEL"] = model
@@ -201,7 +249,17 @@ def run_worker(args, *, repo, roles, timeout=14400):
             proc.wait(timeout=60)
             return _error(f"worker on {branch} ran past {timeout}s", args)
 
+    # What the worker wrote after its last commit, such as closing notes, is kept: a
+    # worker without a shell cannot commit it itself.
+    _git(worktree, "add", "-A")
+    if _git(worktree, "diff", "--cached", "--quiet").returncode:
+        _git(worktree, "commit", "-q", "-m", "Worker's final state")
+
     meta = _worker_run(workspace, run_id, branch)
+    used = (meta.get("local_submitted") or 0) + (meta.get("remote_submitted") or 0)
+    with _started_lock:
+        _jobs_given -= jobs - min(used, jobs)
+        left = (WORKER_JOB_BUDGET - _jobs_given) if WORKER_JOB_BUDGET is not None else None
     if not meta:
         return _error(f"worker on {branch} exited {proc.returncode} without starting a "
                       f"run; see {home}/console.log", args)
@@ -227,4 +285,7 @@ def run_worker(args, *, repo, roles, timeout=14400):
         "commit_subject": subject,
         "score": score,
         "cost_usd": round(sum(usd), 4) if usd else None,
+        "jobs_given": jobs,
+        "jobs_used": used,
+        "shared_jobs_left": left,
     }
