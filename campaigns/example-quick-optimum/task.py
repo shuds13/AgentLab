@@ -8,7 +8,8 @@ accepted but go nowhere; large ones travel far but are nearly always rejected. B
 waste work, so the cost has a single minimum at a step size in between. Neither the
 minimum nor the shape around it is written down in this file; both come out of the run.
 
-Only local_fn is defined, so this campaign needs no endpoint and no account.
+local_fn takes a reading on the local machine, the campaign's own system. remote_fn takes
+the same reading on a remote system through Globus Compute, for run_remote.sh.
 
 The measurement is noisy because the chain is a finite random run, so two nearby
 settings can come back in the wrong order. Averaging replicates narrows that, which is
