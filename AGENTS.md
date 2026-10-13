@@ -188,7 +188,9 @@ already told you, and leave the rest.
 
 Whichever set is present is what the agent gets tools for. `remote_fn` is shipped to the
 worker by source, so every import goes inside its body and paths reach it through `args`
-and `target`; `local_fn` takes `args` alone and is called in-process. Expose more
+and `target`; `local_fn` takes `args` alone and is called in-process. Either may return
+`"refused": true` for a job it declined to run (one that would not fit, say); that job
+does not count against `MAX_SUBMITS`. Expose more
 parameters than seem needed — a campaign can only explore what its schema allows.
 
 A task with `local_fn` and no `remote_fn` needs no endpoint, no account and no

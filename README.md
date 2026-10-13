@@ -134,7 +134,9 @@ Copy `campaigns/example-vllm-inference-opt/` and replace four files:
 
 `task.py` defines the job. For work that runs on the system: `JOB_DESC`, `JOB_SCHEMA`,
 `job_key`, `remote_fn` — `remote_fn` is sent to the worker by source, so everything it
-needs must be imported inside it or passed in through its arguments. For work that runs
+needs must be imported inside it or passed in through its arguments. A result with
+`"refused": true` is a job the task declined to run, and it does not count against
+`MAX_SUBMITS`. For work that runs
 on the machine the agent is on: `LOCAL_DESC`, `LOCAL_SCHEMA`, `local_fn`. A task may
 define both, and the agent is given tools for whichever it defines. A task with only
 `local_fn` needs no Globus Compute endpoint.

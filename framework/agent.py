@@ -1559,9 +1559,12 @@ async def main():
                 # Start winding down when the budget is spent or time is up. Only the
                 # DECISION happens here -- outstanding work still drains below, so a
                 # run never orphans in-flight jobs. Finding a good result is NOT a
-                # stop condition; keep exploring new regions.
+                # stop condition; keep exploring new regions. The budget counts as spent
+                # only once nothing is in flight: a job that comes back refused gives its
+                # submit back, and the run can still use it.
                 over_time = MAX_RUNTIME is not None and (time.time() - start_time) >= MAX_RUNTIME
-                if stopping is None and (tools.submit_count() >= tools.MAX_SUBMITS or over_time):
+                spent = tools.submit_count() >= tools.MAX_SUBMITS and tools.jobs_in_flight() == 0
+                if stopping is None and (spent or over_time):
                     stopping = "time limit" if over_time else f"budget ({tools.MAX_SUBMITS} submits)"
                     tools.request_stop()
                     if over_time:
