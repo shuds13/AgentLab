@@ -45,8 +45,8 @@ export WORKER_CPUS="${WORKER_CPUS:-0-7}"
 
 # The evaluations all workers share, and the most workers the coordinator may launch.
 export WORKER_JOB_BUDGET="${EVALUATIONS:-80}"
-export MAX_SUBMITS=12
-export MAX_RUNTIME=7200
+export MAX_SUBMITS="${WORKERS:-12}"
+export MAX_RUNTIME="${MAX_RUNTIME:-7200}"
 
 export NOTIFY_START=false
 export NOTIFY_DAILY=false

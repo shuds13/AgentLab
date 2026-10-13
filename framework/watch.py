@@ -869,8 +869,14 @@ PAGE = """<!doctype html>
  a[data-run], a[data-agent] { color:#7aa8c8; }
  /* A coordinated run: its agents beside the pane. The one chosen is what the status
     and log tabs show. */
- #agents { flex:none; width:32em; max-width:45%%; overflow:auto; background:#141414;
-           border-right:1px solid #333; padding:8px 0; }
+ #agents { flex:none; width:var(--agents-w, 32em); max-width:70%%; overflow:auto;
+           background:#141414; padding:8px 0; }
+ /* The divider between the agents and the pane; drag it to resize the agents panel.
+    Hidden with the panel. */
+ #agentsdrag { flex:none; width:5px; cursor:ew-resize; background:#1a1a1a;
+               border-left:1px solid #333; }
+ #agentsdrag:hover { background:#2b3946; }
+ #agents[hidden] + #agentsdrag { display:none; }
  .arow { display:flex; gap:10px; padding:2px 12px; cursor:pointer; white-space:nowrap; }
  .arow:hover { background:#1c1c1c; }
  .arow.sel { background:#2d4a2d; }
@@ -973,7 +979,7 @@ PAGE = """<!doctype html>
 <select id="camp"><option>%(campaign)s</option></select>\
 <span id="head">connecting\u2026</span></header>
 <div id="tabs"></div>
-<div id="main"><aside id="agents" hidden></aside><div id="pane"><pre id="view">loading\u2026</pre>\
+<div id="main"><aside id="agents" hidden></aside><div id="agentsdrag"></div><div id="pane"><pre id="view">loading\u2026</pre>\
 <div id="labsvc"><div class="svcs">\
 <span class="labtabs"><button id="tabcamps" class="on">campaigns</button>\
 <button id="tabpeople">users</button></span>\
@@ -1709,6 +1715,33 @@ async function say() {
   };
   bar.addEventListener("mousedown", e => {
     from = e.clientY; start = chat.offsetHeight;
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+    e.preventDefault();
+  });
+})();
+
+// Drag the divider beside the agents panel to resize it, kept like the chat height.
+(function () {
+  const bar = document.getElementById("agentsdrag"), panel = document.getElementById("agents");
+  const KEY = "watch.agentsWidth";
+  const clamp = w => Math.max(120, Math.min(window.innerWidth * 0.7, w));
+  const setW = w => document.documentElement.style.setProperty("--agents-w", w + "px");
+  try {
+    const saved = parseInt(localStorage.getItem(KEY), 10);
+    if (saved > 0) setW(clamp(saved));
+  } catch (e) {}
+  let from = 0, start = 0;
+  const move = e => { setW(clamp(start + (e.clientX - from))); };
+  const up = () => {
+    document.removeEventListener("mousemove", move);
+    document.removeEventListener("mouseup", up);
+    document.body.style.userSelect = "";
+    try { localStorage.setItem(KEY, panel.offsetWidth); } catch (e) {}
+  };
+  bar.addEventListener("mousedown", e => {
+    from = e.clientX; start = panel.offsetWidth;
     document.body.style.userSelect = "none";
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);
