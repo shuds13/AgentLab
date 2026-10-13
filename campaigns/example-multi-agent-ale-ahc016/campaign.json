@@ -1,0 +1,6 @@
+{
+  "_comment": "Each local job is one search agent. They take minutes and vary widely, so the coordinator wakes as each one finishes rather than when a whole wave has.",
+  "system": "local",
+  "local_max_concurrent": 3,
+  "batch_mode": false
+}
