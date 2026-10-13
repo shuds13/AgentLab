@@ -69,6 +69,9 @@ ROLE_SET = bool(os.environ.get("ROLE"))
 ROLE_NOTE = f" ({ROLE})" if ROLE_SET else ""
 LOG_DIR = os.path.join(WORKSPACE_DIR, "logs")
 USER_PROMPT_FILE = os.environ.get("USER_PROMPT_FILE", "user_prompt.md")
+# Which of the campaign's methods this run follows. A campaign whose agents have
+# different roles keeps one method per role.
+METHOD_FILE = os.environ.get("METHOD_FILE", "method.md")
 
 # One timestamp per process, shared by the log file and this run's directory so the
 # two line up. RUN_ID names the run dir and is what kill_agent.sh targets.
@@ -76,7 +79,7 @@ RUN_STAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
 RUN_ID = f"{SYSTEM}_{ROLE}_{RUN_STAMP}" if ROLE_SET else f"{SYSTEM}_{RUN_STAMP}"
 RUN_DIR = os.path.join(WORKSPACE_DIR, "runs", RUN_ID)
 os.environ["RUN_ID"] = RUN_ID      # tools stamps the job log with it
-LOG_PATH = os.path.join(LOG_DIR, f"run_{SYSTEM}_{RUN_STAMP}.log")
+LOG_PATH = os.path.join(LOG_DIR, f"run_{RUN_ID}.log")   # the name the viewer looks for
 HEARTBEAT_INTERVAL = 30   # s; minimum gap between heartbeat writes during a wait
 CRITIC_MODEL = None       # resolved in preflight()
 CRITIC_LABEL = "no critic"
@@ -192,6 +195,12 @@ FINALIZE_PROMPT = _prompt("FINALIZE_PROMPT",
 # costs what it costs and brings any stale conclusions with it, so it is off by default.
 # The session must belong to this user on this machine.
 RESUME_SESSION = (os.environ.get("RESUME_SESSION") or "").strip()
+# The directory the agent works in: the framework's own unless a run is given one, as a
+# worker on its own git worktree is.
+AGENT_CWD = os.path.abspath(os.environ.get("AGENT_CWD") or SCRIPT_DIR)
+# Fields whoever launched this run adds to its meta.json, as a JSON object: how it
+# relates to other runs, such as the run that started it and the branch it works on.
+RUN_META = json.loads(os.environ.get("RUN_META") or "{}")
 MAX_TURNS = 500           # backstop against a runaway loop
 # Largest single message the SDK accepts from the CLI, and so the largest tool result
 # the agent can receive. The reader holds a message in memory until it is complete, so
@@ -211,6 +220,15 @@ def _bool_env(name, default=False):
 
 # Tokens always; dollars only where the price is the serving model's own, see _note_cost.
 SHOW_COST = _bool_env("SHOW_COST", True)
+# A run whose method has it write up before calling goal_met, as a worker's does, ends
+# when goal_met leaves nothing in flight: there is nothing left to wind down or write.
+# Its conversation then ends with its own summary, which matters when another run is
+# started from it.
+END_ON_GOAL_MET = _bool_env("END_ON_GOAL_MET", False)
+# Confine the agent's file tools to its working directory: reads outside it are refused
+# by Claude Code's own setting, writes by a hook (framework/fence_writes.py). It fences
+# the file tools only; a run that also has a shell needs Claude Code's sandbox for that.
+FENCE_FILES = _bool_env("FENCE_FILES", False)
 
 # A browser view of this run: the log as it is written and the files it writes. Off
 # unless asked for, and it never affects the run -- it only reads the workspace.
@@ -344,6 +362,26 @@ def _note_turn_context(usage, model=None):
 _last_cost = []             # one entry per model, from the most recent result
 
 
+def _inherited_cost():
+    """What the session this run forks had already consumed, per model. The CLI's totals
+    on a resumed session include the original conversation, so a forked run subtracts
+    these to report only its own. Known when that session was a run in this workspace."""
+    if not RESUME_SESSION:
+        return {}
+    for path in glob.glob(os.path.join(WORKSPACE_DIR, "runs", "*", "meta.json")):
+        try:
+            with open(path) as f:
+                meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if meta.get("session_id") == RESUME_SESSION:
+            return {c["model"]: c for c in meta.get("cost_models") or []}
+    return {}
+
+
+_INHERITED_COST = _inherited_cost()
+
+
 def _priced_honestly(model):
     """Whether a dollar figure for this model is the model's own price.
 
@@ -362,7 +400,8 @@ def _note_cost(message):
 
     `model_usage` is keyed by model, so a subagent on a model of its own, or a run that
     changes model, is several entries rather than one. The CLI's totals are cumulative
-    for the session, so this replaces what it held rather than adding to it."""
+    for the session, so this replaces what it held rather than adding to it; for a forked
+    session they start from the original's, which are subtracted."""
     usage = getattr(message, "model_usage", None)
     if not usage:
         return
@@ -375,6 +414,14 @@ def _note_cost(message):
                  "output_tokens": u.get("outputTokens", 0)}
         if _priced_honestly(model) and u.get("costUSD") is not None:
             entry["usd"] = u["costUSD"]
+        before = _INHERITED_COST.get(model)
+        if before:
+            for k in ("input_tokens", "output_tokens"):
+                entry[k] = max(0, entry[k] - before.get(k, 0))
+            if "usd" in entry:
+                entry["usd"] = max(0.0, entry["usd"] - (before.get("usd") or 0))
+        if not (entry["input_tokens"] or entry["output_tokens"]):
+            continue
         entries.append(entry)
     if entries == _last_cost:
         return
@@ -520,7 +567,7 @@ def method_path():
     """How the agent works, and what records it keeps. Setup copies one of `methods/`
     into the campaign, so each campaign owns its own and can change it. The library
     default applies to a campaign created before this, or one whose copy is missing."""
-    campaign_copy = os.path.join(CAMPAIGN_DIR, "method.md")
+    campaign_copy = os.path.join(CAMPAIGN_DIR, METHOD_FILE)
     return (campaign_copy if os.path.isfile(campaign_copy)
             else os.path.join(LAB_DIR, "methods", "standard.md"))
 
@@ -846,8 +893,11 @@ def _start_run_dir():
                 host=socket.gethostname(), pid=os.getpid(),
                 started_at=datetime.now().isoformat(timespec="seconds"),
                 user_prompt_file=USER_PROMPT_FILE,
+                # How this run works, by its method file's name: director, explorer, ...
+                method=os.path.splitext(os.path.basename(METHOD_FILE))[0],
                 campaign=CAMPAIGN,
-                shared_dir=WORKSPACE_DIR, log=LOG_PATH, status="running")
+                shared_dir=WORKSPACE_DIR, log=LOG_PATH, status="running",
+                cwd=AGENT_CWD, **RUN_META)
     _heartbeat()
     print(f"Run dir: {RUN_DIR}", flush=True)
 
@@ -864,6 +914,18 @@ async def _heartbeat_loop():
 
 def _stop_file_present():
     return os.path.exists(os.path.join(RUN_DIR, "stop"))
+
+
+def _drain_workers(reason):
+    """A run that started workers asks them to wind down with it. Not when it has only
+    spent its own budget: the workers it has running are what that budget bought."""
+    spawn = sys.modules.get("spawn")
+    if spawn is None:
+        return
+    asked = spawn.drain_workers(reason)
+    if asked:
+        print(f"Asked {len(asked)} running worker(s) to wind down: {', '.join(asked)}",
+              flush=True)
 
 
 # PREFLIGHT runs the checks and stops, for someone deciding whether a campaign is
@@ -933,6 +995,27 @@ def _gateway_settings_file():
     path = os.path.join(RUN_DIR, "gateway_settings.json")
     with open(path, "w") as f:
         json.dump({"env": {"ANTHROPIC_BASE_URL": GATEWAY_URL}}, f)
+    return path
+
+
+def _agent_settings_file():
+    """The settings file for the agent's session: the gateway's, and the file fence when
+    FENCE_FILES is set. None when there is neither."""
+    settings = {}
+    if GATEWAY_URL:
+        settings["env"] = {"ANTHROPIC_BASE_URL": GATEWAY_URL}
+    if FENCE_FILES:
+        fence = f"{sys.executable} {os.path.join(SCRIPT_DIR, 'fence_writes.py')} {AGENT_CWD}"
+        settings["permissions"] = {"blockReadsOutsideWorkingDirectories": True}
+        settings["hooks"] = {"PreToolUse": [{
+            "matcher": "Write|Edit|NotebookEdit",
+            "hooks": [{"type": "command", "command": fence}]}]}
+    if not settings:
+        return None
+    os.makedirs(RUN_DIR, exist_ok=True)
+    path = os.path.join(RUN_DIR, "agent_settings.json")
+    with open(path, "w") as f:
+        json.dump(settings, f, indent=2)
     return path
 
 
@@ -1139,7 +1222,7 @@ def _note_session(sid):
     global _session_id
     if sid and sid != _session_id:
         _session_id = sid
-        _write_meta(session_id=sid, session_cwd=SCRIPT_DIR)
+        _write_meta(session_id=sid, session_cwd=AGENT_CWD)
 
 
 _prov = None                # this run's provenance tracer, when flowcept is installed
@@ -1264,17 +1347,30 @@ async def main():
     system_prompt = load_prompt()
     system_prompt += "\n\n" + load_framework()
     system_prompt += "\n\n" + load_method()
-    # What runs at once, which the agent cannot discover except by being refused.
-    # Not the job budget: that changes as the run goes, so each submit returns it.
+    # The run's limits, which the agent cannot discover except by being refused: what
+    # runs at once, and the job budget, which is this run's alone. Each submit reports
+    # how much of the budget is left.
     at_once = []
     if tools.HAS_REMOTE:
         at_once.append(f"jobs running at once: {tools.MAX_CONCURRENT}")
     if tools.HAS_LOCAL:
         at_once.append(f"local jobs running at once: {tools.LOCAL_MAX_CONCURRENT}")
+    # A task whose jobs are something other than plain jobs, such as worker agents, names
+    # them, and states any further limit on the run (SUBMITS_LABEL, RUN_LIMITS).
+    label = getattr(tools.task, "SUBMITS_LABEL", None) or \
+        f"{'remote ' if tools.HAS_REMOTE else ''}jobs this run may submit"
+    at_once.append(f"{label}: {tools.MAX_SUBMITS}")
+    at_once.extend(getattr(tools.task, "RUN_LIMITS", []))
     if MAX_RUNTIME:
         at_once.append(f"wall clock for this run: {MAX_RUNTIME}s")
     system_prompt += "\n\n# This run\n" + "\n".join(at_once)
-    system_prompt += f"\n\n# This agent\nSYSTEM={SYSTEM}.{f'  ROLE={ROLE}.' if ROLE_SET else ''}\nEverything this run reads and writes lives in {WORKSPACE_DIR}: results.jsonl, LOGBOOK.md, JOURNAL.md and claims.jsonl at the top of it, figures/ and scratch/ beneath. Use full paths (e.g. {WORKSPACE_DIR}/results.jsonl, {WORKSPACE_DIR}/figures/). Follow the role rules in the Collaboration section of the prompt."
+    system_prompt += f"\n\n# This agent\nSYSTEM={SYSTEM}.{f'  ROLE={ROLE}.' if ROLE_SET else ''}\n"
+    if AGENT_CWD == SCRIPT_DIR:
+        system_prompt += f"Everything this run reads and writes lives in {WORKSPACE_DIR}: results.jsonl, LOGBOOK.md, JOURNAL.md and claims.jsonl at the top of it, figures/ and scratch/ beneath. Use full paths (e.g. {WORKSPACE_DIR}/results.jsonl, {WORKSPACE_DIR}/figures/). Follow the role rules in the Collaboration section of the prompt."
+    else:
+        # A run given its own directory works there and keeps the records its method
+        # names; the campaign's shared records belong to the run that started it.
+        system_prompt += f"Your working directory is {AGENT_CWD}, and shell commands start there. Keep the records your method names, there."
     server = create_server()
 
     options = ClaudeAgentOptions(
@@ -1286,12 +1382,12 @@ async def main():
         # which decides nothing in a run with nobody there to ask.
         tools=agent_tools(),
         **({"model": AGENT_MODEL} if AGENT_MODEL else {}),
-        **({"settings": _gateway_settings_file()} if GATEWAY_URL else {}),
+        **({"settings": _agent_settings_file()} if GATEWAY_URL or FENCE_FILES else {}),
         agents=subagent_defs(),
         max_buffer_size=MAX_MESSAGE_BYTES,
         permission_mode="bypassPermissions",
         system_prompt=system_prompt,
-        cwd=SCRIPT_DIR,
+        cwd=AGENT_CWD,
         # Carry on from a conversation someone already had -- working out what to try
         # with an agent, then handing that reasoning to the run rather than restating
         # it in a prompt. Forked, so the original transcript is left as it was.
@@ -1361,6 +1457,12 @@ async def main():
                              f"{CAMPAIGN or 'no campaign'} on {SYSTEM}{ROLE_NOTE} · {model}"
                              f" · critic {CRITIC_LABEL}.")
             prompt = load_user_prompt()
+            # A resumed session keeps the system prompt it was started with and ignores
+            # a new one, so a run that resumes one is given its own instructions here.
+            if RESUME_SESSION:
+                prompt = ("This run continues an earlier conversation. That conversation's "
+                          "instructions no longer apply; these are this run's, in place of "
+                          "them.\n\n" + system_prompt + "\n\n---\n\n" + prompt)
             empty_turns = 0
             last_daily = start_time
             report_due = False
@@ -1398,6 +1500,7 @@ async def main():
                 if stopping is None and _stop_file_present():
                     stopping = "stop requested"
                     tools.request_stop()
+                    _drain_workers(stopping)
                     print("Stop requested -- winding down: no new work, finishing "
                           "what is in flight.", flush=True)
                     # Replace, not prepend: whatever was queued (CONTINUE/EXPLORE) tells
@@ -1408,7 +1511,12 @@ async def main():
                 if stopping is None and tools.goal_is_met():
                     stopping = "goal met"
                     tools.request_stop()
+                    _drain_workers(stopping)
                     _write_meta(goal_met=tools.goal_is_met())
+                    if END_ON_GOAL_MET and tools.jobs_in_flight() == 0:
+                        print(f"Goal met: {tools.goal_is_met()}", flush=True)
+                        stop_reason = stopping
+                        break
                     print(f"Goal met -- winding down: {tools.goal_is_met()}", flush=True)
                     prompt = WINDDOWN_PROMPT
                 # The agent was asked to stop. The same wind-down, recorded as what it
@@ -1416,6 +1524,7 @@ async def main():
                 if stopping is None and tools.end_requested():
                     stopping = "stop requested"
                     tools.request_stop()
+                    _drain_workers(stopping)
                     _write_meta(end_requested=tools.end_requested())
                     print(f"Stop requested -- winding down: {tools.end_requested()}",
                           flush=True)
@@ -1481,11 +1590,16 @@ async def main():
                 # Start winding down when the budget is spent or time is up. Only the
                 # DECISION happens here -- outstanding work still drains below, so a
                 # run never orphans in-flight jobs. Finding a good result is NOT a
-                # stop condition; keep exploring new regions.
+                # stop condition; keep exploring new regions. The budget counts as spent
+                # only once nothing is in flight: a job that comes back refused gives its
+                # submit back, and the run can still use it.
                 over_time = MAX_RUNTIME is not None and (time.time() - start_time) >= MAX_RUNTIME
-                if stopping is None and (tools.submit_count() >= tools.MAX_SUBMITS or over_time):
+                spent = tools.submit_count() >= tools.MAX_SUBMITS and tools.jobs_in_flight() == 0
+                if stopping is None and (spent or over_time):
                     stopping = "time limit" if over_time else f"budget ({tools.MAX_SUBMITS} submits)"
                     tools.request_stop()
+                    if over_time:
+                        _drain_workers(stopping)
                     print(f"{stopping} reached -- winding down: no new work, finishing "
                           f"what is in flight.", flush=True)
                 # Everything collected and the run is ending: give the agent a turn (or
@@ -1601,7 +1715,9 @@ async def main():
         # "running" forever. The run dir itself STAYS -- it is the run history.
         _write_meta(status="stopped", stop_reason=stop_reason,
                     ended_at=datetime.now().isoformat(timespec="seconds"),
-                    remote_submitted=tools.submit_count(),
+                    # submit_count() is the local count in a run with no remote
+                    # backend, so it is remote only when there is one.
+                    remote_submitted=tools.submit_count() if tools.HAS_REMOTE else 0,
                     local_submitted=tools.local_submit_count(),
                     uptime_s=int(time.time() - start_time))
         for path in (pid_file, os.path.join(RUN_DIR, "heartbeat")):

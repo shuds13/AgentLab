@@ -660,7 +660,7 @@ GET_COMPLETED_DESC = (
 
 @tool("get_completed_jobs", GET_COMPLETED_DESC, {})
 async def get_completed_jobs(args):
-    global _last_success_time, _problem_since
+    global _last_success_time, _problem_since, _submit_count
     completed = []
     for job_id, info in list(_jobs.items()):
         fut = info["future"]
@@ -675,12 +675,17 @@ async def get_completed_jobs(args):
             res = {"result": res}
         res["job_id"] = job_id
         res.setdefault("key", info["key"])
+        # A job the task declined to run, such as one that would not have fitted in the
+        # time its batch job had left, did no work, so it does not count as a submit.
+        if res.get("refused"):
+            _submit_count -= 1
+            res["submits_used"] = _submit_count
         if "error" not in res:
             _last_success_time = time.time()
             _problem_since = None        # real progress clears any flagged problem
         completed.append(res)
         _append_jobs_log({"event": "completed", "job_id": job_id, "key": info["key"],
-                          "error": "error" in res})
+                          "error": "error" in res, "refused": bool(res.get("refused"))})
         _release_claim(info["key"])
         del _jobs[job_id]
     pending = [{"job_id": jid, "key": i["key"], "args": i["args"], "bucket": i["bucket"]}
@@ -767,6 +772,7 @@ GET_LOCAL_DESC = (
 
 @tool("get_local_completed", GET_LOCAL_DESC, {})
 async def get_local_completed(args):
+    global _local_submit_count
     completed = []
     for job_id, info in list(_local_jobs.items()):
         fut = info["future"]
@@ -777,8 +783,11 @@ async def get_local_completed(args):
         except Exception as e:
             traceback.print_exc(file=sys.stderr)
             res = {"error": f"{type(e).__name__}: {e}", "args": info["args"]}
+        refused = isinstance(res, dict) and bool(res.get("refused"))
+        if refused:
+            _local_submit_count -= 1
         completed.append({"job_id": job_id, "results": res})
-        _append_jobs_log({"event": "local_completed", "job_id": job_id})
+        _append_jobs_log({"event": "local_completed", "job_id": job_id, "refused": refused})
         del _local_jobs[job_id]
     pending = [{"job_id": jid, "args": i["args"]} for jid, i in _local_jobs.items()]
     return {"content": [{"type": "text", "text":
