@@ -265,6 +265,7 @@ def workers(campaign, run_id):
         if state == "running" and (age is None or age >= AGENT_ALIVE_WITHIN):
             state = "not responding"
         out.append({"run": os.path.basename(d), "kind": meta.get("kind"),
+                    "method": meta.get("method"),
                     "branch": meta.get("branch"), "parent": meta.get("parent"),
                     "status": state, "usd": _usd(meta),
                     "score": _branch_score(meta["cwd"], meta["branch"], meta.get("parent"))
@@ -670,6 +671,7 @@ def status(campaign, run=None):
         "max_runtime_s": meta.get("max_runtime_s"),
         "max_turns": meta.get("max_turns"),
         "parent_run": meta.get("parent_run"), "kind": meta.get("kind"),
+        "method": meta.get("method"),
         "parent_run_known": bool(meta.get("parent_run")
                                  and run_path(campaign, meta["parent_run"])),
         "branch": meta.get("branch"), "parent": meta.get("parent"),
@@ -1172,17 +1174,19 @@ const hms = s => s == null ? "\u2014" :
 // What the run consumed. A dash for the money means the price was not the serving
 // model's own, not that the run was free -- the runner drops a figure it cannot stand
 // behind rather than printing a catalog price for a model the catalog does not cover.
-// With more than one model, each gets a row labelled "cost", the model named first in
-// the value (without its date suffix), the largest consumer at the top.
-function costRows(models) {
+// With more than one model, each gets a row labelled "cost", the largest consumer at the
+// top. Every model but the run's own (named in the row above) is named first in the
+// value, without its date suffix.
+function costRows(models, main) {
   if (!models || !models.length) return [];
   const rows = models.length > 1
     ? [...models].sort((a, b) => (b.usd || 0) - (a.usd || 0)
                                  || (b.input_tokens || 0) - (a.input_tokens || 0))
     : models;
+  const bare = name => name.replace(/-\\d{8}$/, "");
   return rows.map(m => [
     "cost",
-    (models.length > 1 ? `${m.model.replace(/-\\d{8}$/, "")} · ` : "")
+    (models.length > 1 && bare(m.model) !== bare(main || "") ? `${bare(m.model)} · ` : "")
       + `${short(m.input_tokens)} in / ${short(m.output_tokens)} out · `
       + (m.usd == null ? "—"
          : "$" + m.usd.toFixed(2))]);
@@ -1251,7 +1255,7 @@ function renderStatus(s) {
         : s.context_pct == null
         ? `${short(s.context_tokens)} (window not known yet)`
         : `${short(s.context_tokens)}/${short(s.context_window)} (${Math.round(s.context_pct)}%%)`)],
-    ...costRows(s.cost_models),
+    ...costRows(s.cost_models, s.model),
     ...(s.tree_usd == null ? [] : [["cost with workers", "$" + s.tree_usd.toFixed(2)]]),
     ...(s.parent_run ? [
       // The run that started a worker is the one whose agents panel it was chosen in.
@@ -1463,8 +1467,10 @@ function renderAgents(top) {
   }
   panel.hidden = false;
   const usd = models => (models || []).reduce((t, m) => t + (m.usd || 0), 0);
-  const me = {run: "", branch: top.kind ? top.branch : "coordinator", kind: top.model || "",
-              status: top.status, usd: usd(top.cost_models), score: null};
+  // Each row names how that agent works: its method (director, explorer, ...), or for a
+  // run from before methods were recorded, a worker's kind.
+  const me = {run: "", branch: top.kind ? top.branch : "coordinator", method: top.method,
+              kind: top.kind, status: top.status, usd: usd(top.cost_models), score: null};
   const byBranch = {};
   for (const w of ws) byBranch[w.branch] = w;
   const dot = st => st === "running" ? '<i class="on">\u25cf</i>'
@@ -1472,7 +1478,7 @@ function renderAgents(top) {
   const row = (a, depth) =>
     `<div class="arow${a.run === agentSel ? " sel" : ""}" data-agent="${esc(a.run)}"`
     + ` style="padding-left:${0.8 + 1.6 * depth}em">${depth ? "\u2514 " : ""}${dot(a.status)}`
-    + ` <b>${esc(a.branch || a.run)}</b> <span class="k">${esc(a.kind || "")}</span>`
+    + ` <b>${esc(a.branch || a.run)}</b> <span class="k">${esc(a.method || a.kind || "")}</span>`
     + `<span class="sc">${a.score == null ? "" : +a.score.toPrecision(7)}</span>`
     + `<span class="usd">${a.usd == null ? "\u2014" : "$" + a.usd.toFixed(2)}</span></div>`;
   const below = (branch, depth) => ws

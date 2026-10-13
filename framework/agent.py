@@ -893,6 +893,8 @@ def _start_run_dir():
                 host=socket.gethostname(), pid=os.getpid(),
                 started_at=datetime.now().isoformat(timespec="seconds"),
                 user_prompt_file=USER_PROMPT_FILE,
+                # How this run works, by its method file's name: director, explorer, ...
+                method=os.path.splitext(os.path.basename(METHOD_FILE))[0],
                 campaign=CAMPAIGN,
                 shared_dir=WORKSPACE_DIR, log=LOG_PATH, status="running",
                 cwd=AGENT_CWD, **RUN_META)
