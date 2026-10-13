@@ -225,6 +225,10 @@ SHOW_COST = _bool_env("SHOW_COST", True)
 # Its conversation then ends with its own summary, which matters when another run is
 # started from it.
 END_ON_GOAL_MET = _bool_env("END_ON_GOAL_MET", False)
+# Confine the agent's file tools to its working directory: reads outside it are refused
+# by Claude Code's own setting, writes by a hook (framework/fence_writes.py). It fences
+# the file tools only; a run that also has a shell needs Claude Code's sandbox for that.
+FENCE_FILES = _bool_env("FENCE_FILES", False)
 
 # A browser view of this run: the log as it is written and the files it writes. Off
 # unless asked for, and it never affects the run -- it only reads the workspace.
@@ -963,6 +967,27 @@ def _gateway_settings_file():
     return path
 
 
+def _agent_settings_file():
+    """The settings file for the agent's session: the gateway's, and the file fence when
+    FENCE_FILES is set. None when there is neither."""
+    settings = {}
+    if GATEWAY_URL:
+        settings["env"] = {"ANTHROPIC_BASE_URL": GATEWAY_URL}
+    if FENCE_FILES:
+        fence = f"{sys.executable} {os.path.join(SCRIPT_DIR, 'fence_writes.py')} {AGENT_CWD}"
+        settings["permissions"] = {"blockReadsOutsideWorkingDirectories": True}
+        settings["hooks"] = {"PreToolUse": [{
+            "matcher": "Write|Edit|NotebookEdit",
+            "hooks": [{"type": "command", "command": fence}]}]}
+    if not settings:
+        return None
+    os.makedirs(RUN_DIR, exist_ok=True)
+    path = os.path.join(RUN_DIR, "agent_settings.json")
+    with open(path, "w") as f:
+        json.dump(settings, f, indent=2)
+    return path
+
+
 # How long to wait for the CLI to say which model it resolved. It answers in about a
 # second, so this only bounds a start-up that has gone wrong.
 MODEL_PROBE_TIMEOUT = float(os.environ.get("MODEL_PROBE_TIMEOUT", "30"))
@@ -1326,7 +1351,7 @@ async def main():
         # which decides nothing in a run with nobody there to ask.
         tools=agent_tools(),
         **({"model": AGENT_MODEL} if AGENT_MODEL else {}),
-        **({"settings": _gateway_settings_file()} if GATEWAY_URL else {}),
+        **({"settings": _agent_settings_file()} if GATEWAY_URL or FENCE_FILES else {}),
         agents=subagent_defs(),
         max_buffer_size=MAX_MESSAGE_BYTES,
         permission_mode="bypassPermissions",
