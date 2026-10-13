@@ -1299,8 +1299,12 @@ async def main():
         at_once.append(f"jobs running at once: {tools.MAX_CONCURRENT}")
     if tools.HAS_LOCAL:
         at_once.append(f"local jobs running at once: {tools.LOCAL_MAX_CONCURRENT}")
-    at_once.append(f"{'remote ' if tools.HAS_REMOTE else ''}jobs this run may submit: "
-                   f"{tools.MAX_SUBMITS}")
+    # A task whose jobs are something other than plain jobs, such as worker agents, names
+    # them, and states any further limit on the run (SUBMITS_LABEL, RUN_LIMITS).
+    label = getattr(tools.task, "SUBMITS_LABEL", None) or \
+        f"{'remote ' if tools.HAS_REMOTE else ''}jobs this run may submit"
+    at_once.append(f"{label}: {tools.MAX_SUBMITS}")
+    at_once.extend(getattr(tools.task, "RUN_LIMITS", []))
     if MAX_RUNTIME:
         at_once.append(f"wall clock for this run: {MAX_RUNTIME}s")
     system_prompt += "\n\n# This run\n" + "\n".join(at_once)
