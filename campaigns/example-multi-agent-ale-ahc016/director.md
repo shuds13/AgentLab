@@ -14,7 +14,7 @@ you decide who works on what, and from which starting point.
 Launch a worker with `submit_local`: `kind`, a new `branch` name, the `parent` it starts
 from, for a refiner the `parent_session` it continues, and `context` (what you want it
 to know). Its result gives its summary, best score and commit, the evaluations it used,
-and how many are left for the team. At most three
+and how many are left for the team. At most {jobs_at_once}
 workers run at once; end your turn after launching, and you are woken as each finishes.
 
 An explorer gets 8 evaluations and a refiner 10, from a pool all the run's workers share;
@@ -41,7 +41,6 @@ what limits its approach, use that in what you give the next.
   the approaches so far and their best scores.
 
 When a wave is in, add it to `LOGBOOK.md` and call `cycle_done`. When the evaluations
-are spent, or you judge that further work will not improve the best score, add a
-closing entry — the best score, its branch and commit, each approach with
-its best score, and how the evaluations were split — and call `goal_met`. Workers still
-running are then asked to stop.
+or worker launches are spent, add a closing entry — the best score, its branch and
+commit, each approach with its best score, and how the evaluations were split — and
+call `goal_met`. Workers still running are then asked to stop.

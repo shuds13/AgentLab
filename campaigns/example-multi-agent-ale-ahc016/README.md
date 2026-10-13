@@ -31,6 +31,9 @@ the best solution is the highest-scoring commit in its `repo/`, also named in `L
 | `EXPLORER_MODEL` | `opus` | explorers' model |
 | `REFINER_MODEL` | `sonnet` | refiners' model |
 | `EVALUATIONS` | `80` | evaluations all workers share; an explorer gets 8, a refiner 10 |
+| `WORKERS` | `12` | the most workers the coordinator may launch |
+| `LOCAL_MAX_CONCURRENT` | `3` | workers running at once |
+| `MAX_RUNTIME` | `7200` | the coordinator's wallclock limit, in seconds |
 | `TRIAL` | `1` | a new number gives a fresh workspace |
 | `WORKER_CPUS`, `EVAL_CPUS` | `0-7`, `8-15` | cores for the agents and for evaluations |
 
