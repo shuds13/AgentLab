@@ -18,6 +18,16 @@ Each investigation is a **campaign**. Campaigns are independent and can run at t
 time, sharing the framework, the system definitions, and optionally one Slack app and
 secretary.
 
+Examples:
+
+- **Basic:** [`campaigns/example-quick-optimum/`](campaigns/example-quick-optimum/) — one
+  agent finds the lowest point of a noisy response, in minutes, on the local machine.
+  `run_remote.sh` runs the same campaign with its jobs on a remote system through Globus
+  Compute.
+- **Multi-agent:** [`campaigns/example-multi-agent-ale-ahc016/`](campaigns/example-multi-agent-ale-ahc016/)
+  — a coordinator launches explorer and refiner agents on an AtCoder heuristic contest
+  problem, each on its own git branch, on the local machine.
+
 ## Structure
 
 ```
@@ -136,9 +146,9 @@ Copy `campaigns/example-vllm-inference-opt/` and replace four files:
 `job_key`, `remote_fn` — `remote_fn` is sent to the worker by source, so everything it
 needs must be imported inside it or passed in through its arguments. A result with
 `"refused": true` is a job the task declined to run, and it does not count against
-`MAX_SUBMITS`. For work that runs
-on the machine the agent is on: `LOCAL_DESC`, `LOCAL_SCHEMA`, `local_fn`. A task may
-define both, and the agent is given tools for whichever it defines. A task with only
+`MAX_SUBMITS`. For work that runs on the machine the agent is on: `LOCAL_DESC`,
+`LOCAL_SCHEMA`, `local_fn`. A task may define both, and the agent is given tools for
+whichever it defines. A task with only
 `local_fn` needs no Globus Compute endpoint.
 
 Nothing in `framework/` changes.
@@ -147,6 +157,10 @@ Nothing in `framework/` changes.
 
 `campaigns/example-quick-optimum/` — one dial, a noisy response, a lowest point to find.
 Runs in minutes on your own machine, with no endpoint and no account. Setup starts here.
+
+`campaigns/example-multi-agent-ale-ahc016/` — a coordinator agent and its workers on
+AtCoder Heuristic Contest 016. Explorers each try one approach and refiners improve the
+best, sharing one evaluation budget. Runs on your own machine; needs g++ and Rust's cargo.
 
 `campaigns/example-local-compression/` — real work on the same footing: which zlib
 setting gets a corpus to a consumer fastest, trading encode time against transmit time.
