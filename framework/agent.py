@@ -362,6 +362,26 @@ def _note_turn_context(usage, model=None):
 _last_cost = []             # one entry per model, from the most recent result
 
 
+def _inherited_cost():
+    """What the session this run forks had already consumed, per model. The CLI's totals
+    on a resumed session include the original conversation, so a forked run subtracts
+    these to report only its own. Known when that session was a run in this workspace."""
+    if not RESUME_SESSION:
+        return {}
+    for path in glob.glob(os.path.join(WORKSPACE_DIR, "runs", "*", "meta.json")):
+        try:
+            with open(path) as f:
+                meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if meta.get("session_id") == RESUME_SESSION:
+            return {c["model"]: c for c in meta.get("cost_models") or []}
+    return {}
+
+
+_INHERITED_COST = _inherited_cost()
+
+
 def _priced_honestly(model):
     """Whether a dollar figure for this model is the model's own price.
 
@@ -380,7 +400,8 @@ def _note_cost(message):
 
     `model_usage` is keyed by model, so a subagent on a model of its own, or a run that
     changes model, is several entries rather than one. The CLI's totals are cumulative
-    for the session, so this replaces what it held rather than adding to it."""
+    for the session, so this replaces what it held rather than adding to it; for a forked
+    session they start from the original's, which are subtracted."""
     usage = getattr(message, "model_usage", None)
     if not usage:
         return
@@ -393,6 +414,14 @@ def _note_cost(message):
                  "output_tokens": u.get("outputTokens", 0)}
         if _priced_honestly(model) and u.get("costUSD") is not None:
             entry["usd"] = u["costUSD"]
+        before = _INHERITED_COST.get(model)
+        if before:
+            for k in ("input_tokens", "output_tokens"):
+                entry[k] = max(0, entry[k] - before.get(k, 0))
+            if "usd" in entry:
+                entry["usd"] = max(0.0, entry["usd"] - (before.get("usd") or 0))
+        if not (entry["input_tokens"] or entry["output_tokens"]):
+            continue
         entries.append(entry)
     if entries == _last_cost:
         return
@@ -1684,7 +1713,9 @@ async def main():
         # "running" forever. The run dir itself STAYS -- it is the run history.
         _write_meta(status="stopped", stop_reason=stop_reason,
                     ended_at=datetime.now().isoformat(timespec="seconds"),
-                    remote_submitted=tools.submit_count(),
+                    # submit_count() is the local count in a run with no remote
+                    # backend, so it is remote only when there is one.
+                    remote_submitted=tools.submit_count() if tools.HAS_REMOTE else 0,
                     local_submitted=tools.local_submit_count(),
                     uptime_s=int(time.time() - start_time))
         for path in (pid_file, os.path.join(RUN_DIR, "heartbeat")):
