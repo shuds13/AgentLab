@@ -881,6 +881,18 @@ def _stop_file_present():
     return os.path.exists(os.path.join(RUN_DIR, "stop"))
 
 
+def _drain_workers(reason):
+    """A run that started workers asks them to wind down with it. Not when it has only
+    spent its own budget: the workers it has running are what that budget bought."""
+    spawn = sys.modules.get("spawn")
+    if spawn is None:
+        return
+    asked = spawn.drain_workers(reason)
+    if asked:
+        print(f"Asked {len(asked)} running worker(s) to wind down: {', '.join(asked)}",
+              flush=True)
+
+
 # PREFLIGHT runs the checks and stops, for someone deciding whether a campaign is
 # ready before giving a machine to it for days. It leaves no trace of a run: the log is
 # not opened, so the last run's log survives, and no watcher or Slack post is made.
@@ -1428,6 +1440,7 @@ async def main():
                 if stopping is None and _stop_file_present():
                     stopping = "stop requested"
                     tools.request_stop()
+                    _drain_workers(stopping)
                     print("Stop requested -- winding down: no new work, finishing "
                           "what is in flight.", flush=True)
                     # Replace, not prepend: whatever was queued (CONTINUE/EXPLORE) tells
@@ -1438,6 +1451,7 @@ async def main():
                 if stopping is None and tools.goal_is_met():
                     stopping = "goal met"
                     tools.request_stop()
+                    _drain_workers(stopping)
                     _write_meta(goal_met=tools.goal_is_met())
                     if END_ON_GOAL_MET and tools.jobs_in_flight() == 0:
                         print(f"Goal met: {tools.goal_is_met()}", flush=True)
@@ -1450,6 +1464,7 @@ async def main():
                 if stopping is None and tools.end_requested():
                     stopping = "stop requested"
                     tools.request_stop()
+                    _drain_workers(stopping)
                     _write_meta(end_requested=tools.end_requested())
                     print(f"Stop requested -- winding down: {tools.end_requested()}",
                           flush=True)
@@ -1520,6 +1535,8 @@ async def main():
                 if stopping is None and (tools.submit_count() >= tools.MAX_SUBMITS or over_time):
                     stopping = "time limit" if over_time else f"budget ({tools.MAX_SUBMITS} submits)"
                     tools.request_stop()
+                    if over_time:
+                        _drain_workers(stopping)
                     print(f"{stopping} reached -- winding down: no new work, finishing "
                           f"what is in flight.", flush=True)
                 # Everything collected and the run is ending: give the agent a turn (or
