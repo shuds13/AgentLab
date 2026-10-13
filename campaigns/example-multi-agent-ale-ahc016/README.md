@@ -3,8 +3,9 @@
 A coordinator agent launches worker agents on AtCoder Heuristic Contest 016, from
 [ALE-Bench](https://github.com/SakanaAI/ALE-Bench). Explorers each try one approach
 from scratch; refiners continue a promising explorer's conversation and improve its
-solution. Every worker has its own git branch, and all share one evaluation budget.
-Everything runs on the local machine.
+solution. The run makes a git repository at `repo/` in its workspace. Each worker gets
+its own branch there, checked out in its own worktree under `repo/.worktrees/<worker>`.
+All workers share one evaluation budget. Everything runs on the local machine.
 
 The design follows SwarmResearch ([Virk et al., arXiv:2607.02807](https://arxiv.org/abs/2607.02807)),
 which reports this problem among its ALE-Bench tasks: a performance rating of 2138 with
@@ -55,3 +56,14 @@ Sonnet 5.5, 80 evaluations). Each coordinator ended the run itself.
 |---|---|---|---|---|---|---|
 | directed | 35.4M | 41 | 2337 | 34 | 6 | $9.20 |
 | undirected | 38.4M | 27 | 2480 | 27 | 5 | $8.64 |
+
+All Opus 5.5, with a larger budget:
+
+```
+MODEL=opus EXPLORER_MODEL=opus REFINER_MODEL=opus EVALUATIONS=240 WORKERS=24 LOCAL_MAX_CONCURRENT=4 MAX_RUNTIME=10800 TRIAL=2 MODE=<directed|undirected> ./run.sh
+```
+
+| mode | best public score | hidden rank (of 1,117) | performance | evaluations used | workers | cost |
+|---|---|---|---|---|---|---|
+| directed | 39.1M | 25 | 2506 | 83 | 15 | $37.96 |
+| undirected | 45.5M | 10 | 2794 | 135 | 21 | $55.51 |
