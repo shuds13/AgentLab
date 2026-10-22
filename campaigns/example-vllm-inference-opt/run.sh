@@ -1,6 +1,7 @@
 #!/bin/bash
 # Launch the agent for this campaign. Run from this directory, inside tmux:
-#   tmux new -s agentlab && ./run.sh
+#   tmux new -s agentlab        # or: tmux attach -t agentlab
+#   ./run.sh
 #
 # Stop:  ../../bin/kill_agent.sh --drain <run_id>
 # List:  ../../bin/list_agents.sh --all
