@@ -23,6 +23,10 @@ builds AtCoder's tools.
 Watch it with `bin/watch.sh`. The workspace is `workspace/<campaign>-<mode>-<model>-<trial>/`;
 the best solution is the highest-scoring commit in its `repo/`, also named in `LOGBOOK.md`.
 
+![AgentLab view of a multi-agent run: a tree of the coordinator and its explorer and refiner agents with scores and costs, and the status of the selected refiner](../../docs/images/multi-agent-undirected.png)
+
+*A multi-agent example mid-run: a coordinator and 21 workers. The selected refiner-3c holds the best score so far; refiner-13a, at the bottom, is still running.*
+
 ## Variants
 
 | setting | default | |

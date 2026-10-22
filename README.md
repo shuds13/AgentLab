@@ -28,6 +28,10 @@ Examples:
   — a coordinator launches explorer and refiner agents on an AtCoder heuristic contest
   problem, each on its own git branch, on the local machine.
 
+![AgentLab view of a multi-agent run: a tree of the coordinator and its explorer and refiner agents with scores and costs, and the status of the selected refiner](docs/images/multi-agent-undirected.png)
+
+*A multi-agent example mid-run: a coordinator and 21 workers. The selected refiner-3c holds the best score so far; refiner-13a, at the bottom, is still running.*
+
 ## Structure
 
 ```
