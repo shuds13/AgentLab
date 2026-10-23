@@ -217,6 +217,20 @@ def _fault(exc):
     return f"{code}: {detail}" if code else detail
 
 
+def _make_dirs(tc, coll, path):
+    """List `path` on a collection, making it and any missing parents first."""
+    try:
+        tc.operation_ls(coll, path=path)
+        return
+    except Exception as exc:
+        if "NotFound" not in str(getattr(exc, "code", "") or exc):
+            raise
+    parent = os.path.dirname(path.rstrip("/"))
+    if parent and parent != path:
+        _make_dirs(tc, coll, parent)
+    tc.operation_mkdir(coll, path=path)
+
+
 def preflight():
     """Check the configured collections answer, before a run that depends on them.
 
@@ -231,7 +245,8 @@ def preflight():
 
     The remote side is checked at the write root, not at "/": a compute system's
     collection is rooted where every project on the machine is visible, and listing
-    that is both slow and more than the check needs.
+    that is both slow and more than the check needs. A write root that does not exist
+    yet is made.
     """
     if CFG is None:
         return []
@@ -243,7 +258,12 @@ def preflight():
                         ("remote_collection", _cpath(CFG["remote_write_root"] or "/"))):
         coll = CFG[role]
         try:
-            tc.operation_ls(coll, path=probe)
+            if role == "remote_collection" and CFG["remote_write_root"]:
+                # The write root is this run's own directory, which a new run, or a
+                # worker given a directory under its coordinator's, has not made yet.
+                _make_dirs(tc, coll, probe)
+            else:
+                tc.operation_ls(coll, path=probe)
         except Exception as exc:
             hint = ("\n    If this is Globus Connect Personal, start it: "
                     "globusconnectpersonal -start &"
