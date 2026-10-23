@@ -54,16 +54,23 @@ if [ ${#POSITIONAL[@]} -ge 2 ]; then REPO="${POSITIONAL[1]}"; fi
 if [ -z "$HOST" ]; then echo "no host: set HOST in this script, or pass one" >&2; exit 2; fi
 
 CTL="${TMPDIR:-/tmp}/watch_remote.$$.sock"
+SSH=(ssh -S "$CTL")
+OWN_CONNECTION=true
+FORWARD=""
 REMOTE_PID=""
 REMOTE_LOG=""
 
 cleanup() {
     if [ -n "$REMOTE_PID" ]; then
-        ssh -S "$CTL" -O check "$HOST" 2>/dev/null &&
-            ssh -S "$CTL" "$HOST" "kill $REMOTE_PID 2>/dev/null; rm -f $REMOTE_LOG" \
+        "${SSH[@]}" -O check "$HOST" 2>/dev/null &&
+            "${SSH[@]}" "$HOST" "kill $REMOTE_PID 2>/dev/null; rm -f $REMOTE_LOG" \
                 >/dev/null 2>&1 || true
     fi
-    ssh -S "$CTL" -O exit "$HOST" >/dev/null 2>&1 || true
+    if [ "$OWN_CONNECTION" = true ]; then
+        "${SSH[@]}" -O exit "$HOST" >/dev/null 2>&1 || true
+    elif [ -n "$FORWARD" ]; then
+        "${SSH[@]}" -O cancel -L "$FORWARD" "$HOST" >/dev/null 2>&1 || true
+    fi
 }
 trap cleanup EXIT INT TERM
 
@@ -79,20 +86,29 @@ free_port() {
     exit 1
 }
 
-# One login. Everything after this reuses the socket, so no further prompts.
-echo "[watch] connecting to $HOST"
-# ServerAlive keeps the master from being dropped for silence: lose it and the remote
-# watcher is unreachable, so it can neither be stopped nor asked whether it is alive --
-# and the next command prompts for a login again.
-ssh -M -S "$CTL" -o ControlPersist=60 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
-    -f -N "$HOST"
+# One login. Everything after this reuses the connection, so no further prompts. A
+# connection already open to the host (ControlMaster in ~/.ssh/config) is used as it is
+# and left open, so a host that asks for a one-time password asks once, not on every
+# start.
+if ssh -O check "$HOST" >/dev/null 2>&1; then
+    echo "[watch] using the open connection to $HOST"
+    SSH=(ssh)
+    OWN_CONNECTION=false
+else
+    echo "[watch] connecting to $HOST"
+    # ServerAlive keeps the master from being dropped for silence: lose it and the remote
+    # watcher is unreachable, so it can neither be stopped nor asked whether it is alive
+    # -- and the next command prompts for a login again.
+    ssh -M -S "$CTL" -o ControlPersist=60 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 \
+        -f -N "$HOST"
+fi
 
 # Start the watcher and learn which port it actually took. It is left running over
 # there for the moment because the forward cannot be added until the port is known.
 REMOTE_LOG="/tmp/watch_remote.$USER.$$.log"
 # </dev/null matters: a backgrounded remote process still holding the session's stdin
 # keeps the channel open, and this ssh would never return.
-REMOTE_PID="$(ssh -n -S "$CTL" "$HOST" \
+REMOTE_PID="$("${SSH[@]}" -n "$HOST" \
     "{ cd '$REPO' && ${ACTIVATE:+$ACTIVATE && } \
        exec setsid python3 '$WATCHER' --no-open --exit-when-idle=$IDLE ; } \
      > $REMOTE_LOG 2>&1 </dev/null & echo \$!")"
@@ -100,7 +116,7 @@ REMOTE_PID="$(ssh -n -S "$CTL" "$HOST" \
 
 REMOTE_PORT=""
 for _ in $(seq 0 30); do
-    REMOTE_PORT="$(ssh -S "$CTL" "$HOST" \
+    REMOTE_PORT="$("${SSH[@]}" "$HOST" \
         "grep -o 'http://127.0.0.1:[0-9]*' $REMOTE_LOG 2>/dev/null | head -1 | grep -o '[0-9]*$'" \
         2>/dev/null || true)"
     [ -n "$REMOTE_PORT" ] && break
@@ -108,13 +124,14 @@ for _ in $(seq 0 30); do
 done
 if [ -z "$REMOTE_PORT" ]; then
     echo "[watch] the watcher started but said no port. Its output:" >&2
-    ssh -S "$CTL" "$HOST" "cat $REMOTE_LOG" >&2 || true
+    "${SSH[@]}" "$HOST" "cat $REMOTE_LOG" >&2 || true
     exit 1
 fi
 
 # Add the forward to the connection that is already authenticated.
 LOCAL_PORT="$(free_port "$REMOTE_PORT")"
-ssh -S "$CTL" -O forward -L "$LOCAL_PORT:127.0.0.1:$REMOTE_PORT" "$HOST"
+FORWARD="$LOCAL_PORT:127.0.0.1:$REMOTE_PORT"
+"${SSH[@]}" -O forward -L "$FORWARD" "$HOST"
 
 URL="http://127.0.0.1:$LOCAL_PORT/"
 echo "[watch] watching $HOST:$REMOTE_PORT at $URL   (Ctrl-C closes it)"
@@ -122,7 +139,7 @@ echo "[watch] watching $HOST:$REMOTE_PORT at $URL   (Ctrl-C closes it)"
 
 # Hold the foreground so Ctrl-C reaches the trap, and stop by itself if the watcher
 # over there exits or the connection drops.
-while ssh -S "$CTL" "$HOST" "kill -0 $REMOTE_PID" >/dev/null 2>&1; do
+while "${SSH[@]}" "$HOST" "kill -0 $REMOTE_PID" >/dev/null 2>&1; do
     sleep 2
 done
 echo "[watch] the watcher on $HOST has stopped"
