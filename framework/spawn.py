@@ -44,6 +44,9 @@ _started_lock = threading.Lock()
 WORKER_JOB_BUDGET = (int(os.environ["WORKER_JOB_BUDGET"])
                      if os.environ.get("WORKER_JOB_BUDGET") else None)
 _jobs_given = 0
+# How long past its max_runtime a worker is given to collect what it has in flight and
+# write up before it is stopped.
+WIND_DOWN_SECONDS = int(os.environ.get("WORKER_WIND_DOWN", "3600"))
 
 
 def _git(repo, *args):
@@ -124,7 +127,7 @@ def prepare_worktree(repo, branch, parent):
     return path, None
 
 
-def run_worker(args, *, repo, roles, timeout=14400):
+def run_worker(args, *, repo, roles, timeout=None):
     """Start one worker, wait for it to finish, and return what it produced.
 
     `roles` maps each kind the coordinator may ask for to its settings:
@@ -140,6 +143,10 @@ def run_worker(args, *, repo, roles, timeout=14400):
                       its notes, for anything reading the run to find
         tools         the Claude Code tools a worker of this kind is given, as an
                       AGENT_TOOLS value; the coordinator's set if unset
+
+    `timeout` is how long the worker may run before it is stopped: unset, its
+    max_runtime plus WIND_DOWN_SECONDS, since a worker at its time limit still collects
+    the jobs it has in flight and writes up.
     """
     kind = str(args.get("kind", "")).strip()
     branch = str(args.get("branch", "")).strip()
@@ -235,6 +242,8 @@ def run_worker(args, *, repo, roles, timeout=14400):
     if role.get("fork"):
         env["RESUME_SESSION"] = parent_session
 
+    if timeout is None:
+        timeout = int(role.get("max_runtime", 3600)) + WIND_DOWN_SECONDS
     with open(os.path.join(home, "console.log"), "w") as console:
         cmd = [sys.executable, "-u", os.path.join(FRAMEWORK_DIR, "agent.py")]
         if WORKER_CPUS:
