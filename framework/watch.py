@@ -45,7 +45,7 @@ else:
 LAB_DIR = os.path.abspath(os.environ.get("LAB_DIR", _default_lab))
 # Files worth opening while a run is in flight. Anything else in the workspace is
 # listed but not offered as a tab: run directories, caches, figures.
-READABLE = ("LOGBOOK.md", "JOURNAL.md", "REVIEWS.md", "results.jsonl",
+READABLE = ("LOGBOOK.md", "findings.md", "JOURNAL.md", "REVIEWS.md", "results.jsonl",
             "ANNOUNCEMENTS.md", "jobs.jsonl")
 TAIL_BYTES = 400_000        # of a file view; the log is followed from an offset instead
 # Browsing the whole workspace, as against the records above. Caches are listed by the
@@ -264,12 +264,13 @@ def workers(campaign, run_id):
         state = meta.get("status")
         if state == "running" and (age is None or age >= AGENT_ALIVE_WITHIN):
             state = "not responding"
+        cwd = run_cwd(campaign, meta)
         out.append({"run": os.path.basename(d), "kind": meta.get("kind"),
                     "method": meta.get("method"),
                     "branch": meta.get("branch"), "parent": meta.get("parent"),
                     "status": state, "usd": _usd(meta),
-                    "score": _branch_score(meta["cwd"], meta["branch"], meta.get("parent"))
-                             if meta.get("cwd") and meta.get("branch") else None,
+                    "score": _branch_score(cwd, meta["branch"], meta.get("parent"))
+                             if cwd and meta.get("branch") else None,
                     "started_at": meta.get("started_at")})
     out.sort(key=lambda w: w["started_at"] or "")
     return out
@@ -313,6 +314,21 @@ def runs(campaign):
 # it appends to. What status already reports is left to status.
 RUN_HIDDEN = ("meta.json",)
 RUN_SUFFIXES = (".md", ".json")
+
+
+def run_cwd(campaign, meta):
+    """A run's working directory as this watcher can reach it. meta.json records it as
+    an absolute path; where it lies inside the workspace the run wrote to (`shared_dir`),
+    it is taken relative to the workspace read here, so a workspace that has been moved
+    or copied still finds it."""
+    cwd, shared = meta.get("cwd"), meta.get("shared_dir")
+    if not cwd:
+        return None
+    if shared:
+        rel = os.path.relpath(cwd, shared)
+        if not rel.startswith(".."):
+            return os.path.normpath(os.path.join(workspace(campaign), rel))
+    return cwd
 
 
 def run_files(campaign, run=None):
@@ -2451,9 +2467,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         under `records`, as a worker's notes are."""
         d = run_path(campaign, run)
         meta = _meta(os.path.join(d, "meta.json")) if d else {}
-        if name not in (meta.get("records") or []) or not meta.get("cwd"):
+        cwd = run_cwd(campaign, meta)
+        if name not in (meta.get("records") or []) or not cwd:
             return "not a record of this run"
-        path = os.path.join(meta["cwd"], name)
+        path = os.path.join(cwd, name)
         if not os.path.isfile(path):
             return f"{name} has not been written yet"
         return self._read(path, name)
