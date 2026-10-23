@@ -323,11 +323,11 @@ def runs(campaign):
     return out
 
 
-# What a run was handed: its prompts, its method, the campaign as it stood. Written at
-# startup and belonging to that run, unlike the campaign's records, which every run of
-# it appends to. What status already reports is left to status.
+# What a run was handed: its prompts, its method, its task module, the campaign as it
+# stood. Written at startup and belonging to that run, unlike the campaign's records,
+# which every run of it appends to. What status already reports is left to status.
 RUN_HIDDEN = ("meta.json",)
-RUN_SUFFIXES = (".md", ".json")
+RUN_SUFFIXES = (".md", ".json", ".py")
 
 
 def run_cwd(campaign, meta):

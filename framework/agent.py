@@ -848,15 +848,14 @@ SNAPSHOT_MAX_BYTES = 256 * 1024
 
 def _start_run_dir():
     os.makedirs(RUN_DIR, exist_ok=True)
-    # Every .md the campaign has, so a run is reproducible from what it was given.
-    # The top of the directory only, so a mirrored source tree is not swept in.
+    # What this run was given, so it is reproducible from its own record: its prompts,
+    # its task module, and what the jobs ran on (system, resource shapes, target).
     paths = [os.path.join(CAMPAIGN_DIR, "prompt.md"), method_path(),
-             os.path.join(CAMPAIGN_DIR, USER_PROMPT_FILE)]
-    paths += sorted(glob.glob(os.path.join(CAMPAIGN_DIR, "*.md")))
-    # What the jobs were given to run on: system, resource shapes, target.
-    paths.append(os.path.join(CAMPAIGN_DIR, "campaign.json"))
+             os.path.join(CAMPAIGN_DIR, USER_PROMPT_FILE),
+             getattr(tools.task, "__file__", None) or "",
+             os.path.join(CAMPAIGN_DIR, "campaign.json")]
     seen = set()
-    for path in paths:
+    for path in filter(None, paths):
         name = os.path.basename(path)
         if name in seen:
             continue
