@@ -245,6 +245,21 @@ def _branch_score(cwd, branch, parent):
     return score
 
 
+def run_score(meta, cwd=None):
+    """The score to show for a run: the one its campaign names as primary, from the
+    scores the run recorded; its only score if it recorded one; else, for a run from
+    before scores were recorded, the newest score committed on its branch."""
+    scores = meta.get("scores") or {}
+    primary = meta.get("primary_score")
+    if primary:
+        return scores.get(primary)
+    if len(scores) == 1:
+        return next(iter(scores.values()))
+    if not scores and cwd and meta.get("branch"):
+        return _branch_score(cwd, meta["branch"], meta.get("parent"))
+    return None
+
+
 def _usd(meta):
     usd = [c.get("usd") for c in meta.get("cost_models") or [] if c.get("usd") is not None]
     return sum(usd) if usd else None
@@ -269,8 +284,7 @@ def workers(campaign, run_id):
                     "method": meta.get("method"),
                     "branch": meta.get("branch"), "parent": meta.get("parent"),
                     "status": state, "usd": _usd(meta),
-                    "score": _branch_score(cwd, meta["branch"], meta.get("parent"))
-                             if cwd and meta.get("branch") else None,
+                    "score": run_score(meta, cwd),
                     "started_at": meta.get("started_at")})
     out.sort(key=lambda w: w["started_at"] or "")
     return out
@@ -693,6 +707,7 @@ def status(campaign, run=None):
         "branch": meta.get("branch"), "parent": meta.get("parent"),
         "workers": started_runs, "tree_usd": tree_usd,
         "records": meta.get("records") or [],
+        "scores": meta.get("scores") or {}, "primary_score": meta.get("primary_score"),
     }
 
 
@@ -1273,6 +1288,12 @@ function renderStatus(s) {
     ["still running", `${s.jobs_run - s.jobs_done - (s.jobs_abandoned || 0)} of `
         + `${s.jobs_run} submitted, ${s.jobs_done} returned`
         + (s.jobs_abandoned ? `, ${s.jobs_abandoned} abandoned` : "")],
+    // The scores the run's jobs reported, the campaign's primary one first and marked.
+    ...(Object.keys(s.scores || {}).length ? [["scores", Object.entries(s.scores)
+        .sort(([a], [b]) => (b === s.primary_score) - (a === s.primary_score))
+        .map(([k, v]) => (k === s.primary_score ? `<b>${esc(k)} ${+v.toPrecision(7)}</b>`
+                                                : `${esc(k)} ${+v.toPrecision(7)}`))
+        .join(" \u00b7 ")]] : []),
     ["elapsed", bar(s.elapsed_s, s.max_runtime_s, hms)],
     ["model", `${s.model || "\u2014"} \u00b7 context ` + (s.context_tokens == null
         ? "no data"

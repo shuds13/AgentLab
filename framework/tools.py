@@ -729,6 +729,32 @@ GET_COMPLETED_DESC = (
 )
 
 
+# A job's result may carry `scores`: named numbers the campaign defines, such as a check
+# and the measure the campaign is judged by. The latest value of each is kept for the
+# run and handed to SCORES_HOOK, which agent.py sets to record them in meta.json, so
+# anything reading the run finds them in its own directory. campaign.json may name the
+# one that counts (`primary_score`).
+PRIMARY_SCORE = _cam.get("primary_score")
+SCORES_HOOK = None
+_scores = {}
+
+
+def _record_scores(res):
+    named = res.get("scores") if isinstance(res, dict) else None
+    if not isinstance(named, dict):
+        return
+    fresh = {str(k): v for k, v in named.items()
+             if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    if not fresh:
+        return
+    _scores.update(fresh)
+    if SCORES_HOOK is not None:
+        try:
+            SCORES_HOOK(dict(_scores))
+        except Exception as e:
+            print(f"[scores] could not record (ignored): {e}", flush=True)
+
+
 @tool("get_completed_jobs", GET_COMPLETED_DESC, {})
 async def get_completed_jobs(args):
     global _last_success_time, _problem_since, _submit_count
@@ -744,6 +770,7 @@ async def get_completed_jobs(args):
             res = {"error": f"{type(e).__name__}: {e}", "args": info["args"]}
         if not isinstance(res, dict):
             res = {"result": res}
+        _record_scores(res)
         res["job_id"] = job_id
         res.setdefault("key", info["key"])
         # A job the task declined to run, such as one that would not have fitted in the
@@ -857,6 +884,7 @@ async def get_local_completed(args):
         refused = isinstance(res, dict) and bool(res.get("refused"))
         if refused:
             _local_submit_count -= 1
+        _record_scores(res)
         completed.append({"job_id": job_id, "results": res})
         _append_jobs_log({"event": "local_completed", "job_id": job_id, "refused": refused})
         del _local_jobs[job_id]

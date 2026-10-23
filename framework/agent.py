@@ -897,7 +897,10 @@ def _start_run_dir():
                 method=os.path.splitext(os.path.basename(METHOD_FILE))[0],
                 campaign=CAMPAIGN,
                 shared_dir=WORKSPACE_DIR, log=LOG_PATH, status="running",
+                primary_score=tools.PRIMARY_SCORE,
                 cwd=AGENT_CWD, **RUN_META)
+    # The scores a job's result names are kept with the run, as they come in.
+    tools.SCORES_HOOK = lambda scores: _write_meta(scores=scores)
     _heartbeat()
     print(f"Run dir: {RUN_DIR}", flush=True)
 

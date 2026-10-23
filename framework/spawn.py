@@ -286,6 +286,14 @@ def run_worker(args, *, repo, roles, timeout=None):
         if found:
             commit, subject, score = h, s, float(found.group(1))
             break
+    # The scores the worker's jobs reported, and the one its campaign names as primary,
+    # take precedence over a score read from a commit message.
+    scores = meta.get("scores") or {}
+    primary = meta.get("primary_score")
+    if primary:
+        score = scores.get(primary)
+    elif len(scores) == 1:
+        score = next(iter(scores.values()))
     usd = [c.get("usd") for c in meta.get("cost_models") or [] if c.get("usd") is not None]
     return {
         "args": args,
@@ -296,6 +304,7 @@ def run_worker(args, *, repo, roles, timeout=None):
         "commit": commit,
         "commit_subject": subject,
         "score": score,
+        "scores": scores,
         "cost_usd": round(sum(usd), 4) if usd else None,
         "jobs_given": jobs,
         "jobs_used": used,

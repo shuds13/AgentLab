@@ -66,4 +66,4 @@ def local_fn(args):
     _git(cwd, "commit", "-q", "--allow-empty", "-m", message)
     commit = _git(cwd, "rev-parse", "--short", "HEAD").stdout.strip()
     return {"args": args, "score": score, "reason": reason, "commit": commit,
-            "diagnostics": out}
+            "diagnostics": out, **({"scores": {"score": score}} if score is not None else {})}
