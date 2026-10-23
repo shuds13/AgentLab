@@ -1244,7 +1244,9 @@ function renderStatus(s) {
                  ? `<span style="color:#2e7d32">` + esc(text) + `</span>`
                  : `<span style="color:#777">` + esc(text) + `</span>`;
              }).join("<br>") : "")],
-    ["jobs submitted", bar(s.jobs_run, s.max_submits)
+    // The budget counts remote jobs where the run has an endpoint, else local ones,
+    // as tools.submit_count does.
+    ["jobs submitted", bar(s.endpoint ? s.jobs_remote : s.jobs_local, s.max_submits)
         // Every configured shape, so one that has taken no work yet still shows as zero.
         + (shapes.length > 1
            ? ` <span style="color:#777">(` + shapes.map(([k]) =>

@@ -256,7 +256,10 @@ def run_worker(args, *, repo, roles, timeout=14400):
         _git(worktree, "commit", "-q", "-m", "Worker's final state")
 
     meta = _worker_run(workspace, run_id, branch)
-    used = (meta.get("local_submitted") or 0) + (meta.get("remote_submitted") or 0)
+    # What the worker's MAX_SUBMITS counted: its remote jobs where it has an endpoint,
+    # else its local ones, as tools.submit_count does.
+    used = (meta.get("remote_submitted") if meta.get("endpoint")
+            else meta.get("local_submitted")) or 0
     with _started_lock:
         _jobs_given -= jobs - min(used, jobs)
         left = (WORKER_JOB_BUDGET - _jobs_given) if WORKER_JOB_BUDGET is not None else None
