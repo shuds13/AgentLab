@@ -62,7 +62,7 @@ templates over `user_config_template.yaml.j2` there, then edit:
 Then:
 
 ```
-globus-compute-endpoint start my-endpoint
+globus-compute-endpoint start my-endpoint --detach
 globus-compute-endpoint list          # note the UUID -- it goes in config.json
 ```
 
@@ -133,7 +133,9 @@ or clamp what is passed:
   minutes with no outstanding tasks releases the nodes. It deliberately does not
   set `idle_heartbeats_hard`, which shuts down when tasks exist but are not
   moving — indistinguishable from a job sitting in a long queue, and it would kill
-  legitimately queued work.
+  legitimately queued work. Separately, `max_idletime` (a bucket setting, default
+  600 s) releases an idle block while the endpoint keeps running; the framework
+  caps a task's `retry_after` wait at it plus a margin.
 - **Launcher.** The PBS template uses `SimpleLauncher` because the example task
   runs its own `mpiexec` across the allocation. If your task is a plain serial
   function and you want the worker distributed for you, use `MpiExecLauncher`

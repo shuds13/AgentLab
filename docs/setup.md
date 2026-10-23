@@ -58,7 +58,7 @@ Start it and note the UUID. The first start may open a browser-based Globus logi
 which only you can complete:
 
 ```
-globus-compute-endpoint start my-endpoint && globus-compute-endpoint list
+globus-compute-endpoint start my-endpoint --detach && globus-compute-endpoint list
 ```
 
 ## 3. Describe the system

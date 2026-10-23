@@ -178,8 +178,20 @@ for _name, _over in _cam_buckets.items():
     _npb = _cfg.setdefault("nodes_per_block", 1 if _npb is None else _npb)
     _SYS["buckets"][_name] = {"num_nodes": _npb, "nodes_per_block": _npb,
                               "user_config": _cfg,
-                              "max_concurrent": int(_cap) if _cap else None}
+                              "max_concurrent": int(_cap) if _cap else None,
+                              # The endpoint templates' default for max_idletime.
+                              "idle_s": int(_cfg.get("max_idletime", 600))}
 _default_bucket = next(iter(_SYS["buckets"]))
+
+# The batch jobs (blocks) remote work runs in, for the submit tools' descriptions: a job
+# sized past its block's walltime can never run.
+_BLOCKS_DESC = "\n\nJobs run in batch jobs (blocks) of this shape:\n" + "\n".join(
+    f"- {name}: {b['nodes_per_block']} node(s), walltime "
+    f"{b['user_config'].get('walltime') or 'unset'}, queue {b['user_config'].get('queue') or 'unset'}"
+    for name, b in _SYS["buckets"].items()) + (
+    "\nA block runs one job after another and may be shared with other agents, so a job "
+    "can start in a block with less than its walltime left. A job never gets more than "
+    "its block's walltime.")
 
 # Total jobs in flight, across all buckets. Defaults to the sum of the bucket caps.
 _bucket_sum = sum(b["max_concurrent"] or 1 for b in _SYS["buckets"].values())
@@ -541,19 +553,23 @@ def _batch_schema(schema):
 
 # A task may answer that it cannot run where it landed -- a batch job too close to its
 # end, say -- with {"retry_after": seconds}. The job then stays in flight and is submitted
-# again after that wait, without the agent's involvement, up to RETRY_LIMIT times. What
-# decides the wait is the task's business; the framework only waits and resubmits.
-RETRY_LIMIT = int(os.environ.get("RETRY_LIMIT", "3"))
-RETRY_MAX_WAIT = 3600
+# again after that wait, without the agent's involvement. The task asks for a wait; the
+# framework caps it at the bucket's idle time plus RETRY_MARGIN, since a block left idle
+# that long is released and the next submission gets a fresh one. A block another job
+# keeps busy refuses again, which costs seconds, so retries are unlimited unless
+# RETRY_LIMIT is set.
+RETRY_LIMIT = int(os.environ.get("RETRY_LIMIT", "0")) or None
+RETRY_MARGIN = 60
 
 
 class _RetryingFuture(Future):
     """One job across its submissions: done when a submission returns anything other
     than a retry_after answer, or when the retries are spent."""
 
-    def __init__(self, submit, job_id=None):
+    def __init__(self, submit, job_id=None, max_wait=3600):
         super().__init__()
         self._submit = submit
+        self._max_wait = max_wait
         self._inner = None
         self.job_id = job_id
         self.retries = []
@@ -576,12 +592,14 @@ class _RetryingFuture(Future):
             self.set_exception(e)
             return
         wait = res.get("retry_after") if isinstance(res, dict) else None
-        if wait is not None and len(self.retries) < RETRY_LIMIT:
+        if RETRY_LIMIT is not None and len(self.retries) >= RETRY_LIMIT:
+            wait = None
+        if wait is not None:
             try:
-                wait = max(0.0, min(float(wait), RETRY_MAX_WAIT))
+                wait = max(0.0, min(float(wait), self._max_wait))
             except (TypeError, ValueError):
                 wait = None
-        if wait is not None and len(self.retries) < RETRY_LIMIT:
+        if wait is not None:
             self.retries.append({"after_s": round(wait), "reason": res.get("error")})
             _append_jobs_log({"event": "retry", "job_id": self.job_id, "after_s": round(wait),
                               "reason": res.get("error")})
@@ -637,7 +655,7 @@ def _fire_remote(args):
     job_id = next(_job_counter)
     try:
         fut = _RetryingFuture(lambda: get_executor(bucket).submit(task.remote_fn, args, target),
-                              job_id=job_id)
+                              job_id=job_id, max_wait=_b["idle_s"] + RETRY_MARGIN)
     except Exception as e:
         _release_claim(key)
         traceback.print_exc(file=sys.stderr)
@@ -650,7 +668,7 @@ def _fire_remote(args):
     return {"job_id": job_id, "key": key}
 
 
-@tool("submit_job", getattr(task, "JOB_DESC", ""), getattr(task, "JOB_SCHEMA", {}))
+@tool("submit_job", getattr(task, "JOB_DESC", "") + _BLOCKS_DESC, getattr(task, "JOB_SCHEMA", {}))
 async def submit_job(args):
     """Fire one remote job and return immediately with a job_id."""
     global _submit_count
@@ -687,7 +705,7 @@ async def submit_job(args):
          "submits_used": _submit_count, "submits_allowed": MAX_SUBMITS})}]}
 
 
-JOB_BATCH_DESC = (getattr(task, "JOB_DESC", "") +
+JOB_BATCH_DESC = (getattr(task, "JOB_DESC", "") + _BLOCKS_DESC +
                   f"\n\nSubmit {BATCH_SIZE} jobs in one call, as `jobs`: a list of "
                   f"{BATCH_SIZE} parameter sets, each of the form above. They run at "
                   f"the same time and are collected together with get_completed_jobs.")

@@ -14,7 +14,8 @@ idle_heartbeats_soft: 20
 
 engine:
   type: GlobusComputeEngine
-  job_status_kwargs: {max_idletime: 600}   # hold an idle block for 10 min
+  job_status_kwargs:
+    max_idletime: {{ max_idletime | default(600) }}   # seconds an idle block is held
   max_workers_per_node: {{ max_workers_per_node | default(1) }}
 
   provider:
