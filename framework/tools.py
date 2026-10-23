@@ -17,9 +17,10 @@ import os
 import fcntl
 import subprocess
 import sys
+import threading
 import time
 import traceback
-from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED, ThreadPoolExecutor
+from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED, Future, ThreadPoolExecutor
 from concurrent.futures import wait as _futures_wait
 
 from claude_agent_sdk import tool, create_sdk_mcp_server
@@ -538,6 +539,75 @@ def _batch_schema(schema):
             "required": ["jobs"]}
 
 
+# A task may answer that it cannot run where it landed -- a batch job too close to its
+# end, say -- with {"retry_after": seconds}. The job then stays in flight and is submitted
+# again after that wait, without the agent's involvement, up to RETRY_LIMIT times. What
+# decides the wait is the task's business; the framework only waits and resubmits.
+RETRY_LIMIT = int(os.environ.get("RETRY_LIMIT", "3"))
+RETRY_MAX_WAIT = 3600
+
+
+class _RetryingFuture(Future):
+    """One job across its submissions: done when a submission returns anything other
+    than a retry_after answer, or when the retries are spent."""
+
+    def __init__(self, submit, job_id=None):
+        super().__init__()
+        self._submit = submit
+        self._inner = None
+        self.job_id = job_id
+        self.retries = []
+        self._start()
+
+    @property
+    def task_id(self):
+        return getattr(self._inner, "task_id", None)
+
+    def _start(self):
+        self._inner = self._submit()
+        self._inner.add_done_callback(self._landed)
+
+    def _landed(self, inner):
+        if self.done():
+            return
+        try:
+            res = inner.result()
+        except BaseException as e:
+            self.set_exception(e)
+            return
+        wait = res.get("retry_after") if isinstance(res, dict) else None
+        if wait is not None and len(self.retries) < RETRY_LIMIT:
+            try:
+                wait = max(0.0, min(float(wait), RETRY_MAX_WAIT))
+            except (TypeError, ValueError):
+                wait = None
+        if wait is not None and len(self.retries) < RETRY_LIMIT:
+            self.retries.append({"after_s": round(wait), "reason": res.get("error")})
+            _append_jobs_log({"event": "retry", "job_id": self.job_id, "after_s": round(wait),
+                              "reason": res.get("error")})
+            timer = threading.Timer(wait, self._again)
+            timer.daemon = True
+            timer.start()
+            return
+        if isinstance(res, dict) and self.retries:
+            res = {**res, "retries": self.retries}
+        self.set_result(res)
+
+    def _again(self):
+        if self.done():
+            return
+        try:
+            self._start()
+        except Exception as e:
+            self.set_exception(e)
+
+    def cancel(self):
+        cancelled = super().cancel()
+        if self._inner is not None:
+            self._inner.cancel()
+        return cancelled
+
+
 def _fire_remote(args):
     """Claim one piece of remote work and start it. Returns {"job_id", "key"}, or
     {"error"} for work already in flight, claimed elsewhere, or refused by the backend."""
@@ -564,14 +634,15 @@ def _fire_remote(args):
     target["bucket"] = bucket
     target["num_nodes"] = _b.get("nodes_per_block", 1)
     target["walltime"] = _b.get("user_config", {}).get("walltime", "")
+    job_id = next(_job_counter)
     try:
-        fut = get_executor(bucket).submit(task.remote_fn, args, target)
+        fut = _RetryingFuture(lambda: get_executor(bucket).submit(task.remote_fn, args, target),
+                              job_id=job_id)
     except Exception as e:
         _release_claim(key)
         traceback.print_exc(file=sys.stderr)
         return {"error": f"submit failed: {e}"}
 
-    job_id = next(_job_counter)
     _submit_count += 1
     _jobs[job_id] = {"future": fut, "args": args, "key": key, "bucket": bucket}
     _append_jobs_log({"event": "submit", "job_id": job_id, "key": key, "args": args,
