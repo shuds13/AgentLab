@@ -273,6 +273,8 @@ def run_worker(args, *, repo, roles, timeout=None):
     })
     if work_dir:
         env["WORK_DIR"] = work_dir
+    # The worker's directory on every other system the campaign uses, by the same name.
+    env["WORK_SUBDIR"] = branch
     if role.get("tools"):
         env["AGENT_TOOLS"] = role["tools"]
     model = role.get("model") or os.environ.get("WORKER_MODEL")
@@ -312,8 +314,19 @@ def run_worker(args, *, repo, roles, timeout=None):
         _jobs_given -= jobs - min(used, jobs)
         left = (WORKER_JOB_BUDGET - _jobs_given) if WORKER_JOB_BUDGET is not None else None
     if not meta:
-        return _error(f"worker on {branch} exited {proc.returncode} without starting a "
-                      f"run; see {home}/console.log", args)
+        # It never ran -- a failed preflight, most often -- so it counts against nothing:
+        # not this kind's limit, and, marked refused, not the coordinator's submits. Its
+        # branch can be launched again.
+        with _started_lock:
+            _started[kind] -= 1
+        try:
+            with open(os.path.join(home, "console.log"), errors="replace") as f:
+                said = [l.rstrip() for l in f if l.startswith(("PREFLIGHT", "  - "))][-4:]
+        except OSError:
+            said = []
+        return {**_error(f"worker on {branch} exited {proc.returncode} without starting a "
+                         f"run; see {home}/console.log", args),
+                "refused": True, "reason": "\n".join(said)}
     # The worker's score is that of the newest scored commit it made: commits after it,
     # such as notes, carry none, and its parent's commits are not its own.
     commit, subject, score = None, "", None

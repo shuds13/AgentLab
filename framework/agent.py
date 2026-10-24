@@ -879,7 +879,8 @@ def _start_run_dir():
                        "num_nodes": b.get("nodes_per_block"),
                        "max_blocks": b["user_config"].get("max_blocks", 1),
                        "walltime": b["user_config"].get("walltime", ""),
-                       "max_concurrent": b.get("max_concurrent")}
+                       "max_concurrent": b.get("max_concurrent"),
+                       "system": b.get("system")}
                 for name, b in tools._SYS["buckets"].items()}
     _write_meta(buckets=_buckets, default_bucket=tools._default_bucket,
                 max_submits=tools.MAX_SUBMITS, max_runtime_s=MAX_RUNTIME,
@@ -887,6 +888,9 @@ def _start_run_dir():
                 run_id=RUN_ID, handle=HANDLE, system=SYSTEM, role=ROLE,
                 endpoint=tools.ENDPOINT_ID if tools.HAS_REMOTE else "",
                 work_dir=tools.WORK_DIR,
+                # Every system the run sends work to, the main one among them.
+                systems={n: {"endpoint": sy["endpoint"], "work_dir": sy["work_dir"]}
+                         for n, sy in tools.SYSTEMS.items()} if tools.HAS_REMOTE else {},
                 has_local=tools.HAS_LOCAL,
                 started_by=os.environ.get("STARTED_BY", ""),
                 host=socket.gethostname(), pid=os.getpid(),
@@ -1074,11 +1078,20 @@ def preflight():
     # supplies remote jobs, local jobs, or both, so each set is required only when the
     # task offers it -- and at least one of them must be there.
     required = []
-    if tools.HAS_REMOTE:
+    if tools.HAS_REMOTE and not tools.MULTI_KIND:
         required += ["JOB_DESC", "JOB_SCHEMA", "job_key", "remote_fn"]
+    # Several kinds: each names its function, description, schema and bucket.
+    for _kind, _spec in (tools.KINDS.items() if tools.MULTI_KIND else []):
+        for _f in ("fn", "desc", "schema"):
+            if not _spec.get(_f):
+                problems.append(f"task {tools.TASK_DIR}: TASKS['{_kind}'] is missing '{_f}'")
+        _bk = _spec.get("bucket")
+        if _bk and _bk not in tools._SYS["buckets"]:
+            problems.append(f"task {tools.TASK_DIR}: TASKS['{_kind}'] names bucket '{_bk}', "
+                            f"which campaign.json does not have ({sorted(tools._SYS['buckets'])})")
     if tools.HAS_LOCAL:
         required += ["LOCAL_DESC", "LOCAL_SCHEMA", "local_fn"]
-    if not required:
+    if not required and not tools.MULTI_KIND:
         problems.append(f"task {tools.TASK_DIR} defines neither 'remote_fn' nor "
                         f"'local_fn' (see AGENTS.md)")
     for attr in required:
@@ -1104,23 +1117,28 @@ def preflight():
     # submit fails with ENDPOINT_NOT_ONLINE and the run does nothing. A task with no
     # remote_fn never reaches the endpoint, so there is nothing to probe.
     if tools.HAS_REMOTE:
-        try:
-            import globus_compute_sdk as _gc
-            _c = _gc.Client()
-            _st = _c.get_endpoint_status(tools.ENDPOINT_ID).get("status")
-            if _st != "online":
-                try:
-                    _nm = _c.get_endpoint_metadata(tools.ENDPOINT_ID).get("name") or tools.ENDPOINT_ID
-                except Exception:
-                    _nm = tools.ENDPOINT_ID
-                if not CHECK_ONLY:
-                    notify_lab(f"🚨 Agent exiting -- Globus Compute "
-                                 f"endpoint '{_nm}' is not online (status={_st}). Start it: "
-                                 f"globus-compute-endpoint start {_nm} --detach")
-                problems.append(f"Globus Compute endpoint '{_nm}' ({tools.ENDPOINT_ID}) is not online "
-                                f"(status={_st}); start it: globus-compute-endpoint start {_nm} --detach")
-        except Exception as e:
-            print(f"[preflight] WARNING: could not query endpoint status ({tools.ENDPOINT_ID}): {e}", flush=True)
+        # Each system's endpoint, for a campaign that sends work to several.
+        _endpoints = {sy["endpoint"]: n for n, sy in tools.SYSTEMS.items()
+                      if sy["endpoint"] and any(b["system"] == n
+                                                for b in tools._SYS["buckets"].values())}
+        for _ep in _endpoints:
+            try:
+                import globus_compute_sdk as _gc
+                _c = _gc.Client()
+                _st = _c.get_endpoint_status(_ep).get("status")
+                if _st != "online":
+                    try:
+                        _nm = _c.get_endpoint_metadata(_ep).get("name") or _ep
+                    except Exception:
+                        _nm = _ep
+                    if not CHECK_ONLY:
+                        notify_lab(f"🚨 Agent exiting -- Globus Compute "
+                                     f"endpoint '{_nm}' is not online (status={_st}). Start it: "
+                                     f"globus-compute-endpoint start {_nm} --detach")
+                    problems.append(f"Globus Compute endpoint '{_nm}' ({_ep}) is not online "
+                                    f"(status={_st}); start it: globus-compute-endpoint start {_nm} --detach")
+            except Exception as e:
+                print(f"[preflight] WARNING: could not query endpoint status ({_ep}): {e}", flush=True)
     try:
         os.makedirs(WORKSPACE_DIR, exist_ok=True)
         _t = os.path.join(WORKSPACE_DIR, ".preflight_write_test")
@@ -1142,14 +1160,18 @@ def preflight():
         for pr in problems:
             print(f"  - {pr}", flush=True)
         sys.exit(1)
-    backend = (f"endpoint online ({SYSTEM} {tools.ENDPOINT_ID})" if tools.HAS_REMOTE
-               else "local execution only")
+    backend = (("endpoint online (" + ", ".join(f"{n} {sy['endpoint']}"
+                                               for n, sy in tools.SYSTEMS.items()
+                                               if sy["endpoint"]) + ")")
+               if tools.HAS_REMOTE else "local execution only")
     print(f"preflight OK: task_dir={tools.TASK_DIR}, method.md, WORKSPACE_DIR, {backend}.", flush=True)
     if tools.HAS_REMOTE:
         if tools.PROFILE:
             print(f"profile:      {tools.PROFILE} (users/{tools.USER_NAME}/{tools.SYSTEM}.json)",
                   flush=True)
-        print(f"work_dir:     {tools.WORK_DIR}", flush=True)
+        for _n, _sy in tools.SYSTEMS.items():
+            print(f"work_dir:     {_sy['work_dir']}"
+                  + (f" ({_n})" if tools.MULTI_SYSTEM else ""), flush=True)
     # The gateway converts between the Messages API and a backend that does not speak
     # it. The agent needs it whenever it is pointed at one, whether or not there is a
     # critic: a run on a non-Anthropic model goes through the same proxy.
@@ -1205,6 +1227,8 @@ def preflight():
                               and k not in ("init_blocks", "min_blocks"))
             if b.get("max_concurrent"):
                 shown += f", max_concurrent={b['max_concurrent']}"
+            if tools.MULTI_SYSTEM:
+                shown = f"system={b['system']}, " + shown
             label = f"resources[{name}]" if len(buckets) > 1 else "resources"
             marker = "  (default)" if name == tools._default_bucket and len(buckets) > 1 else ""
             print(f"{label}:    {shown}{marker}", flush=True)
@@ -1365,6 +1389,10 @@ async def main():
     at_once.extend(getattr(tools.task, "RUN_LIMITS", []))
     if MAX_RUNTIME:
         at_once.append(f"wall clock for this run: {MAX_RUNTIME}s")
+    # A campaign on several systems: where this agent's files go on each.
+    if tools.HAS_REMOTE and tools.MULTI_SYSTEM:
+        at_once.extend(f"your work directory on {n}: {sy['work_dir']}"
+                       for n, sy in tools.SYSTEMS.items())
     system_prompt += "\n\n# This run\n" + "\n".join(at_once)
     system_prompt += f"\n\n# This agent\nSYSTEM={SYSTEM}.{f'  ROLE={ROLE}.' if ROLE_SET else ''}\n"
     if AGENT_CWD == SCRIPT_DIR:

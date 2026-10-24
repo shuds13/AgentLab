@@ -84,12 +84,26 @@ HAS_LOCAL = hasattr(task, "local_fn")
 # Remote work needs both halves: a task that defines the function, and a system that
 # sends work somewhere. A task with both functions runs either way, by the system it
 # is given.
-HAS_REMOTE = hasattr(task, "remote_fn") and _sys_cfg.get("remote", True)
-# The remote function as it stood when this run started. Every submit sends this source,
-# so an edit to the task file while the run is going cannot reach its jobs.
-_REMOTE_SOURCE = (__import__("textwrap").dedent(inspect.getsource(task.remote_fn))
-                  if hasattr(task, "remote_fn") else None)
-_REMOTE_NAME = getattr(getattr(task, "remote_fn", None), "__name__", None)
+# The kinds of remote job. A task with several gives TASKS: a name to {"fn", "desc",
+# "schema", and "bucket" or "bucket_for", and optionally "key"}, and each becomes a
+# tool, submit_<name>. A task with one kind gives remote_fn with JOB_DESC, JOB_SCHEMA,
+# job_key and bucket_for, which becomes submit_job.
+if getattr(task, "TASKS", None):
+    KINDS = {name: dict(spec) for name, spec in task.TASKS.items()}
+elif hasattr(task, "remote_fn"):
+    KINDS = {"job": {"fn": task.remote_fn, "desc": getattr(task, "JOB_DESC", ""),
+                     "schema": getattr(task, "JOB_SCHEMA", {}),
+                     "key": getattr(task, "job_key", None),
+                     "bucket_for": getattr(task, "bucket_for", None)}}
+else:
+    KINDS = {}
+MULTI_KIND = bool(getattr(task, "TASKS", None))
+HAS_REMOTE = bool(KINDS) and _sys_cfg.get("remote", True)
+# Each remote function as it stood when this run started. Every submit sends this
+# source, so an edit to the task file while the run is going cannot reach its jobs.
+for _k in KINDS.values():
+    _k["source"] = __import__("textwrap").dedent(inspect.getsource(_k["fn"]))
+    _k["name"] = _k["fn"].__name__
 
 
 def _run_remote(source, name, args, target):
@@ -226,12 +240,57 @@ else:
 
 ENDPOINT_ID = _usr.get("endpoint", "")
 
+
+# A campaign may send work to more than one system: a bucket names another with
+# `system`. Each has its own facts (systems/<system>.json), access, endpoint, work_dir
+# and Transfer collection. The campaign's `system` is the main one; its settings are also
+# kept at the top level of this module (SYSTEM, ENDPOINT_ID, TARGET, WORK_DIR).
+def _access(system):
+    """A further system's facts and your access to it. Its work_dir is `work_dir` in the
+    user file, or `work_root` with the campaign appended, or WORK_DIR_<SYSTEM>; a worker
+    gets its own directory under it, named by WORK_SUBDIR, as spawn sets."""
+    sys_cfg = _read_json(os.path.join(LAB_DIR, "systems", f"{system}.json"),
+                         f"system '{system}'")
+    path = os.path.join(LAB_DIR, "users", USER_NAME, f"{system}.json")
+    usr = _read_json(path, f"your access to '{system}'")
+    needs = ("endpoint",) + (("account",) if sys_cfg.get("needs_account", True) else ())
+    missing = [k for k in needs if not usr.get(k) or str(usr[k]).startswith("<")]
+    if missing:
+        sys.exit(f"your access to '{system}' needs {', '.join(missing)} filled in: {path}")
+    work = (os.environ.get(f"WORK_DIR_{system.upper()}") or usr.get("work_dir")
+            or (os.path.join(usr["work_root"], CAMPAIGN) if usr.get("work_root") else ""))
+    if not work:
+        sys.exit(f"{path} needs 'work_dir' (an exact path) or 'work_root' (the directory "
+                 f"campaigns sit under; '{CAMPAIGN}' is appended).")
+    if os.environ.get("WORK_SUBDIR"):
+        work = os.path.join(work, os.environ["WORK_SUBDIR"])
+    usr["work_dir"] = work
+    return sys_cfg, usr
+
+
+SYSTEMS = {SYSTEM: {"cfg": _sys_cfg, "usr": _usr}}
+for _over in (_cam.get("buckets") or {}).values():
+    _s = (_over or {}).get("system")
+    if _s and _s not in SYSTEMS:
+        _c, _u = _access(_s)
+        SYSTEMS[_s] = {"cfg": _c, "usr": _u}
+for _sy in SYSTEMS.values():
+    _sy["endpoint"] = _sy["usr"].get("endpoint", "")
+    _sy["work_dir"] = _sy["usr"].get("work_dir", "")
+MULTI_SYSTEM = len(SYSTEMS) > 1
+
 # Globus Transfer is optional: configured per user, and simply absent otherwise. It is
 # how the agent reads files on the compute system when the two do not share a filesystem.
 # WORKSPACE_DIR rather than the default path under workspace/: a run pointed at another
 # workspace fetches into that one, so its files sit with the rest of what it wrote.
-_transfer.CFG = _transfer.configure(_usr, WORKSPACE_DIR, _CAMPAIGN_DIR, _sys_cfg)
-HAS_TRANSFER = _transfer.CFG is not None
+_transfer.CFGS = {}
+for _name, _sy in SYSTEMS.items():
+    _c = _transfer.configure(_sy["usr"], WORKSPACE_DIR, _CAMPAIGN_DIR, _sy["cfg"])
+    if _c is not None:
+        _transfer.CFGS[_name] = _c
+_transfer.MAIN = SYSTEM if SYSTEM in _transfer.CFGS else next(iter(_transfer.CFGS), None)
+_transfer.CFG = _transfer.CFGS.get(_transfer.MAIN)
+HAS_TRANSFER = bool(_transfer.CFGS)
 # Named resource shapes on one system (e.g. a small quick queue and a large long one).
 # A task routes a job to one with bucket_for(args); otherwise the default is used.
 #
@@ -239,16 +298,25 @@ HAS_TRANSFER = _transfer.CFG is not None
 # are all the same size. A campaign whose jobs differ instead gives `buckets`: a name to
 # a shape, each filling in from `resources` for what it does not say, and the first named
 # is the default. Each bucket gets its own executor and its own block pool on the endpoint.
-_bucket_defaults = dict(_sys_cfg.get("bucket_defaults", {}))
-_bucket_defaults.update(_cam.get("resources", {}))    # campaign: queue, walltime, nodes
-_bucket_defaults.update(_usr.get("resources", {}))    # user: anything they must override
-_bucket_defaults["account"] = _usr.get("account", "")
+# A bucket on another system starts from that system's defaults and your access to it;
+# the campaign's `resources` describe its main system.
+def _bucket_defaults(system):
+    sy = SYSTEMS[system]
+    d = dict(sy["cfg"].get("bucket_defaults", {}))
+    if system == SYSTEM:
+        d.update(_cam.get("resources", {}))         # campaign: queue, walltime, nodes
+    d.update(sy["usr"].get("resources", {}))        # user: anything they must override
+    d["account"] = sy["usr"].get("account", "")
+    return d
+
 
 _cam_buckets = _cam.get("buckets") or {"default": {}}
 _SYS = {"buckets": {}}
 for _name, _over in _cam_buckets.items():
-    _cfg = dict(_bucket_defaults)
-    _cfg.update(_over or {})
+    _over = dict(_over or {})
+    _bsys = _over.pop("system", None) or SYSTEM
+    _cfg = _bucket_defaults(_bsys)
+    _cfg.update(_over)
     # A bucket's own cap on jobs in flight. Popped out: user_config goes to the endpoint
     # as the batch system's configuration and this is not one of its settings.
     _cap = _cfg.pop("max_concurrent", None)
@@ -256,7 +324,7 @@ for _name, _over in _cam_buckets.items():
     _npb = _cfg.pop("num_nodes", None)
     _npb = _cfg.setdefault("nodes_per_block", 1 if _npb is None else _npb)
     _SYS["buckets"][_name] = {"num_nodes": _npb, "nodes_per_block": _npb,
-                              "user_config": _cfg,
+                              "system": _bsys, "user_config": _cfg,
                               "max_concurrent": int(_cap) if _cap else None,
                               # The endpoint templates' default for max_idletime.
                               "idle_s": int(_cfg.get("max_idletime", 600))}
@@ -265,7 +333,7 @@ _default_bucket = next(iter(_SYS["buckets"]))
 # The batch jobs (blocks) remote work runs in, for the submit tools' descriptions: a job
 # sized past its block's walltime can never run.
 _BLOCKS_DESC = "\n\nJobs run in batch jobs (blocks) of this shape:\n" + "\n".join(
-    f"- {name}: {b['nodes_per_block']} node(s), walltime "
+    f"- {name}{' on ' + b['system'] if MULTI_SYSTEM else ''}: {b['nodes_per_block']} node(s), walltime "
     f"{b['user_config'].get('walltime') or 'unset'}, queue {b['user_config'].get('queue') or 'unset'}"
     for name, b in _SYS["buckets"].items()) + (
     "\nA block runs one job after another and may be shared with other agents, so a job "
@@ -278,17 +346,28 @@ MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT",
                                     _cam.get("max_concurrent",
                                              _sys_cfg.get("max_concurrent", _bucket_sum))))
 
-# TARGET is handed to the task's remote_fn. Everything the remote side needs must be
-# in here: the function is shipped source-only and cannot read this module.
-TARGET = dict(_sys_cfg.get("target", {}))
-_cam_target = dict(_cam.get("target", {}))
-# env merges key by key, so a campaign adds to the system's environment rather than
-# replacing it. Everything else the campaign sets wins outright.
-TARGET["env"] = {**TARGET.get("env", {}), **_cam_target.pop("env", {})}
-TARGET.update(_cam_target)
-TARGET["work_dir"] = _usr["work_dir"]
+# A target is handed to the task's remote function. Everything the remote side needs
+# must be in it: the function is shipped source-only and cannot read this module. One per
+# system: the system's own, then the campaign's `target`, then its `targets[system]`.
+def _target(system):
+    sy = SYSTEMS[system]
+    t = dict(sy["cfg"].get("target", {}))
+    cam_t = dict(_cam.get("target", {}))
+    per = dict((_cam.get("targets") or {}).get(system, {}))
+    # env merges key by key, so a campaign adds to the system's environment rather than
+    # replacing it. Everything else the campaign sets wins outright.
+    t["env"] = {**t.get("env", {}), **cam_t.pop("env", {}), **per.pop("env", {})}
+    t.update(cam_t)
+    t.update(per)
+    t["work_dir"] = sy["work_dir"]
+    t.setdefault("ppn", sy["cfg"].get("ppn", 1))
+    return t
+
+
+for _name in SYSTEMS:
+    SYSTEMS[_name]["target"] = _target(_name)
+TARGET = SYSTEMS[SYSTEM]["target"]
 WORK_DIR = _usr["work_dir"]     # surfaced at preflight and recorded in meta.json
-TARGET.setdefault("ppn", _sys_cfg.get("ppn", 1))
 TARGET["nranks"] = _SYS["buckets"][_default_bucket]["nodes_per_block"] * TARGET["ppn"]
 
 REMOTE_TIMEOUT = int(os.environ.get("JOB_TIMEOUT", "43200"))   # 12h client-side wait
@@ -514,9 +593,19 @@ def _remote_pending_count(bucket=None):
                and (bucket is None or j["bucket"] == bucket))
 
 
-def _bucket_of(args):
+def _bucket_of(args, kind="job"):
     """Which bucket this job would go to, before it is fired."""
-    return task.bucket_for(args) if hasattr(task, "bucket_for") else _default_bucket
+    k = KINDS[kind]
+    if k.get("bucket"):
+        return k["bucket"]
+    return k["bucket_for"](args) if k.get("bucket_for") else _default_bucket
+
+
+def _key_of(args, kind="job"):
+    k = KINDS[kind]
+    if k.get("key"):
+        return k["key"](args)
+    return f"{kind}:" + json.dumps(args, sort_keys=True)
 
 
 def _local_pending_count():
@@ -574,7 +663,8 @@ def get_executor(bucket=None):
         except Exception:
             pass
         cfg = dict(_SYS["buckets"][bucket].get("user_config", {}))
-        ex = Executor(endpoint_id=ENDPOINT_ID, user_endpoint_config=cfg)
+        endpoint = SYSTEMS[_SYS["buckets"][bucket]["system"]]["endpoint"]
+        ex = Executor(endpoint_id=endpoint, user_endpoint_config=cfg)
         # Ship the function by source: the worker does not have this code installed.
         ex.serializer = ComputeSerializer(strategy_code=AllCodeStrategies())
         _executors[bucket] = ex
@@ -705,11 +795,11 @@ class _RetryingFuture(Future):
         return cancelled
 
 
-def _fire_remote(args):
+def _fire_remote(args, kind="job"):
     """Claim one piece of remote work and start it. Returns {"job_id", "key"}, or
     {"error"} for work already in flight, claimed elsewhere, or refused by the backend."""
     global _submit_count
-    key = task.job_key(args)
+    key = _key_of(args, kind)
     # A fresh-context agent cannot remember what it already fired, so refuse a repeat.
     for info in _jobs.values():
         if info["key"] == key and not info["future"].done():
@@ -720,12 +810,12 @@ def _fire_remote(args):
         return {"error": f"submit skipped: {key} is already claimed by {holder}. "
                          f"Pick different work."}
 
-    bucket = task.bucket_for(args) if hasattr(task, "bucket_for") else _default_bucket
+    bucket = _bucket_of(args, kind)
     if bucket not in _SYS["buckets"]:
         return {"error": f"bucket {bucket!r} is not one of "
-                         f"{sorted(_SYS['buckets'])} -- check bucket_for in task.py."}
-    target = dict(TARGET)
+                         f"{sorted(_SYS['buckets'])} -- check the bucket in task.py."}
     _b = _SYS["buckets"][bucket]
+    target = dict(SYSTEMS[_b["system"]]["target"])
     target["nranks"] = _b.get("nodes_per_block", 1) * target["ppn"]
     # The shape the job actually got, so it can size itself to the allocation it is in.
     target["bucket"] = bucket
@@ -734,7 +824,8 @@ def _fire_remote(args):
     job_id = next(_job_counter)
     try:
         fut = _RetryingFuture(lambda: get_executor(bucket).submit(
-                                  _run_remote, _REMOTE_SOURCE, _REMOTE_NAME, args, target),
+                                  _run_remote, KINDS[kind]["source"], KINDS[kind]["name"],
+                                  args, target),
                               job_id=job_id, max_wait=_b["idle_s"] + RETRY_MARGIN)
     except Exception as e:
         _release_claim(key)
@@ -744,13 +835,13 @@ def _fire_remote(args):
     _submit_count += 1
     _jobs[job_id] = {"future": fut, "args": args, "key": key, "bucket": bucket}
     _append_jobs_log({"event": "submit", "job_id": job_id, "key": key, "args": args,
-                      "bucket": bucket, "task_id": getattr(fut, "task_id", None)})
+                      "kind": kind, "bucket": bucket, "system": _b["system"],
+                      "task_id": getattr(fut, "task_id", None)})
     return {"job_id": job_id, "key": key}
 
 
-@tool("submit_job", getattr(task, "JOB_DESC", "") + _BLOCKS_DESC, getattr(task, "JOB_SCHEMA", {}))
-async def submit_job(args):
-    """Fire one remote job and return immediately with a job_id."""
+async def _submit_one(args, kind="job"):
+    """Fire one remote job of a kind and return immediately with a job_id."""
     global _submit_count
     if _stop_requested:
         return {"content": [{"type": "text", "text": _WINDDOWN_REFUSAL}], "is_error": True}
@@ -763,7 +854,7 @@ async def submit_job(args):
                 f"submit refused: at capacity ({_remote_pending_count()} running/queued, "
                 f"max_concurrent={MAX_CONCURRENT}). Collect a finished job "
                 f"with get_completed_jobs before submitting more."}], "is_error": True}
-    _b = _bucket_of(args)
+    _b = _bucket_of(args, kind)
     _cap = _SYS["buckets"].get(_b, {}).get("max_concurrent")
     if _cap and _remote_pending_count(_b) >= _cap:
         return {"content": [{"type": "text", "text":
@@ -772,7 +863,7 @@ async def submit_job(args):
                 f"Collect one of its jobs, or submit work that routes elsewhere."}],
                 "is_error": True}
 
-    fired = _fire_remote(args)
+    fired = _fire_remote(args, kind)
     if "error" in fired:
         return {"content": [{"type": "text", "text": fired["error"]}], "is_error": True}
     job_id, key = fired["job_id"], fired["key"]
@@ -783,6 +874,33 @@ async def submit_job(args):
     return {"content": [{"type": "text", "text": json.dumps(
         {"job_id": job_id, "key": key,
          "submits_used": _submit_count, "submits_allowed": MAX_SUBMITS})}]}
+
+
+@tool("submit_job", getattr(task, "JOB_DESC", "") + _BLOCKS_DESC, getattr(task, "JOB_SCHEMA", {}))
+async def submit_job(args):
+    """Fire one remote job and return immediately with a job_id."""
+    return await _submit_one(args)
+
+
+def _kind_tool(kind):
+    """submit_<kind>, for a task that gives TASKS. Its description names the blocks its
+    jobs run in: the kind's bucket, or every bucket where the kind chooses per job."""
+    spec = KINDS[kind]
+    named = [spec["bucket"]] if spec.get("bucket") else list(_SYS["buckets"])
+    blocks = "\n\nJobs run in batch jobs (blocks) of this shape:\n" + "\n".join(
+        f"- {n}{' on ' + _SYS['buckets'][n]['system'] if MULTI_SYSTEM else ''}: "
+        f"{_SYS['buckets'][n]['nodes_per_block']} node(s), walltime "
+        f"{_SYS['buckets'][n]['user_config'].get('walltime') or 'unset'}, queue "
+        f"{_SYS['buckets'][n]['user_config'].get('queue') or 'unset'}"
+        for n in named if n in _SYS["buckets"]) + _BLOCKS_DESC[_BLOCKS_DESC.index("\nA block"):]
+
+    @tool(f"submit_{kind}", spec.get("desc", "") + blocks, spec.get("schema", {}))
+    async def submit(args):
+        return await _submit_one(args, kind)
+    return submit
+
+
+KIND_TOOLS = {kind: _kind_tool(kind) for kind in KINDS} if MULTI_KIND else {}
 
 
 JOB_BATCH_DESC = (getattr(task, "JOB_DESC", "") + _BLOCKS_DESC +
@@ -1177,8 +1295,9 @@ def create_server():
     the matching function -- remote_fn for the remote tools, local_fn for the local."""
     tools = []
     if HAS_REMOTE:
-        tools += [submit_job_batch if BATCH_MODE else submit_job,
-                  get_completed_jobs, release_claim, abandon_job]
+        tools += (list(KIND_TOOLS.values()) if MULTI_KIND
+                  else [submit_job_batch if BATCH_MODE else submit_job])
+        tools += [get_completed_jobs, release_claim, abandon_job]
     if HAS_LOCAL:
         tools += [submit_local_batch if BATCH_MODE else submit_local,
                   get_local_completed]
@@ -1197,8 +1316,9 @@ def tool_names():
     """Fully-qualified names for ClaudeAgentOptions(allowed_tools=...)."""
     names = []
     if HAS_REMOTE:
-        names += ["submit_job_batch" if BATCH_MODE else "submit_job",
-                  "get_completed_jobs", "release_claim", "abandon_job"]
+        names += ([f"submit_{k}" for k in KIND_TOOLS] if MULTI_KIND
+                  else ["submit_job_batch" if BATCH_MODE else "submit_job"])
+        names += ["get_completed_jobs", "release_claim", "abandon_job"]
     if HAS_LOCAL:
         names += ["submit_local_batch" if BATCH_MODE else "submit_local",
                   "get_local_completed"]
