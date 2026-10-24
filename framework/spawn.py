@@ -112,6 +112,40 @@ def _cpu_count(cpus):
     return n
 
 
+def branch_parents(repo, branch):
+    """The branches `branch` was made from, for one a coordinator set up itself: those
+    whose tip it contains and that no other such branch contains, the one on its
+    first-parent line first. Several for a merge of several parents; ["master"] or
+    similar for one made from the base. Branches made after it are not its parents;
+    where several share a tip, the oldest is taken, since the others were made from it."""
+    def tip(ref):
+        return _git(repo, "rev-parse", ref).stdout.strip()
+    head = tip(branch)
+    if not head:
+        return []
+    names = [n for n in _git(repo, "for-each-ref", "--format=%(refname:short)",
+                             "refs/heads/").stdout.split() if n != branch]
+    def created(name):
+        log = _git(repo, "reflog", "show", "--date=unix", "--format=%gd",
+                   f"refs/heads/{name}").stdout.split()
+        m = re.search(r"@\{(\d+)\}", log[-1]) if log else None
+        return int(m.group(1)) if m else 0
+    born = created(branch)
+    by_tip = {}
+    for n in names:
+        if born and created(n) > born:
+            continue
+        t = tip(n)
+        if t and _git(repo, "merge-base", "--is-ancestor", t, head).returncode == 0:
+            by_tip.setdefault(t, []).append(n)
+    tips = [t for t in by_tip if not any(
+        o != t and _git(repo, "merge-base", "--is-ancestor", t, o).returncode == 0
+        for o in by_tip)]
+    line = _git(repo, "rev-list", "--first-parent", head).stdout.split()
+    tips.sort(key=lambda t: line.index(t) if t in line else len(line))
+    return [min(by_tip[t], key=created) for t in tips]
+
+
 def prepare_worktree(repo, branch, parent):
     """Create `branch` from `parent` if it does not exist, and check it out in its own
     worktree. Returns (path, error)."""
@@ -191,6 +225,10 @@ def run_worker(args, *, repo, roles, timeout=None):
             _started[kind] -= 1
             _jobs_given -= jobs
         return _error(problem, args)
+    # A branch the coordinator set up itself names no parent; read it from git, so the
+    # record shows what the worker builds on.
+    parents = [parent] if parent else branch_parents(repo, branch)
+    parent = parent or (parents[0] if parents else "")
 
     home = os.path.join(workspace, "agents", branch)
     os.makedirs(home, exist_ok=True)
@@ -229,7 +267,8 @@ def run_worker(args, *, repo, roles, timeout=None):
         "END_ON_GOAL_MET": "true",
         "NOTIFY_START": "false", "NOTIFY_DAILY": "false", "NOTIFY_FINISH": "false",
         "RUN_META": json.dumps({"parent_run": run_id, "kind": kind, "branch": branch,
-                                "parent": parent, "parent_session": parent_session,
+                                "parent": parent, "parents": parents,
+                                "parent_session": parent_session,
                                 "records": role.get("records", [])}),
     })
     if work_dir:

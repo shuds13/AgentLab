@@ -302,6 +302,7 @@ def workers(campaign, run_id):
         out.append({"run": os.path.basename(d), "kind": meta.get("kind"),
                     "method": meta.get("method"),
                     "branch": meta.get("branch"), "parent": meta.get("parent"),
+                    "parents": meta.get("parents") or [],
                     "status": state, "usd": _usd(meta),
                     "score": run_score(meta, cwd),
                     "started_at": meta.get("started_at")})
@@ -724,6 +725,7 @@ def status(campaign, run=None):
         "parent_run_known": bool(meta.get("parent_run")
                                  and run_path(campaign, meta["parent_run"])),
         "branch": meta.get("branch"), "parent": meta.get("parent"),
+        "parents": meta.get("parents") or ([meta["parent"]] if meta.get("parent") else []),
         "workers": started_runs, "tree_usd": tree_usd,
         "records": meta.get("records") or [],
         "scores": meta.get("scores") or {}, "primary_score": meta.get("primary_score"),
@@ -1052,6 +1054,9 @@ let tab = "status", offset = 0, logText = "", rawMode = false;
 // log and inputs show. Blank for the run itself. With it, the name the tabs give the
 // agent chosen (blank in a run without workers) and the records it keeps.
 let agentSel = "", agentLabel = "", agentRecords = [], lastFiles = [];
+// Each worker's run by its branch, from the agents panel, so a branch named elsewhere on
+// the page can link to the agent that worked on it.
+let agentByBranch = {};
 // The file browser. A tab of "tree" is the browser itself; a tab of "f:<root>:<path>"
 // is one file opened out of it, which is how it stays distinct from the record tabs,
 // whose names are bare. `treeOpen` is which directories are expanded, keyed the same
@@ -1324,11 +1329,13 @@ function renderStatus(s) {
     ...(s.tree_usd == null ? [] : [["cost with workers", "$" + s.tree_usd.toFixed(2)]]),
     ...(s.parent_run ? [
       // The run that started a worker is the one whose agents panel it was chosen in.
-      ["started by", s.parent_run_known
+      ["started by", (s.parent_run_known
         ? `<a href="#" data-agent="">${esc(s.parent_run)}</a>`
-        : `${esc(s.parent_run)} <span style="color:#777">(no such run here)</span>`],
-      ["works on", `${esc(s.branch || "\u2014")} (${esc(s.kind || "?")}) from `
-        + esc(s.parent || "a prepared branch")]] : []),
+        : `${esc(s.parent_run)} <span style="color:#777">(no such run here)</span>`)
+        + (s.parents.length ? " \u00b7 from " + s.parents.map(b => agentByBranch[b]
+            ? `<a href="#" data-agent="${esc(agentByBranch[b])}">${esc(b)}</a>` : esc(b))
+            .join(" + ") : "")],
+      ["works on", `${esc(s.branch || "\u2014")} (${esc(s.kind || "?")})`]] : []),
     ["critic", s.critic || "\u2014"],
     // The run's Claude session, to reopen afterwards with `claude -r`. Copying is
     // offered once the run has stopped: opening a session the runner still holds puts
@@ -1538,6 +1545,7 @@ function renderAgents(top) {
               kind: top.kind, status: top.status, usd: usd(top.cost_models), score: null};
   const byBranch = {};
   for (const w of ws) byBranch[w.branch] = w;
+  agentByBranch = Object.fromEntries(ws.map(w => [w.branch, w.run]));
   const dot = st => st === "running" ? '<i class="on">\u25cf</i>'
     : st === "not responding" ? '<i class="bad">\u25cf</i>' : "<i>\u25cb</i>";
   const row = (a, depth) =>
