@@ -231,6 +231,22 @@ def _make_dirs(tc, coll, path):
     tc.operation_mkdir(coll, path=path)
 
 
+# A collection that does not answer in time, as distinct from one that is not set up:
+# Globus's service could not reach the collection's server, or a gateway in between
+# failed. These clear on their own, so preflight tries again before calling them a
+# problem. Setup faults -- consent, login, a wrong id or path, access -- come back as
+# other errors and fail at once.
+PREFLIGHT_RETRY_WAITS = (15, 30, 60)
+
+
+def _transient(exc):
+    status = getattr(exc, "http_status", None)
+    if status in (502, 503, 504):
+        return True
+    text = f"{getattr(exc, 'code', '') or ''} {getattr(exc, 'message', None) or exc}"
+    return "Error (connect)" in text or "timed out" in text.lower()
+
+
 def preflight():
     """Check the configured collections answer, before a run that depends on them.
 
@@ -258,12 +274,23 @@ def preflight():
                         ("remote_collection", _cpath(CFG["remote_write_root"] or "/"))):
         coll = CFG[role]
         try:
-            if role == "remote_collection" and CFG["remote_write_root"]:
-                # The write root is this run's own directory, which a new run, or a
-                # worker given a directory under its coordinator's, has not made yet.
-                _make_dirs(tc, coll, probe)
-            else:
-                tc.operation_ls(coll, path=probe)
+            for wait in (*PREFLIGHT_RETRY_WAITS, None):
+                try:
+                    if role == "remote_collection" and CFG["remote_write_root"]:
+                        # The write root is this run's own directory, which a new run,
+                        # or a worker given a directory under its coordinator's, has not
+                        # made yet.
+                        _make_dirs(tc, coll, probe)
+                    else:
+                        tc.operation_ls(coll, path=probe)
+                    break
+                except Exception as exc:
+                    if wait is None or not _transient(exc):
+                        raise
+                    print(f"[preflight] Globus {role.split('_')[0]} collection did not "
+                          f"answer ({_fault(exc).splitlines()[0][:120]}); trying again in "
+                          f"{wait}s", flush=True)
+                    time.sleep(wait)
         except Exception as exc:
             hint = ("\n    If this is Globus Connect Personal, start it: "
                     "globusconnectpersonal -start &"
