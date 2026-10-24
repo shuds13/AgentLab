@@ -334,7 +334,7 @@ def backend_trouble():
 def _append_jobs_log(record):
     # The run that fired it: the log accumulates across every run of a campaign, so
     # without this there is no way to say what this run did.
-    record = {"run": os.environ.get("RUN_ID", ""), **record}
+    record = {"run": os.environ.get("RUN_ID", ""), "ts": round(time.time(), 1), **record}
     try:
         with open(JOBS_LOG, "a") as f:
             f.write(json.dumps(record) + "\n")
@@ -800,8 +800,11 @@ async def get_completed_jobs(args):
             _last_success_time = time.time()
             _problem_since = None        # real progress clears any flagged problem
         completed.append(res)
+        # When the task started and how long it ran, where it reports them: with the
+        # submit's ts, they give how long the job waited.
         _append_jobs_log({"event": "completed", "job_id": job_id, "key": info["key"],
-                          "error": "error" in res, "refused": bool(res.get("refused"))})
+                          "error": "error" in res, "refused": bool(res.get("refused")),
+                          **{k: res[k] for k in ("started_at", "wall_seconds") if k in res}})
         _release_claim(info["key"])
         del _jobs[job_id]
     pending = [{"job_id": jid, "key": i["key"], "args": i["args"], "bucket": i["bucket"]}
