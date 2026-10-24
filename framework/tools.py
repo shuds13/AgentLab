@@ -11,6 +11,7 @@ config.json.
 """
 
 import importlib
+import inspect
 import itertools
 import json
 import os
@@ -84,6 +85,84 @@ HAS_LOCAL = hasattr(task, "local_fn")
 # sends work somewhere. A task with both functions runs either way, by the system it
 # is given.
 HAS_REMOTE = hasattr(task, "remote_fn") and _sys_cfg.get("remote", True)
+# The remote function as it stood when this run started. Every submit sends this source,
+# so an edit to the task file while the run is going cannot reach its jobs.
+_REMOTE_SOURCE = (__import__("textwrap").dedent(inspect.getsource(task.remote_fn))
+                  if hasattr(task, "remote_fn") else None)
+_REMOTE_NAME = getattr(getattr(task, "remote_fn", None), "__name__", None)
+
+
+def _run_remote(source, name, args, target):
+    """Runs on the compute system in place of the task's remote function: defines that
+    function from its source, calls it, and adds `ran_on` to a dict result -- the host,
+    when the task started and ended, and, under a batch scheduler, the batch job (block)
+    it ran in with that job's start, walltime and nodes as the scheduler reports them on
+    the node. Whatever cannot be read is left out; the task's own result is unchanged.
+
+    Shipped by source, like any remote function: everything it uses is imported here."""
+    import os
+    import re
+    import socket
+    import subprocess
+    import time
+
+    started = time.time()
+    scope = {}
+    exec(compile(source, f"<{name}>", "exec"), scope)
+    result = scope[name](args, target)
+    ran_on = {"host": socket.gethostname(), "started_at": round(started, 1),
+              "ended_at": round(time.time(), 1)}
+
+    def stamp(text, fmt):
+        return round(time.mktime(time.strptime(text.strip(), fmt)), 1)
+
+    def secs(text):
+        parts = [int(p) for p in re.split(r"[-:]", text.strip())]
+        days = parts.pop(0) if len(parts) == 4 else 0
+        while len(parts) < 3:
+            parts.insert(0, 0)
+        return days * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+    try:
+        if os.environ.get("PBS_JOBID"):
+            jid = os.environ["PBS_JOBID"]
+            ran_on.update(scheduler="pbs", batch_job=jid.split(".")[0])
+            out = subprocess.run(["qstat", "-f", jid], capture_output=True, text=True,
+                                 timeout=60).stdout
+            f = dict(re.findall(r"^\s+([\w.]+) = (.*)$", out, re.M))
+            fmt = "%a %b %d %H:%M:%S %Y"
+            if f.get("stime"):
+                ran_on["block_start"] = stamp(f["stime"], fmt)
+            if f.get("qtime"):
+                ran_on["block_queued_at"] = stamp(f["qtime"], fmt)
+            if f.get("Resource_List.walltime"):
+                ran_on["block_walltime_s"] = secs(f["Resource_List.walltime"])
+            if f.get("Resource_List.nodect"):
+                ran_on["block_nodes"] = int(f["Resource_List.nodect"])
+            if f.get("queue"):
+                ran_on["block_queue"] = f["queue"]
+        elif os.environ.get("SLURM_JOB_ID"):
+            jid = os.environ["SLURM_JOB_ID"]
+            ran_on.update(scheduler="slurm", batch_job=jid)
+            out = subprocess.run(["scontrol", "show", "job", "-o", jid], capture_output=True,
+                                 text=True, timeout=60).stdout
+            f = dict(re.findall(r"(\w+)=(\S+)", out))
+            fmt = "%Y-%m-%dT%H:%M:%S"
+            if f.get("StartTime", "Unknown") != "Unknown":
+                ran_on["block_start"] = stamp(f["StartTime"], fmt)
+            if f.get("SubmitTime", "Unknown") != "Unknown":
+                ran_on["block_queued_at"] = stamp(f["SubmitTime"], fmt)
+            if f.get("TimeLimit", "UNLIMITED") not in ("UNLIMITED", "Partition_Limit"):
+                ran_on["block_walltime_s"] = secs(f["TimeLimit"])
+            if f.get("NumNodes", "").isdigit():
+                ran_on["block_nodes"] = int(f["NumNodes"])
+            if f.get("Partition"):
+                ran_on["block_queue"] = f["Partition"]
+    except Exception as e:
+        ran_on["block_error"] = f"{type(e).__name__}: {e}"
+    if isinstance(result, dict):
+        result = {**result, "ran_on": ran_on}
+    return result
 
 # Only remote jobs need a Globus endpoint and an account to charge, so a task that
 # defines local_fn alone runs without either -- and without a user file at all. Its
@@ -602,7 +681,7 @@ class _RetryingFuture(Future):
         if wait is not None:
             self.retries.append({"after_s": round(wait), "reason": res.get("error")})
             _append_jobs_log({"event": "retry", "job_id": self.job_id, "after_s": round(wait),
-                              "reason": res.get("error")})
+                              "reason": res.get("error"), "ran_on": res.get("ran_on")})
             timer = threading.Timer(wait, self._again)
             timer.daemon = True
             timer.start()
@@ -654,7 +733,8 @@ def _fire_remote(args):
     target["walltime"] = _b.get("user_config", {}).get("walltime", "")
     job_id = next(_job_counter)
     try:
-        fut = _RetryingFuture(lambda: get_executor(bucket).submit(task.remote_fn, args, target),
+        fut = _RetryingFuture(lambda: get_executor(bucket).submit(
+                                  _run_remote, _REMOTE_SOURCE, _REMOTE_NAME, args, target),
                               job_id=job_id, max_wait=_b["idle_s"] + RETRY_MARGIN)
     except Exception as e:
         _release_claim(key)
@@ -804,7 +884,8 @@ async def get_completed_jobs(args):
         # submit's ts, they give how long the job waited.
         _append_jobs_log({"event": "completed", "job_id": job_id, "key": info["key"],
                           "error": "error" in res, "refused": bool(res.get("refused")),
-                          **{k: res[k] for k in ("started_at", "wall_seconds") if k in res}})
+                          **{k: res[k] for k in ("started_at", "wall_seconds", "ran_on")
+                             if k in res}})
         _release_claim(info["key"])
         del _jobs[job_id]
     pending = [{"job_id": jid, "key": i["key"], "args": i["args"], "bucket": i["bucket"]}
