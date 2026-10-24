@@ -244,8 +244,9 @@ def resources(campaign, run=None, light=False):
                 ev = r.get("event")
                 if ev == "submit":
                     t = {"run": r["run"], "agent": metas[r["run"]].get("branch") or "coordinator",
-                         "system": metas[r["run"]].get("system"),
+                         "system": r.get("system") or metas[r["run"]].get("system"),
                          "job_id": r.get("job_id"), "key": r.get("key"), "bucket": r.get("bucket"),
+                         "kind": r.get("kind"),
                          "submitted": r.get("ts"), "started": None, "ran_s": None,
                          "state": "waiting or running", "retries": 0, "block": None,
                          "refused": [], "ran_on": None, "mine": r["run"] == selected}
@@ -268,11 +269,18 @@ def resources(campaign, run=None, light=False):
     except FileNotFoundError:
         pass
 
+    # Every system the run tree sent work to, from what each run recorded: its systems
+    # where it names several, else its one system and endpoint.
     systems = {}
     for d in metas.values():
-        if d.get("endpoint") and d.get("system"):
-            systems.setdefault(d["system"], {"system": d["system"], "endpoint": d["endpoint"],
-                                             "buckets": d.get("buckets") or {}})
+        named = d.get("systems") or ({d["system"]: {"endpoint": d["endpoint"]}}
+                                     if d.get("endpoint") and d.get("system") else {})
+        for n, info in named.items():
+            sy = systems.setdefault(n, {"system": n, "endpoint": info.get("endpoint"),
+                                        "buckets": {}})
+            for b, shape in (d.get("buckets") or {}).items():
+                if (shape.get("system") or d.get("system")) == n:
+                    sy["buckets"].setdefault(b, shape)
     out = []
     for name, sysd in systems.items():
         mine = [t for t in tasks if t["system"] == name]
@@ -524,7 +532,8 @@ def _submits(path, run_id):
     # Per bucket, for a campaign whose jobs come in more than one resource shape.
     buckets = {}
     # Still out: submitted and not yet returned. A completed row names the job but not
-    # its bucket, so the bucket is taken from the submit that opened it.
+    # its bucket, so the bucket is taken from the submit that opened it. Job ids are
+    # numbered per run, so a job is known by its run and id together.
     job_bucket = {}
     inflight = {}
     try:
@@ -545,7 +554,7 @@ def _submits(path, run_id):
                         abandoned += mine
                     else:
                         done[where] += mine
-                    b = job_bucket.pop(row.get("job_id"), None)
+                    b = job_bucket.pop((row.get("run"), row.get("job_id")), None)
                     if b:
                         inflight[b] = inflight.get(b, 0) - 1
                     continue
@@ -556,7 +565,7 @@ def _submits(path, run_id):
                 b = row.get("bucket")
                 if mine and where == "remote" and b:
                     buckets[b] = buckets.get(b, 0) + 1
-                    job_bucket[row.get("job_id")] = b
+                    job_bucket[(row.get("run"), row.get("job_id"))] = b
                     inflight[b] = inflight.get(b, 0) + 1
     except OSError:
         pass
@@ -832,6 +841,7 @@ def status(campaign, run=None):
         "jobs_bucket": submits_bucket,
         "inflight_bucket": inflight_bucket,
         "buckets": meta.get("buckets") or {},
+        "systems": meta.get("systems") or {},
         "default_bucket": meta.get("default_bucket"),
         "jobs_done": sum(done_run.values()), "jobs_abandoned": abandoned,
         "jobs_remote": submits_run["remote"], "jobs_local": submits_run["local"],
@@ -1120,6 +1130,11 @@ PAGE = """<!doctype html>
  #res tr.blk td { border-top:1px solid #22303c; }
  #res td.sub { color:#9aa8b5; padding-left:18px; }
  #res tr.other td { color:#5d6b78; }
+ #res h3.sys:not(:first-of-type) { border-top:1px solid #2b3946; padding-top:14px;
+                                  margin-top:22px; }
+ #res select { background:#1b2836; color:#dde6ee; font:inherit; font-size:13px;
+               border:1px solid #3a4a5a; padding:1px 4px; cursor:pointer; }
+ #res input[type=checkbox] { accent-color:#3d7a3d; }
  #res label.resonly { margin-left:24px; font-weight:normal; font-size:13px; color:#9aa8b5;
                       cursor:pointer; }
  #res tr.me td { color:#e8f0f6; background:#1f3a2a; }
@@ -1401,7 +1416,7 @@ function bar(done, total, fmt) {
 // Which agents of this run send work to each bucket, for the status page's "shared by".
 // Read from the tasks log only, so it is cheap; refreshed every half minute.
 let sharing = {}, sharingAt = 0;
-let resOnly = false;
+let resOnly = false, resSystem = "";
 try { resOnly = !!localStorage.getItem("resOnly"); } catch (e) {}
 async function loadSharing() {
   if (Date.now() - sharingAt < 30000) return;
@@ -1427,14 +1442,23 @@ async function renderResources() {
   const pick = t => !only || t.mine;
   const rowCls = t => d.selected ? (t.mine ? "me" : "other") : "";
   let h = '<div id="res">';
+  const names = (d.systems || []).map(sy => sy.system);
+  if (resSystem && !names.includes(resSystem)) resSystem = "";
+  // One line of controls for the whole view: which system, and whose tasks.
+  const chooser = names.length > 1
+    ? `system <select id="ressys"><option value="">all</option>`
+      + names.map(n => `<option${n === resSystem ? " selected" : ""}>${esc(n)}</option>`).join("")
+      + `</select>` : "";
   const toggle = d.selected
     ? `<label class="resonly"><input type="checkbox" id="resonly"${resOnly ? " checked" : ""}>`
       + ` only this agent's tasks</label>` : "";
+  if (chooser || toggle) h += `<div class="note">${chooser}${toggle}</div>`;
   if (!(d.systems || []).length)
     h += '<div class="note">This run sent no work to another system.</div>';
   for (const sy of d.systems || []) {
+    if (resSystem && sy.system !== resSystem) continue;
     const ntasks = sy.blocks.reduce((n, b) => n + b.tasks.length, 0);
-    h += `<h3>${esc(sy.system)}${toggle}</h3><div class="note">endpoint ${esc(sy.endpoint)}</div>`;
+    h += `<h3 class="sys">${esc(sy.system)}</h3><div class="note">endpoint ${esc(sy.endpoint)}</div>`;
     for (const [k, b] of Object.entries(sy.buckets || {})) {
       const who = (sy.sharing || {})[k] || [];
       h += `<div class="note">bucket <b>${esc(k)}</b>: ${b.num_nodes || 1} node per block on `
@@ -1471,23 +1495,25 @@ async function renderResources() {
       }
     }
     h += "</table>";
-  }
-  // A task names its block when it finishes, so one still running has none yet.
-  const loose = (d.tasks || []).filter(t => !t.block && pick(t));
-  const lists = [["in flight (their block is known when they finish)",
-                  loose.filter(t => t.state === "waiting or running")],
-                 ["never reached a block", loose.filter(t => t.state !== "waiting or running")]];
-  for (const [title, ts] of lists) {
-    if (!ts.length) continue;
-    h += `<h3>${title}</h3><table class="grid"><tr><th>agent</th>`
-      + `<th>task</th><th>submitted</th><th>state</th></tr>`;
-    for (const t of ts)
-      h += `<tr class="${rowCls(t)}"><td>${esc(t.agent)}</td><td>${t.job_id}</td>`
-        + `<td>${clock(t.submitted)}</td><td>${esc(t.state)}</td></tr>`;
-    h += "</table>";
+    // A task names its block when it finishes, so one still running has none yet.
+    const loose = (d.tasks || []).filter(t => !t.block && pick(t) && t.system === sy.system);
+    for (const [title, ts] of [
+        ["in flight (their block is known when they finish)",
+         loose.filter(t => t.state === "waiting or running")],
+        ["never reached a block", loose.filter(t => t.state !== "waiting or running")]]) {
+      if (!ts.length) continue;
+      h += `<div class="note" style="margin-top:8px">${title}</div><table class="grid">`
+        + `<tr><th>agent</th><th>task</th><th>kind</th><th>submitted</th><th>state</th></tr>`;
+      for (const t of ts)
+        h += `<tr class="${rowCls(t)}"><td>${esc(t.agent)}</td><td>${t.job_id}</td>`
+          + `<td>${esc(t.kind || "")}</td><td>${clock(t.submitted)}</td><td>${esc(t.state)}</td></tr>`;
+      h += "</table>";
+    }
   }
   h += "</div>";
   if (h !== view.dataset.body) { view.dataset.body = h; view.className = ""; view.innerHTML = h; }
+  const pickSys = document.getElementById("ressys");
+  if (pickSys) pickSys.onchange = () => { resSystem = pickSys.value; renderResources(); };
   const box = document.getElementById("resonly");
   if (box) box.onchange = () => {
     resOnly = box.checked;
@@ -1521,7 +1547,9 @@ function renderStatus(s) {
                // logs those completions, so the count would stay up for good.
                const out = s.status === "running"
                  ? ((s.inflight_bucket || {})[k] || 0) : 0;
+               const multi = Object.keys(s.systems || {}).length > 1;
                const text = (shapes.length > 1 ? `${k}: ` : "") +
+                 (multi && b.system ? `${b.system}, ` : "") +
                  ((b.max_blocks || 1) > 1 ? `${b.max_blocks} blocks of ` : "") +
                  `${b.num_nodes} node${b.num_nodes === 1 ? "" : "s"}` +
                  (b.queue || b.qos ? ` on ${b.queue || b.qos}` : "") + (b.walltime ? `, ${b.walltime}` : "") +
@@ -1529,9 +1557,9 @@ function renderStatus(s) {
                  (shapes.length > 1 && k === s.default_bucket ? " (default)" : "") +
                  (out ? ` \u00b7 ${out} in flight` : "") +
                  (sharedBy(k) > 1 ? ` \u00b7 shared by ${sharedBy(k)} agents` : "");
-               return out
-                 ? `<span style="color:#2e7d32">` + esc(text) + `</span>`
-                 : `<span style="color:#777">` + esc(text) + `</span>`;
+               // Each line opens the resources view, where its blocks and tasks are.
+               return `<a href="#" data-tab="resources" title="show in resources" `
+                 + `style="color:${out ? "#2e7d32" : "#777"}">` + esc(text) + `</a>`;
              }).join("<br>") : "")],
     // The budget counts remote jobs where the run has an endpoint, else local ones,
     // as tools.submit_count does.
@@ -1909,6 +1937,8 @@ async function chat() {
 }
 
 document.addEventListener("click", e => {
+  const tb = e.target.closest("a[data-tab]");
+  if (tb) { e.preventDefault(); openTab(tb.dataset.tab); return; }
   const g = e.target.closest("[data-agent]");
   if (g) {
     agentSel = g.dataset.agent;
