@@ -573,10 +573,10 @@ def method_path():
 
 
 # Values a method may name rather than repeat, so a method written against a capacity
-# cannot go stale when the capacity changes.
+# cannot go stale when the capacity changes. A task module adds its own in METHOD_VALUES.
 def _method_values():
     return {"jobs_at_once": tools.LOCAL_MAX_CONCURRENT if tools.HAS_LOCAL
-            else tools.MAX_CONCURRENT}
+            else tools.MAX_CONCURRENT, **getattr(tools.task, "METHOD_VALUES", {})}
 
 
 def load_method():
