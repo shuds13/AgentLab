@@ -184,6 +184,25 @@ def running_campaigns():
     return live
 
 
+# How long a finished campaign stays near the top of the list, marked as recently ended.
+RECENT_WITHIN = float(os.environ.get("WATCH_RECENT_HOURS", "24")) * 3600
+
+
+def recent_campaigns():
+    """The campaigns not running whose latest run ended within RECENT_WITHIN, newest
+    first, each with when that was."""
+    live, now, out = set(running_campaigns()), time.time(), []
+    for name in campaigns():
+        if name in live:
+            continue
+        ends = [_run_time(os.path.dirname(m)) for m in
+                glob.glob(os.path.join(workspace(name), "runs", "*", "meta.json"))]
+        ended = max(ends, default=None)
+        if ended and now - ended < RECENT_WITHIN:
+            out.append({"campaign": name, "ended": ended})
+    return sorted(out, key=lambda r: -r["ended"])
+
+
 def newest_run(campaign):
     """The run to show: one that is still beating, else the most recent.
 
@@ -798,6 +817,7 @@ PAGE = """<!doctype html>
                  cursor:pointer; }
  header select:hover { border-color:#6a8aaa; }
  header select option.live { color:#7ac87a; }
+ header select option.recent { color:#a8b8c8; }
  /* The lab's name is the way back up to it, from inside a campaign. */
  header b.home { cursor:pointer; }
  header b.home:hover { color:#9cc4e8; }
@@ -2164,6 +2184,8 @@ async function campaignList() {
   let names, live = [];
   try { names = await (await fetch("/campaigns")).json(); } catch (e) { return; }
   try { live = await (await fetch("/running")).json(); } catch (e) {}
+  let recent = [];
+  try { recent = await (await fetch("/recent")).json(); } catch (e) {}
   if (!names.length) return;
   // The campaign being shown has gone from the lab -- its workspace removed while the
   // page was open. The server is answering for the one it started on, so show that.
@@ -2174,13 +2196,23 @@ async function campaignList() {
     }
     showScope();
   }
-  // Campaigns with an agent at work come first, marked, so a running one is a click away.
-  const ordered = names.filter(n => live.includes(n)).concat(names.filter(n => !live.includes(n)));
-  const key = ordered.join("|") + "#" + live.join("|");
+  // Campaigns with an agent at work come first, marked, so a running one is a click away;
+  // then those that ended recently, newest first, marked as ended and how long ago.
+  const ended = {};
+  recent.forEach(r => { if (names.includes(r.campaign)) ended[r.campaign] = r.ended; });
+  const recentNames = Object.keys(ended).sort((a, b) => ended[b] - ended[a]);
+  const ordered = names.filter(n => live.includes(n)).concat(recentNames,
+    names.filter(n => !live.includes(n) && !(n in ended)));
+  const ago = t => { const h = (Date.now() / 1000 - t) / 3600;
+    return h < 1 ? `${Math.max(1, Math.round(h * 60))}m` : `${Math.round(h)}h`; };
+  const key = ordered.join("|") + "#" + live.join("|") + "#" +
+    recentNames.map(n => ago(ended[n])).join("|");
   if (camp.dataset.key !== key) {
     camp.dataset.key = key;
     camp.innerHTML = ordered.map(n => live.includes(n)
       ? `<option value="${esc(n)}" class="live">\u25cf ${esc(n)}</option>`
+      : n in ended
+      ? `<option value="${esc(n)}" class="recent">\u25cb ${esc(n)} \u00b7 ended ${ago(ended[n])} ago</option>`
       : `<option value="${esc(n)}">${esc(n)}</option>`).join("");
   }
   camp.value = campaign;
@@ -2361,6 +2393,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(json.dumps(self._choices()), "application/json")
         elif url.path == "/running":
             self._send(json.dumps(running_campaigns()), "application/json")
+        elif url.path == "/recent":
+            self._send(json.dumps(recent_campaigns()), "application/json")
         elif url.path == "/labchat":
             self._send(json.dumps({"text": lab_messages(),
                                    "secretary": secretary_live(),
