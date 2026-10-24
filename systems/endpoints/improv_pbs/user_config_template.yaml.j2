@@ -1,0 +1,43 @@
+# Globus Compute endpoint template -- LCRC Improv (PBS Pro, CPU nodes).
+#
+# Install on Improv at:
+#   ~/.globus_compute/<endpoint-name>/user_config_template.yaml.j2
+# Placeholders are filled from the bucket's settings (README: "How the pieces fit together").
+#
+# EDIT: worker_init is the environment the tasks need.
+# Improv requires an account (-A). Nodes are not shared: a block gets whole 128-core nodes,
+# and max_workers_per_node sets how many tasks share one.
+
+# Stop the user endpoint after ~10 idle minutes, ending its blocks (README: "Idle timeout").
+idle_heartbeats_soft: 20
+
+engine:
+  type: GlobusComputeEngine
+  job_status_kwargs:
+    max_idletime: {{ max_idletime | default(600) }}   # seconds an idle block is held
+  max_workers_per_node: {{ max_workers_per_node | default(1) }}
+
+  provider:
+    type: PBSProProvider
+    launcher:
+      type: SimpleLauncher
+
+    account: {{ account }}
+    queue: {{ queue|default("debug") }}
+    cpus_per_node: 128
+    walltime: {{ walltime|default("01:00:00") }}
+
+    nodes_per_block: {{ nodes_per_block | default(1) }}
+    # 1 as on facility endpoints; set to nodes_per_block for a block per task
+    # (README: parallelism).
+    parallelism: {{ parallelism | default(1) }}
+    init_blocks: {{ init_blocks|default(0) }}
+    min_blocks: {{ min_blocks|default(0) }}
+    max_blocks: {{ max_blocks|default(1) }}
+
+    # EDIT: the environment the tasks need. This one is the endpoint's own venv
+    # (Python 3.11, matching the client), which also has numpy.
+    worker_init: "module load python/3.11.6 && source ~/venvs/gcompute/bin/activate && export TMPDIR=/tmp"
+
+# Queues: debug (8 nodes, 1 hour) and compute (72 hours). Per user: 15 running jobs,
+# 70 queued, 40 running nodes; per project: 60 running nodes.

@@ -1,0 +1,21 @@
+{
+  "_comment": "Facts about LCRC Improv that are the same for everyone. Credentials and allocations go in users/<you>/improv.json; the endpoint template is systems/endpoints/improv_pbs/.",
+  "endpoint_template": "improv_pbs",
+  "globus_collection": "15288284-7006-4041-ba1a-6b52501e49f1",
+  "globus_collection_name": "LCRC Improv DTN",
+  "ppn": 1,
+  "target": {
+    "env": {
+      "TMPDIR": "/tmp"
+    }
+  },
+  "bucket_defaults": {
+    "queue": "debug",
+    "num_nodes": 1,
+    "walltime": "01:00:00",
+    "init_blocks": 0,
+    "min_blocks": 0,
+    "max_blocks": 1,
+    "max_retries_on_system_failure": 0
+  }
+}
