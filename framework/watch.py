@@ -203,6 +203,128 @@ def recent_campaigns():
     return sorted(out, key=lambda r: -r["ended"])
 
 
+# --- resources: the batch jobs (blocks) a run's tasks ran in -----------------------
+# Read from the run's tasks log only. Each remote task reports where it ran (`ran_on`:
+# its host and, under a batch scheduler, the batch job with its start, walltime and
+# nodes), so a block is known from the tasks that ran in it, and from tasks it handed
+# back. When a block ended is not reported; its time is counted up to its last task.
+
+def resources(campaign, run=None, light=False):
+    """The run tree's remote work: per system, its buckets and who shares them, the
+    blocks its tasks ran in, and the tasks each block ran or handed back."""
+    top_dir = run_path(campaign, run)
+    if not top_dir:
+        return {"systems": []}
+    top = _meta(os.path.join(top_dir, "meta.json"))
+    # A worker chosen in the agents panel: show its whole run tree, with it marked.
+    selected = None
+    if top.get("parent_run") and run_path(campaign, top["parent_run"]):
+        selected = os.path.basename(top_dir)
+        top_dir = run_path(campaign, top["parent_run"])
+        top = _meta(os.path.join(top_dir, "meta.json"))
+    top_id = os.path.basename(top_dir)
+    metas = {}
+    for m in glob.glob(os.path.join(workspace(campaign), "runs", "*", "meta.json")):
+        d = _meta(m)
+        rid = os.path.basename(os.path.dirname(m))
+        if rid == top_id or d.get("parent_run") == top_id:
+            metas[rid] = d
+
+    tasks, by_key = [], {}
+    try:
+        with open(os.path.join(workspace(campaign), "jobs.jsonl")) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except Exception:
+                    continue
+                if r.get("run") not in metas:
+                    continue
+                k = (r["run"], r.get("job_id"))
+                ev = r.get("event")
+                if ev == "submit":
+                    t = {"run": r["run"], "agent": metas[r["run"]].get("branch") or "coordinator",
+                         "system": metas[r["run"]].get("system"),
+                         "job_id": r.get("job_id"), "key": r.get("key"), "bucket": r.get("bucket"),
+                         "submitted": r.get("ts"), "started": None, "ran_s": None,
+                         "state": "waiting or running", "retries": 0, "block": None,
+                         "refused": [], "ran_on": None, "mine": r["run"] == selected}
+                    tasks.append(t)
+                    by_key[k] = t
+                elif k in by_key and ev == "retry":
+                    by_key[k]["retries"] += 1
+                    by_key[k]["refused"].append({"at": r.get("ts"), "reason": r.get("reason"),
+                                                 "ran_on": r.get("ran_on") or {}})
+                elif k in by_key and ev in ("completed", "abandoned"):
+                    t = by_key[k]
+                    on = r.get("ran_on") or {}
+                    t["ran_on"] = on or None
+                    t["started"] = on.get("started_at") or r.get("started_at")
+                    t["ran_s"] = (on["ended_at"] - on["started_at"]
+                                  if on.get("ended_at") and on.get("started_at")
+                                  else r.get("wall_seconds"))
+                    t["state"] = ("abandoned" if ev == "abandoned"
+                                  else "error" if r.get("error") else "done")
+    except FileNotFoundError:
+        pass
+
+    systems = {}
+    for d in metas.values():
+        if d.get("endpoint") and d.get("system"):
+            systems.setdefault(d["system"], {"system": d["system"], "endpoint": d["endpoint"],
+                                             "buckets": d.get("buckets") or {}})
+    out = []
+    for name, sysd in systems.items():
+        mine = [t for t in tasks if t["system"] == name]
+        sharing = {}
+        for t in mine:
+            sharing.setdefault(t["bucket"], set()).add(t["agent"])
+        sysd["sharing"] = {k: sorted(v) for k, v in sharing.items()}
+        if light:
+            out.append(sysd)
+            continue
+        blocks = {}
+
+        def block(on):
+            # A batch job where there is one; else the host, for a system without one.
+            bid = on.get("batch_job") or (on.get("host") and "host " + on["host"])
+            if not bid:
+                return None
+            b = blocks.setdefault(bid, {"id": bid, "queue": None, "nodes": None,
+                                        "queued_at": None, "start": None, "walltime_s": None,
+                                        "last": None, "tasks": [], "refused": []})
+            for field, key in (("queue", "block_queue"), ("nodes", "block_nodes"),
+                               ("start", "block_start"), ("queued_at", "block_queued_at"),
+                               ("walltime_s", "block_walltime_s")):
+                if b[field] is None and on.get(key) is not None:
+                    b[field] = on[key]
+            end = on.get("ended_at")
+            if end and (b["last"] is None or end > b["last"]):
+                b["last"] = end
+            return b
+
+        for t in mine:
+            if t["ran_on"]:
+                b = block(t["ran_on"])
+                if b:
+                    t["block"] = b["id"]
+                    b["tasks"].append(t)
+            for x in t["refused"]:
+                b = block(x["ran_on"])
+                if b:
+                    b["refused"].append(dict(x, agent=t["agent"], job_id=t["job_id"],
+                                             mine=t["mine"]))
+        rows = sorted(blocks.values(), key=lambda b: b["start"] or b["last"] or 0)
+        for b in rows:
+            span = (b["last"] - b["start"]) if (b["start"] and b["last"]) else None
+            b["node_hours"] = round((b["nodes"] or 1) * span / 3600, 2) if span else None
+            b["agents"] = sorted({t["agent"] for t in b["tasks"]})
+        sysd.update(blocks=rows,
+                    node_hours=round(sum(b["node_hours"] or 0 for b in rows), 1))
+        out.append(sysd)
+    return {"systems": out, "tasks": tasks, "selected": selected}
+
+
 def newest_run(campaign):
     """The run to show: one that is still beating, else the most recent.
 
@@ -990,6 +1112,17 @@ PAGE = """<!doctype html>
  .doc blockquote { border-left:3px solid #333; margin:8px 0; padding-left:12px;
                    color:#aaa; }
  table { border-collapse:collapse; margin:12px; }
+ #res h3 { margin:14px 12px 2px; font-size:14px; color:#cfd8e0; }
+ #res .note { margin:2px 12px; color:#8a9aaa; }
+ #res table.grid td, #res table.grid th { padding:2px 14px 2px 0; text-align:left;
+                                         white-space:nowrap; }
+ #res table.grid th { color:#6f8296; font-weight:normal; border-bottom:1px solid #2b3946; }
+ #res tr.blk td { border-top:1px solid #22303c; }
+ #res td.sub { color:#9aa8b5; padding-left:18px; }
+ #res tr.other td { color:#5d6b78; }
+ #res label.resonly { margin-left:24px; font-weight:normal; font-size:13px; color:#9aa8b5;
+                      cursor:pointer; }
+ #res tr.me td { color:#e8f0f6; background:#1f3a2a; }
  /* The run and the campaign are different spans of time, and their counts differ. */
  tr.sec td { color:#6f8296; padding:14px 0 2px; border-bottom:1px solid #2b3946; }
  td { padding:3px 18px 3px 0; vertical-align:top; }
@@ -1155,6 +1288,7 @@ function setTabs(files) {
   t.appendChild(d);
   group("campaign");
   for (const n of files) button(n);
+  button("resources");
   // Everything else the campaign holds. Another view of the pane, so it sits with
   // the tabs that choose one rather than with the panel toggle on the right.
   const w = document.createElement("button");
@@ -1264,6 +1398,104 @@ function bar(done, total, fmt) {
          `${fmt(done)} of ${fmt(total)} (max)`;
 }
 
+// Which agents of this run send work to each bucket, for the status page's "shared by".
+// Read from the tasks log only, so it is cheap; refreshed every half minute.
+let sharing = {}, sharingAt = 0;
+let resOnly = false;
+try { resOnly = !!localStorage.getItem("resOnly"); } catch (e) {}
+async function loadSharing() {
+  if (Date.now() - sharingAt < 30000) return;
+  sharingAt = Date.now();
+  try {
+    const d = await (await fetch(url("/resources?light=1" + (run ? "&run=" + encodeURIComponent(run) : "")))).json();
+    sharing = {};
+    for (const sy of d.systems || []) Object.assign(sharing, sy.sharing || {});
+  } catch (e) {}
+}
+const sharedBy = k => (sharing[k] || []).length;
+
+// The resources tab: per system, its buckets and who shares them, the batch jobs
+// (blocks) that were up while this run was, and the tasks each ran.
+const clock = t => t ? new Date(t * 1000).toLocaleString([], {weekday: "short",
+  hour: "2-digit", minute: "2-digit"}) : "\u2014";
+const dur = s => s == null ? "\u2014" : hms(Math.round(s));
+async function renderResources() {
+  const d = await (await fetch(url("/resources"))).json();
+  if (tab !== "resources") return;
+  // With an agent chosen, the whole run is shown and that agent's rows stand out.
+  const only = !!d.selected && resOnly;
+  const pick = t => !only || t.mine;
+  const rowCls = t => d.selected ? (t.mine ? "me" : "other") : "";
+  let h = '<div id="res">';
+  const toggle = d.selected
+    ? `<label class="resonly"><input type="checkbox" id="resonly"${resOnly ? " checked" : ""}>`
+      + ` only this agent's tasks</label>` : "";
+  if (!(d.systems || []).length)
+    h += '<div class="note">This run sent no work to another system.</div>';
+  for (const sy of d.systems || []) {
+    const ntasks = sy.blocks.reduce((n, b) => n + b.tasks.length, 0);
+    h += `<h3>${esc(sy.system)}${toggle}</h3><div class="note">endpoint ${esc(sy.endpoint)}</div>`;
+    for (const [k, b] of Object.entries(sy.buckets || {})) {
+      const who = (sy.sharing || {})[k] || [];
+      h += `<div class="note">bucket <b>${esc(k)}</b>: ${b.num_nodes || 1} node per block on `
+        + `${esc(b.queue || "?")}, ${esc(b.walltime || "?")}, up to ${b.max_blocks || 1} `
+        + `block${(b.max_blocks || 1) === 1 ? "" : "s"} \u00b7 a pool shared by `
+        + `${who.length} agent${who.length === 1 ? "" : "s"}</div>`;
+    }
+    h += `<div class="note">${sy.blocks.length} blocks \u00b7 at least ${sy.node_hours} node-hours `
+      + `(nodes \u00d7 time from block start to its last task) \u00b7 ${ntasks} tasks</div>`;
+    h += '<table class="grid"><tr><th>block</th><th>queue</th><th>nodes</th><th>waited</th>'
+      + '<th>started</th><th>walltime</th><th>to last task</th><th>node-hours</th><th></th></tr>';
+    for (const b of sy.blocks) {
+      if (only && !b.tasks.some(t => t.mine) && !b.refused.some(x => x.mine)) continue;
+      h += `<tr class="blk"><td><b>${esc(b.id)}</b></td><td>${esc(b.queue || "\u2014")}</td>`
+        + `<td>${b.nodes == null ? "\u2014" : b.nodes}</td>`
+        + `<td>${dur(b.queued_at && b.start ? b.start - b.queued_at : null)}</td>`
+        + `<td>${clock(b.start)}</td><td>${dur(b.walltime_s)}</td>`
+        + `<td>${dur(b.start && b.last ? b.last - b.start : null)}</td>`
+        + `<td>${b.node_hours == null ? "\u2014" : b.node_hours}</td><td></td></tr>`;
+      const events = b.tasks.filter(pick).map(t => ({at: t.started, t, kind: "ran"}))
+        .concat(b.refused.filter(pick).map(x => ({at: x.at, t: x, kind: "refused"})))
+        .sort((p, q) => p.at - q.at);
+      for (const {t, kind} of events) {
+        if (kind === "refused") {
+          h += `<tr class="${rowCls(t)}"><td class="sub" colspan="3">${esc(t.agent)} \u00b7 task ${t.job_id}</td>`
+            + `<td></td><td>${clock(t.at)}</td><td></td><td></td>`
+            + `<td>handed back: ${esc(t.reason || "")}</td></tr>`;
+          continue;
+        }
+        h += `<tr class="${rowCls(t)}"><td class="sub" colspan="3">${esc(t.agent)} \u00b7 task ${t.job_id}</td>`
+          + `<td>${dur(t.started && t.submitted ? t.started - t.submitted : null)}</td>`
+          + `<td>${clock(t.started)}</td><td>${dur(t.ran_s)}</td><td></td>`
+          + `<td>${esc(t.state)}${t.retries ? " \u00b7 " + t.retries + " retr" + (t.retries === 1 ? "y" : "ies") : ""}</td></tr>`;
+      }
+    }
+    h += "</table>";
+  }
+  // A task names its block when it finishes, so one still running has none yet.
+  const loose = (d.tasks || []).filter(t => !t.block && pick(t));
+  const lists = [["in flight (their block is known when they finish)",
+                  loose.filter(t => t.state === "waiting or running")],
+                 ["never reached a block", loose.filter(t => t.state !== "waiting or running")]];
+  for (const [title, ts] of lists) {
+    if (!ts.length) continue;
+    h += `<h3>${title}</h3><table class="grid"><tr><th>agent</th>`
+      + `<th>task</th><th>submitted</th><th>state</th></tr>`;
+    for (const t of ts)
+      h += `<tr class="${rowCls(t)}"><td>${esc(t.agent)}</td><td>${t.job_id}</td>`
+        + `<td>${clock(t.submitted)}</td><td>${esc(t.state)}</td></tr>`;
+    h += "</table>";
+  }
+  h += "</div>";
+  if (h !== view.dataset.body) { view.dataset.body = h; view.className = ""; view.innerHTML = h; }
+  const box = document.getElementById("resonly");
+  if (box) box.onchange = () => {
+    resOnly = box.checked;
+    try { localStorage.setItem("resOnly", resOnly ? "1" : ""); } catch (e) {}
+    renderResources();
+  };
+}
+
 function renderStatus(s) {
   if (!s.run) { view.textContent = "no run yet"; return; }
   const shapes = Object.entries(s.buckets || {});
@@ -1295,7 +1527,8 @@ function renderStatus(s) {
                  (b.queue || b.qos ? ` on ${b.queue || b.qos}` : "") + (b.walltime ? `, ${b.walltime}` : "") +
                  (b.max_concurrent ? `, max ${b.max_concurrent}` : "") +
                  (shapes.length > 1 && k === s.default_bucket ? " (default)" : "") +
-                 (out ? ` \u00b7 ${out} in flight` : "");
+                 (out ? ` \u00b7 ${out} in flight` : "") +
+                 (sharedBy(k) > 1 ? ` \u00b7 shared by ${sharedBy(k)} agents` : "");
                return out
                  ? `<span style="color:#2e7d32">` + esc(text) + `</span>`
                  : `<span style="color:#777">` + esc(text) + `</span>`;
@@ -1595,7 +1828,10 @@ async function refresh() {
       ? (top.status === "running" ? "running \u00b7 " : top.status + " \u00b7 ")
         + (top.handle || top.run) + (agentSel ? " \u00b7 " + (s.branch || agentSel) : "")
       : "no run yet";
-    if (tab === "status") { view.className = ""; renderStatus(s); return; }
+    if (tab === "status") {
+      view.className = ""; renderStatus(s); loadSharing(); return;
+    }
+    if (tab === "resources") { await renderResources(); return; }
     if (tab === "tree") { await renderTree(); return; }
     if (tab === "log") {
       view.className = "";
@@ -2428,6 +2664,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "application/json")
         elif url.path == "/status":
             self._send(json.dumps(status(campaign, run)), "application/json")
+        elif url.path == "/resources":
+            self._send(json.dumps(resources(campaign, run, light="light" in q)),
+                       "application/json")
         elif url.path == "/runs":
             self._send(json.dumps(runs(campaign)), "application/json")
         elif url.path == "/files":
