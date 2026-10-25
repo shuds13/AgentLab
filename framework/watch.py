@@ -839,6 +839,7 @@ def status(campaign, run=None):
         "results": _count_lines(os.path.join(ws, "results.jsonl")),
         "jobs": submits_total, "jobs_run": ran_here,
         "jobs_bucket": submits_bucket,
+        "max_submits_buckets": meta.get("max_submits_buckets") or {},
         "inflight_bucket": inflight_bucket,
         "buckets": meta.get("buckets") or {},
         "systems": meta.get("systems") or {},
@@ -1535,8 +1536,10 @@ function renderStatus(s) {
         ? `${s.phase} \u00b7 ${hms(s.phase_age_s)}` : "\u2014"],
     // Where the work ran, next to the counts of it. A campaign whose task defines both
     // kinds of job splits the counts, since they did not run in the same place.
+    // The systems by name; their endpoints are in the resources view.
     ["jobs run on", (s.endpoint
-        ? `${s.system || "?"} (${s.endpoint})` + (s.has_local ? ", this machine" : "")
+        ? (Object.keys(s.systems || {}).length ? Object.keys(s.systems) : [s.system || "?"])
+            .join(" \u00b7 ") + (s.has_local ? " \u00b7 this machine" : "")
         : "this machine")
         // The shape a job is given -- nodes, queue, walltime -- which is worth seeing
         // even when there is only one of them. The name and the default marker are
@@ -1548,22 +1551,27 @@ function renderStatus(s) {
                const out = s.status === "running"
                  ? ((s.inflight_bucket || {})[k] || 0) : 0;
                const multi = Object.keys(s.systems || {}).length > 1;
-               const text = (shapes.length > 1 ? `${k}: ` : "") +
-                 (multi && b.system ? `${b.system}, ` : "") +
-                 ((b.max_blocks || 1) > 1 ? `${b.max_blocks} blocks of ` : "") +
-                 `${b.num_nodes} node${b.num_nodes === 1 ? "" : "s"}` +
-                 (b.queue || b.qos ? ` on ${b.queue || b.qos}` : "") + (b.walltime ? `, ${b.walltime}` : "") +
-                 (b.max_concurrent ? `, max ${b.max_concurrent}` : "") +
-                 (shapes.length > 1 && k === s.default_bucket ? " (default)" : "") +
-                 (out ? ` \u00b7 ${out} in flight` : "") +
-                 (sharedBy(k) > 1 ? ` \u00b7 shared by ${sharedBy(k)} agents` : "");
+               // The pool's shape, whether other agents share it, and this agent's tasks
+               // in flight; the rest is in the resources view, which the line opens.
+               const mx = b.max_blocks || 1;
+               const wall = (b.walltime || "").replace(/^0?(\\d+):00:00$/, "$1h");
+               const text = (shapes.length > 1 ? `${k}: ` : "") + [[multi && b.system ? b.system : "",
+                 b.queue || b.qos || ""].filter(Boolean).join(" "),
+                 `${b.num_nodes}-node blocks` + (wall ? ` ${wall}` : "") + ` (max ${mx})`,
+                 sharedBy(k) > 1 ? "shared" : ""].filter(Boolean).join(" \u00b7 ")
+                 + (out ? ` | ${out} in flight` : "");
                // Each line opens the resources view, where its blocks and tasks are.
                return `<a href="#" data-tab="resources" title="show in resources" `
                  + `style="color:${out ? "#2e7d32" : "#777"}">` + esc(text) + `</a>`;
              }).join("<br>") : "")],
     // The budget counts remote jobs where the run has an endpoint, else local ones,
     // as tools.submit_count does.
-    ["jobs submitted", bar(s.endpoint ? s.jobs_remote : s.jobs_local, s.max_submits)
+    // With a budget per bucket, a bar for each; otherwise one for the run's total.
+    ["jobs submitted", Object.keys(s.max_submits_buckets || {}).length
+      ? shapes.map(([k]) => `${esc(k)}: ` + ((s.max_submits_buckets || {})[k] != null
+          ? bar((s.jobs_bucket || {})[k] || 0, s.max_submits_buckets[k])
+          : String((s.jobs_bucket || {})[k] || 0))).join("<br>")
+      : bar(s.endpoint ? s.jobs_remote : s.jobs_local, s.max_submits)
         // Every configured shape, so one that has taken no work yet still shows as zero.
         + (shapes.length > 1
            ? ` <span style="color:#777">(` + shapes.map(([k]) =>
