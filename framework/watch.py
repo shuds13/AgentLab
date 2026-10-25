@@ -229,6 +229,9 @@ def resources(campaign, run=None, light=False):
         rid = os.path.basename(os.path.dirname(m))
         if rid == top_id or d.get("parent_run") == top_id:
             metas[rid] = d
+    # A run's own tasks are labelled by its role: a coordinator when it has workers,
+    # else a single researcher.
+    top_label = "coordinator" if len(metas) > 1 else "researcher"
 
     tasks, by_key = [], {}
     try:
@@ -243,7 +246,7 @@ def resources(campaign, run=None, light=False):
                 k = (r["run"], r.get("job_id"))
                 ev = r.get("event")
                 if ev == "submit":
-                    t = {"run": r["run"], "agent": metas[r["run"]].get("branch") or "coordinator",
+                    t = {"run": r["run"], "agent": metas[r["run"]].get("branch") or top_label,
                          "system": r.get("system") or metas[r["run"]].get("system"),
                          "job_id": r.get("job_id"), "key": r.get("key"), "bucket": r.get("bucket"),
                          "kind": r.get("kind"),
