@@ -103,7 +103,12 @@ def configure(user_cfg, workspace_dir, campaign_dir=None, sys_cfg=None):
     }
 
 
-CFG = None          # set by tools.py at import; None disables the tools
+CFG = None          # the settings in use; None disables the tools
+# One set of settings per compute system the campaign uses, set by tools.py at import,
+# and the one a call uses when it names none. A call switches CFG to its system for its
+# duration: the tool's handler runs to the end without yielding, so calls do not mix.
+CFGS = {}
+MAIN = None
 
 
 # --- the Transfer client --------------------------------------------------------------
@@ -248,6 +253,19 @@ def _transient(exc):
 
 
 def preflight():
+    """Every configured system's collections, checked as _preflight_one does."""
+    global CFG
+    problems, keep = [], CFG
+    try:
+        for name, cfg in (CFGS or ({MAIN: CFG} if CFG else {})).items():
+            CFG = cfg
+            problems += [f"[{name}] {p}" if len(CFGS) > 1 else p for p in _preflight_one()]
+    finally:
+        CFG = keep
+    return problems
+
+
+def _preflight_one():
     """Check the configured collections answer, before a run that depends on them.
 
     Only meaningful when Transfer is configured -- CFG is None otherwise and the tool is
@@ -435,6 +453,9 @@ Move files between this machine and the compute system with Globus Transfer, and
 files on the compute system that are otherwise unreachable from here -- job logs above
 all.
 
+When the campaign uses more than one compute system, `system` names the one a call is
+for; without it, the campaign's main system.
+
 Operations (`op`):
 
   ls     list a directory on the compute system.
@@ -477,6 +498,7 @@ TRANSFER_SCHEMA = {
     "type": "object",
     "properties": {
         "op": {"type": "string", "enum": ["ls", "get", "put"]},
+        "system": {"type": "string"},
         "path": {"type": "string"},
         "local_path": {"type": "string"},
         "items": {"type": "array", "items": {
@@ -491,6 +513,19 @@ TRANSFER_SCHEMA = {
 
 @tool("transfer", TRANSFER_DESC, TRANSFER_SCHEMA)
 async def transfer(args):
+    global CFG
+    system = str(args.get("system") or "").strip() or MAIN
+    if CFGS and system not in CFGS:
+        return _err(f"system {system!r} is not one of {sorted(CFGS)}.")
+    keep = CFG
+    CFG = CFGS.get(system, CFG)
+    try:
+        return _transfer_on(args)
+    finally:
+        CFG = keep
+
+
+def _transfer_on(args):
     if CFG is None:
         return _err("Globus Transfer is not configured for this user/system.")
     tc = _client()

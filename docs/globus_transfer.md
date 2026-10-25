@@ -171,3 +171,18 @@ Two failure modes worth recognising:
   this machine. Start it: `globusconnectpersonal -start &`.
 
 Transfers are waited on, so a successful result means the bytes have landed.
+
+### What a transfer does not carry
+
+Globus Transfer copies file contents and, with `--preserve-timestamp`, modification
+times. It does not carry:
+
+- **Execute permission.** A script or binary arrives without its execute bit, so running
+  it fails with "Permission denied". Run scripts through their interpreter (`bash
+  run.sh`, `python x.py`), or have the job set the bit before it runs them.
+- **Symbolic links.** They are not copied as links. A software install that relies on
+  them, such as a Julia release (`libjulia.so.1.12` is a link), is broken by a copy.
+  Install such software on the compute system from its own download instead -- for
+  example, a job that fetches and unpacks the release tarball there.
+
+The CLI has no option for either.

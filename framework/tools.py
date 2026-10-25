@@ -11,6 +11,7 @@ config.json.
 """
 
 import importlib
+import inspect
 import itertools
 import json
 import os
@@ -83,7 +84,118 @@ HAS_LOCAL = hasattr(task, "local_fn")
 # Remote work needs both halves: a task that defines the function, and a system that
 # sends work somewhere. A task with both functions runs either way, by the system it
 # is given.
-HAS_REMOTE = hasattr(task, "remote_fn") and _sys_cfg.get("remote", True)
+# The kinds of remote job. A task with several gives TASKS: a name to {"fn", "desc",
+# "schema", and "bucket" or "bucket_for", and optionally "key"}, and each becomes a
+# tool, submit_<name>. A task with one kind gives remote_fn with JOB_DESC, JOB_SCHEMA,
+# job_key and bucket_for, which becomes submit_job.
+if getattr(task, "TASKS", None):
+    KINDS = {name: dict(spec) for name, spec in task.TASKS.items()}
+elif hasattr(task, "remote_fn"):
+    KINDS = {"job": {"fn": task.remote_fn, "desc": getattr(task, "JOB_DESC", ""),
+                     "schema": getattr(task, "JOB_SCHEMA", {}),
+                     "key": getattr(task, "job_key", None),
+                     "bucket_for": getattr(task, "bucket_for", None)}}
+else:
+    KINDS = {}
+MULTI_KIND = bool(getattr(task, "TASKS", None))
+HAS_REMOTE = bool(KINDS) and _sys_cfg.get("remote", True)
+# Each remote function as it stood when this run started. Every submit sends this
+# source, so an edit to the task file while the run is going cannot reach its jobs.
+for _k in KINDS.values():
+    _k["source"] = __import__("textwrap").dedent(inspect.getsource(_k["fn"]))
+    _k["name"] = _k["fn"].__name__
+
+
+def _run_remote(source, name, args, target):
+    """Runs on the compute system in place of the task's remote function. It first reads
+    the batch job (block) it landed in from the scheduler on the node -- PBS or Slurm --
+    and hands the task that block as target["block"] (start, walltime_s, end, nodes,
+    queue), so a task can size itself to the time left without asking the scheduler.
+    A job whose args give `needs_seconds` and that does not fit in the time left is
+    handed back with `retry_after` instead of run, so it goes to a fresh block. Then it
+    defines the task's function from its source, calls it, and adds `ran_on` to a dict
+    result -- the host, when the task started and ended, and the block. Whatever cannot
+    be read is left out; the task's own result is otherwise unchanged.
+
+    Shipped by source, like any remote function: everything it uses is imported here."""
+    import os
+    import re
+    import socket
+    import subprocess
+    import time
+
+    ran_on = {"host": socket.gethostname()}
+
+    def stamp(text, fmt):
+        return round(time.mktime(time.strptime(text.strip(), fmt)), 1)
+
+    def secs(text):
+        parts = [int(p) for p in re.split(r"[-:]", text.strip())]
+        days = parts.pop(0) if len(parts) == 4 else 0
+        while len(parts) < 3:
+            parts.insert(0, 0)
+        return days * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+
+    try:
+        if os.environ.get("PBS_JOBID"):
+            jid = os.environ["PBS_JOBID"]
+            ran_on.update(scheduler="pbs", batch_job=jid.split(".")[0])
+            out = subprocess.run(["qstat", "-f", jid], capture_output=True, text=True,
+                                 timeout=60).stdout
+            f = dict(re.findall(r"^\s+([\w.]+) = (.*)$", out, re.M))
+            fmt = "%a %b %d %H:%M:%S %Y"
+            if f.get("stime"):
+                ran_on["block_start"] = stamp(f["stime"], fmt)
+            if f.get("qtime"):
+                ran_on["block_queued_at"] = stamp(f["qtime"], fmt)
+            if f.get("Resource_List.walltime"):
+                ran_on["block_walltime_s"] = secs(f["Resource_List.walltime"])
+            if f.get("Resource_List.nodect"):
+                ran_on["block_nodes"] = int(f["Resource_List.nodect"])
+            if f.get("queue"):
+                ran_on["block_queue"] = f["queue"]
+        elif os.environ.get("SLURM_JOB_ID"):
+            jid = os.environ["SLURM_JOB_ID"]
+            ran_on.update(scheduler="slurm", batch_job=jid)
+            out = subprocess.run(["scontrol", "show", "job", "-o", jid], capture_output=True,
+                                 text=True, timeout=60).stdout
+            f = dict(re.findall(r"(\w+)=(\S+)", out))
+            fmt = "%Y-%m-%dT%H:%M:%S"
+            if f.get("StartTime", "Unknown") != "Unknown":
+                ran_on["block_start"] = stamp(f["StartTime"], fmt)
+            if f.get("SubmitTime", "Unknown") != "Unknown":
+                ran_on["block_queued_at"] = stamp(f["SubmitTime"], fmt)
+            if f.get("TimeLimit", "UNLIMITED") not in ("UNLIMITED", "Partition_Limit"):
+                ran_on["block_walltime_s"] = secs(f["TimeLimit"])
+            if f.get("NumNodes", "").isdigit():
+                ran_on["block_nodes"] = int(f["NumNodes"])
+            if f.get("Partition"):
+                ran_on["block_queue"] = f["Partition"]
+    except Exception as e:
+        ran_on["block_error"] = f"{type(e).__name__}: {e}"
+
+    block = {k: ran_on[f"block_{k}"] for k in ("start", "walltime_s", "nodes", "queue")
+             if f"block_{k}" in ran_on}
+    if ran_on.get("batch_job"):
+        block["batch_job"] = ran_on["batch_job"]
+    if "start" in block and "walltime_s" in block:
+        block["end"] = block["start"] + block["walltime_s"]
+        # A margin for starting up and handing back the result.
+        left = round(block["end"] - 120 - time.time())
+        need = int((args or {}).get("needs_seconds") or 0) if isinstance(args, dict) else 0
+        if need > left:
+            return {"retry_after": max(left, 0) + 60, "ran_on": ran_on,
+                    "error": f"{left} s left in this batch job, the job needs {need} s"}
+    target = {**target, "block": block}
+
+    started = time.time()
+    scope = {}
+    exec(compile(source, f"<{name}>", "exec"), scope)
+    result = scope[name](args, target)
+    ran_on.update(started_at=round(started, 1), ended_at=round(time.time(), 1))
+    if isinstance(result, dict):
+        result = {**result, "ran_on": ran_on}
+    return result
 
 # Only remote jobs need a Globus endpoint and an account to charge, so a task that
 # defines local_fn alone runs without either -- and without a user file at all. Its
@@ -147,12 +259,57 @@ else:
 
 ENDPOINT_ID = _usr.get("endpoint", "")
 
+
+# A campaign may send work to more than one system: a bucket names another with
+# `system`. Each has its own facts (systems/<system>.json), access, endpoint, work_dir
+# and Transfer collection. The campaign's `system` is the main one; its settings are also
+# kept at the top level of this module (SYSTEM, ENDPOINT_ID, TARGET, WORK_DIR).
+def _access(system):
+    """A further system's facts and your access to it. Its work_dir is `work_dir` in the
+    user file, or `work_root` with the campaign appended, or WORK_DIR_<SYSTEM>; a worker
+    gets its own directory under it, named by WORK_SUBDIR, as spawn sets."""
+    sys_cfg = _read_json(os.path.join(LAB_DIR, "systems", f"{system}.json"),
+                         f"system '{system}'")
+    path = os.path.join(LAB_DIR, "users", USER_NAME, f"{system}.json")
+    usr = _read_json(path, f"your access to '{system}'")
+    needs = ("endpoint",) + (("account",) if sys_cfg.get("needs_account", True) else ())
+    missing = [k for k in needs if not usr.get(k) or str(usr[k]).startswith("<")]
+    if missing:
+        sys.exit(f"your access to '{system}' needs {', '.join(missing)} filled in: {path}")
+    work = (os.environ.get(f"WORK_DIR_{system.upper()}") or usr.get("work_dir")
+            or (os.path.join(usr["work_root"], CAMPAIGN) if usr.get("work_root") else ""))
+    if not work:
+        sys.exit(f"{path} needs 'work_dir' (an exact path) or 'work_root' (the directory "
+                 f"campaigns sit under; '{CAMPAIGN}' is appended).")
+    if os.environ.get("WORK_SUBDIR"):
+        work = os.path.join(work, os.environ["WORK_SUBDIR"])
+    usr["work_dir"] = work
+    return sys_cfg, usr
+
+
+SYSTEMS = {SYSTEM: {"cfg": _sys_cfg, "usr": _usr}}
+for _over in (_cam.get("buckets") or {}).values():
+    _s = (_over or {}).get("system")
+    if _s and _s not in SYSTEMS:
+        _c, _u = _access(_s)
+        SYSTEMS[_s] = {"cfg": _c, "usr": _u}
+for _sy in SYSTEMS.values():
+    _sy["endpoint"] = _sy["usr"].get("endpoint", "")
+    _sy["work_dir"] = _sy["usr"].get("work_dir", "")
+MULTI_SYSTEM = len(SYSTEMS) > 1
+
 # Globus Transfer is optional: configured per user, and simply absent otherwise. It is
 # how the agent reads files on the compute system when the two do not share a filesystem.
 # WORKSPACE_DIR rather than the default path under workspace/: a run pointed at another
 # workspace fetches into that one, so its files sit with the rest of what it wrote.
-_transfer.CFG = _transfer.configure(_usr, WORKSPACE_DIR, _CAMPAIGN_DIR, _sys_cfg)
-HAS_TRANSFER = _transfer.CFG is not None
+_transfer.CFGS = {}
+for _name, _sy in SYSTEMS.items():
+    _c = _transfer.configure(_sy["usr"], WORKSPACE_DIR, _CAMPAIGN_DIR, _sy["cfg"])
+    if _c is not None:
+        _transfer.CFGS[_name] = _c
+_transfer.MAIN = SYSTEM if SYSTEM in _transfer.CFGS else next(iter(_transfer.CFGS), None)
+_transfer.CFG = _transfer.CFGS.get(_transfer.MAIN)
+HAS_TRANSFER = bool(_transfer.CFGS)
 # Named resource shapes on one system (e.g. a small quick queue and a large long one).
 # A task routes a job to one with bucket_for(args); otherwise the default is used.
 #
@@ -160,25 +317,38 @@ HAS_TRANSFER = _transfer.CFG is not None
 # are all the same size. A campaign whose jobs differ instead gives `buckets`: a name to
 # a shape, each filling in from `resources` for what it does not say, and the first named
 # is the default. Each bucket gets its own executor and its own block pool on the endpoint.
-_bucket_defaults = dict(_sys_cfg.get("bucket_defaults", {}))
-_bucket_defaults.update(_cam.get("resources", {}))    # campaign: queue, walltime, nodes
-_bucket_defaults.update(_usr.get("resources", {}))    # user: anything they must override
-_bucket_defaults["account"] = _usr.get("account", "")
+# A bucket on another system starts from that system's defaults and your access to it;
+# the campaign's `resources` describe its main system.
+def _bucket_defaults(system):
+    sy = SYSTEMS[system]
+    d = dict(sy["cfg"].get("bucket_defaults", {}))
+    if system == SYSTEM:
+        d.update(_cam.get("resources", {}))         # campaign: queue, walltime, nodes
+    d.update(sy["usr"].get("resources", {}))        # user: anything they must override
+    d["account"] = sy["usr"].get("account", "")
+    return d
+
 
 _cam_buckets = _cam.get("buckets") or {"default": {}}
 _SYS = {"buckets": {}}
 for _name, _over in _cam_buckets.items():
-    _cfg = dict(_bucket_defaults)
-    _cfg.update(_over or {})
+    _over = dict(_over or {})
+    _bsys = _over.pop("system", None) or SYSTEM
+    _cfg = _bucket_defaults(_bsys)
+    _cfg.update(_over)
     # A bucket's own cap on jobs in flight. Popped out: user_config goes to the endpoint
     # as the batch system's configuration and this is not one of its settings.
     _cap = _cfg.pop("max_concurrent", None)
+    # A bucket's own budget of submits for this run, set in campaign.json. Popped out for
+    # the same reason; a role's per-bucket budget (MAX_SUBMITS_BUCKETS) overrides it.
+    _bsub = _cfg.pop("max_submits", None)
     # num_nodes is the old spelling; send only nodes_per_block, which MEPs expect.
     _npb = _cfg.pop("num_nodes", None)
     _npb = _cfg.setdefault("nodes_per_block", 1 if _npb is None else _npb)
     _SYS["buckets"][_name] = {"num_nodes": _npb, "nodes_per_block": _npb,
-                              "user_config": _cfg,
+                              "system": _bsys, "user_config": _cfg,
                               "max_concurrent": int(_cap) if _cap else None,
+                              "max_submits": int(_bsub) if _bsub is not None else None,
                               # The endpoint templates' default for max_idletime.
                               "idle_s": int(_cfg.get("max_idletime", 600))}
 _default_bucket = next(iter(_SYS["buckets"]))
@@ -186,7 +356,7 @@ _default_bucket = next(iter(_SYS["buckets"]))
 # The batch jobs (blocks) remote work runs in, for the submit tools' descriptions: a job
 # sized past its block's walltime can never run.
 _BLOCKS_DESC = "\n\nJobs run in batch jobs (blocks) of this shape:\n" + "\n".join(
-    f"- {name}: {b['nodes_per_block']} node(s), walltime "
+    f"- {name}{' on ' + b['system'] if MULTI_SYSTEM else ''}: {b['nodes_per_block']} node(s), walltime "
     f"{b['user_config'].get('walltime') or 'unset'}, queue {b['user_config'].get('queue') or 'unset'}"
     for name, b in _SYS["buckets"].items()) + (
     "\nA block runs one job after another and may be shared with other agents, so a job "
@@ -199,17 +369,28 @@ MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT",
                                     _cam.get("max_concurrent",
                                              _sys_cfg.get("max_concurrent", _bucket_sum))))
 
-# TARGET is handed to the task's remote_fn. Everything the remote side needs must be
-# in here: the function is shipped source-only and cannot read this module.
-TARGET = dict(_sys_cfg.get("target", {}))
-_cam_target = dict(_cam.get("target", {}))
-# env merges key by key, so a campaign adds to the system's environment rather than
-# replacing it. Everything else the campaign sets wins outright.
-TARGET["env"] = {**TARGET.get("env", {}), **_cam_target.pop("env", {})}
-TARGET.update(_cam_target)
-TARGET["work_dir"] = _usr["work_dir"]
+# A target is handed to the task's remote function. Everything the remote side needs
+# must be in it: the function is shipped source-only and cannot read this module. One per
+# system: the system's own, then the campaign's `target`, then its `targets[system]`.
+def _target(system):
+    sy = SYSTEMS[system]
+    t = dict(sy["cfg"].get("target", {}))
+    cam_t = dict(_cam.get("target", {}))
+    per = dict((_cam.get("targets") or {}).get(system, {}))
+    # env merges key by key, so a campaign adds to the system's environment rather than
+    # replacing it. Everything else the campaign sets wins outright.
+    t["env"] = {**t.get("env", {}), **cam_t.pop("env", {}), **per.pop("env", {})}
+    t.update(cam_t)
+    t.update(per)
+    t["work_dir"] = sy["work_dir"]
+    t.setdefault("ppn", sy["cfg"].get("ppn", 1))
+    return t
+
+
+for _name in SYSTEMS:
+    SYSTEMS[_name]["target"] = _target(_name)
+TARGET = SYSTEMS[SYSTEM]["target"]
 WORK_DIR = _usr["work_dir"]     # surfaced at preflight and recorded in meta.json
-TARGET.setdefault("ppn", _sys_cfg.get("ppn", 1))
 TARGET["nranks"] = _SYS["buckets"][_default_bucket]["nodes_per_block"] * TARGET["ppn"]
 
 REMOTE_TIMEOUT = int(os.environ.get("JOB_TIMEOUT", "43200"))   # 12h client-side wait
@@ -245,6 +426,15 @@ _jobs = {}                 # remote: job_id -> {"future", "args", "key", "bucket
 _job_counter = itertools.count(1)
 _submit_count = 0
 MAX_SUBMITS = int(os.environ.get("MAX_SUBMITS", "60"))   # backstop on total jobs per run
+# Budgets per bucket, for work that differs in cost -- cheap CPU checks on one system,
+# GPU scores on another. MAX_SUBMITS_BUCKETS (JSON, as spawn sets it from a role) wins
+# over each bucket's own `max_submits`; a bucket with neither is limited only by
+# MAX_SUBMITS. A submit a task declines gives its submit back, here as in the total.
+BUCKET_SUBMITS = {b: v["max_submits"] for b, v in _SYS["buckets"].items()
+                  if v.get("max_submits") is not None}
+BUCKET_SUBMITS.update({b: int(n) for b, n in
+                       json.loads(os.environ.get("MAX_SUBMITS_BUCKETS") or "{}").items()})
+_bucket_submit_count = {b: 0 for b in _SYS["buckets"]}
 
 _local_jobs = {}           # local: job_id -> {"future", "args"}
 _local_counter = itertools.count(1)
@@ -425,6 +615,21 @@ def submit_count():
     return _submit_count if HAS_REMOTE else _local_submit_count
 
 
+def bucket_submit_counts():
+    """Remote jobs submitted this process, per bucket."""
+    return dict(_bucket_submit_count)
+
+
+def budget_spent():
+    """Whether this run can submit nothing more: the total is spent, or every bucket has
+    a budget and each is spent."""
+    if submit_count() >= MAX_SUBMITS:
+        return True
+    return bool(HAS_REMOTE and BUCKET_SUBMITS and not HAS_LOCAL
+                and all(b in BUCKET_SUBMITS for b in _SYS["buckets"])
+                and all(_bucket_submit_count.get(b, 0) >= n for b, n in BUCKET_SUBMITS.items()))
+
+
 def local_submit_count():
     """Local jobs submitted this process (observability only -- no cap)."""
     return _local_submit_count
@@ -435,9 +640,19 @@ def _remote_pending_count(bucket=None):
                and (bucket is None or j["bucket"] == bucket))
 
 
-def _bucket_of(args):
+def _bucket_of(args, kind="job"):
     """Which bucket this job would go to, before it is fired."""
-    return task.bucket_for(args) if hasattr(task, "bucket_for") else _default_bucket
+    k = KINDS[kind]
+    if k.get("bucket"):
+        return k["bucket"]
+    return k["bucket_for"](args) if k.get("bucket_for") else _default_bucket
+
+
+def _key_of(args, kind="job"):
+    k = KINDS[kind]
+    if k.get("key"):
+        return k["key"](args)
+    return f"{kind}:" + json.dumps(args, sort_keys=True)
 
 
 def _local_pending_count():
@@ -495,7 +710,8 @@ def get_executor(bucket=None):
         except Exception:
             pass
         cfg = dict(_SYS["buckets"][bucket].get("user_config", {}))
-        ex = Executor(endpoint_id=ENDPOINT_ID, user_endpoint_config=cfg)
+        endpoint = SYSTEMS[_SYS["buckets"][bucket]["system"]]["endpoint"]
+        ex = Executor(endpoint_id=endpoint, user_endpoint_config=cfg)
         # Ship the function by source: the worker does not have this code installed.
         ex.serializer = ComputeSerializer(strategy_code=AllCodeStrategies())
         _executors[bucket] = ex
@@ -560,6 +776,35 @@ def _batch_schema(schema):
 # RETRY_LIMIT is set.
 RETRY_LIMIT = int(os.environ.get("RETRY_LIMIT", "0")) or None
 RETRY_MARGIN = 60
+# A submission the Globus Compute service turns away before the task reaches the
+# endpoint: several agents submitting at once ("already in use: possibly due to
+# concurrent requests -- please try again"), or a user endpoint still starting ("did not
+# signal readiness"). The service says to try again, so the job is resubmitted after a
+# short wait, a few times, before it counts as failed.
+SUBMIT_RETRIES = 5
+SUBMIT_RETRY_WAIT = 20
+
+
+def _service_refused(exc):
+    text = f"{getattr(exc, 'code', '') or ''} {exc}"
+    return ("RESOURCE_CONFLICT" in text or "already in use" in text
+            or "did not signal readiness" in text)
+
+
+def _log_task_id(job_id, fut):
+    """Record a submission's Globus task id in the jobs log, so the task can be looked up
+    with the service. The executor sets it once its batch submit returns, after submit()
+    has handed back the future, so it is waited for in the background."""
+    def wait():
+        for _ in range(600):
+            tid = getattr(fut, "task_id", None)
+            if tid:
+                _append_jobs_log({"event": "task", "job_id": job_id, "task_id": tid})
+                return
+            if fut.done():
+                return
+            time.sleep(0.5)
+    threading.Thread(target=wait, daemon=True).start()
 
 
 class _RetryingFuture(Future):
@@ -573,6 +818,7 @@ class _RetryingFuture(Future):
         self._inner = None
         self.job_id = job_id
         self.retries = []
+        self.refusals = 0
         self._start()
 
     @property
@@ -582,6 +828,7 @@ class _RetryingFuture(Future):
     def _start(self):
         self._inner = self._submit()
         self._inner.add_done_callback(self._landed)
+        _log_task_id(self.job_id, self._inner)
 
     def _landed(self, inner):
         if self.done():
@@ -589,6 +836,15 @@ class _RetryingFuture(Future):
         try:
             res = inner.result()
         except BaseException as e:
+            if _service_refused(e) and self.refusals < SUBMIT_RETRIES:
+                self.refusals += 1
+                _append_jobs_log({"event": "resubmit", "job_id": self.job_id,
+                                  "after_s": SUBMIT_RETRY_WAIT,
+                                  "reason": str(e).splitlines()[0][:200]})
+                timer = threading.Timer(SUBMIT_RETRY_WAIT * self.refusals, self._again)
+                timer.daemon = True
+                timer.start()
+                return
             self.set_exception(e)
             return
         wait = res.get("retry_after") if isinstance(res, dict) else None
@@ -602,7 +858,7 @@ class _RetryingFuture(Future):
         if wait is not None:
             self.retries.append({"after_s": round(wait), "reason": res.get("error")})
             _append_jobs_log({"event": "retry", "job_id": self.job_id, "after_s": round(wait),
-                              "reason": res.get("error")})
+                              "reason": res.get("error"), "ran_on": res.get("ran_on")})
             timer = threading.Timer(wait, self._again)
             timer.daemon = True
             timer.start()
@@ -626,11 +882,11 @@ class _RetryingFuture(Future):
         return cancelled
 
 
-def _fire_remote(args):
+def _fire_remote(args, kind="job"):
     """Claim one piece of remote work and start it. Returns {"job_id", "key"}, or
     {"error"} for work already in flight, claimed elsewhere, or refused by the backend."""
     global _submit_count
-    key = task.job_key(args)
+    key = _key_of(args, kind)
     # A fresh-context agent cannot remember what it already fired, so refuse a repeat.
     for info in _jobs.values():
         if info["key"] == key and not info["future"].done():
@@ -641,12 +897,12 @@ def _fire_remote(args):
         return {"error": f"submit skipped: {key} is already claimed by {holder}. "
                          f"Pick different work."}
 
-    bucket = task.bucket_for(args) if hasattr(task, "bucket_for") else _default_bucket
+    bucket = _bucket_of(args, kind)
     if bucket not in _SYS["buckets"]:
         return {"error": f"bucket {bucket!r} is not one of "
-                         f"{sorted(_SYS['buckets'])} -- check bucket_for in task.py."}
-    target = dict(TARGET)
+                         f"{sorted(_SYS['buckets'])} -- check the bucket in task.py."}
     _b = _SYS["buckets"][bucket]
+    target = dict(SYSTEMS[_b["system"]]["target"])
     target["nranks"] = _b.get("nodes_per_block", 1) * target["ppn"]
     # The shape the job actually got, so it can size itself to the allocation it is in.
     target["bucket"] = bucket
@@ -654,7 +910,9 @@ def _fire_remote(args):
     target["walltime"] = _b.get("user_config", {}).get("walltime", "")
     job_id = next(_job_counter)
     try:
-        fut = _RetryingFuture(lambda: get_executor(bucket).submit(task.remote_fn, args, target),
+        fut = _RetryingFuture(lambda: get_executor(bucket).submit(
+                                  _run_remote, KINDS[kind]["source"], KINDS[kind]["name"],
+                                  args, target),
                               job_id=job_id, max_wait=_b["idle_s"] + RETRY_MARGIN)
     except Exception as e:
         _release_claim(key)
@@ -662,15 +920,15 @@ def _fire_remote(args):
         return {"error": f"submit failed: {e}"}
 
     _submit_count += 1
+    _bucket_submit_count[bucket] = _bucket_submit_count.get(bucket, 0) + 1
     _jobs[job_id] = {"future": fut, "args": args, "key": key, "bucket": bucket}
     _append_jobs_log({"event": "submit", "job_id": job_id, "key": key, "args": args,
-                      "bucket": bucket, "task_id": getattr(fut, "task_id", None)})
+                      "kind": kind, "bucket": bucket, "system": _b["system"]})
     return {"job_id": job_id, "key": key}
 
 
-@tool("submit_job", getattr(task, "JOB_DESC", "") + _BLOCKS_DESC, getattr(task, "JOB_SCHEMA", {}))
-async def submit_job(args):
-    """Fire one remote job and return immediately with a job_id."""
+async def _submit_one(args, kind="job"):
+    """Fire one remote job of a kind and return immediately with a job_id."""
     global _submit_count
     if _stop_requested:
         return {"content": [{"type": "text", "text": _WINDDOWN_REFUSAL}], "is_error": True}
@@ -683,7 +941,12 @@ async def submit_job(args):
                 f"submit refused: at capacity ({_remote_pending_count()} running/queued, "
                 f"max_concurrent={MAX_CONCURRENT}). Collect a finished job "
                 f"with get_completed_jobs before submitting more."}], "is_error": True}
-    _b = _bucket_of(args)
+    _b = _bucket_of(args, kind)
+    _lim = BUCKET_SUBMITS.get(_b)
+    if _lim is not None and _bucket_submit_count.get(_b, 0) >= _lim:
+        return {"content": [{"type": "text", "text":
+                f"submit refused: bucket {_b!r} has used its {_lim} submits for this run"}],
+                "is_error": True}
     _cap = _SYS["buckets"].get(_b, {}).get("max_concurrent")
     if _cap and _remote_pending_count(_b) >= _cap:
         return {"content": [{"type": "text", "text":
@@ -692,7 +955,7 @@ async def submit_job(args):
                 f"Collect one of its jobs, or submit work that routes elsewhere."}],
                 "is_error": True}
 
-    fired = _fire_remote(args)
+    fired = _fire_remote(args, kind)
     if "error" in fired:
         return {"content": [{"type": "text", "text": fired["error"]}], "is_error": True}
     job_id, key = fired["job_id"], fired["key"]
@@ -700,9 +963,39 @@ async def submit_job(args):
     # run goes, so it belongs in what a submit answers rather than in a prompt written
     # once at the start -- and it counts this run's submits, not the rows in a record
     # that outlives the run.
-    return {"content": [{"type": "text", "text": json.dumps(
-        {"job_id": job_id, "key": key,
-         "submits_used": _submit_count, "submits_allowed": MAX_SUBMITS})}]}
+    out = {"job_id": job_id, "key": key,
+           "submits_used": _submit_count, "submits_allowed": MAX_SUBMITS}
+    if BUCKET_SUBMITS:
+        out["bucket_submits"] = {b: {"used": _bucket_submit_count.get(b, 0), "allowed": n}
+                                 for b, n in BUCKET_SUBMITS.items()}
+    return {"content": [{"type": "text", "text": json.dumps(out)}]}
+
+
+@tool("submit_job", getattr(task, "JOB_DESC", "") + _BLOCKS_DESC, getattr(task, "JOB_SCHEMA", {}))
+async def submit_job(args):
+    """Fire one remote job and return immediately with a job_id."""
+    return await _submit_one(args)
+
+
+def _kind_tool(kind):
+    """submit_<kind>, for a task that gives TASKS. Its description names the blocks its
+    jobs run in: the kind's bucket, or every bucket where the kind chooses per job."""
+    spec = KINDS[kind]
+    named = [spec["bucket"]] if spec.get("bucket") else list(_SYS["buckets"])
+    blocks = "\n\nJobs run in batch jobs (blocks) of this shape:\n" + "\n".join(
+        f"- {n}{' on ' + _SYS['buckets'][n]['system'] if MULTI_SYSTEM else ''}: "
+        f"{_SYS['buckets'][n]['nodes_per_block']} node(s), walltime "
+        f"{_SYS['buckets'][n]['user_config'].get('walltime') or 'unset'}, queue "
+        f"{_SYS['buckets'][n]['user_config'].get('queue') or 'unset'}"
+        for n in named if n in _SYS["buckets"]) + _BLOCKS_DESC[_BLOCKS_DESC.index("\nA block"):]
+
+    @tool(f"submit_{kind}", spec.get("desc", "") + blocks, spec.get("schema", {}))
+    async def submit(args):
+        return await _submit_one(args, kind)
+    return submit
+
+
+KIND_TOOLS = {kind: _kind_tool(kind) for kind in KINDS} if MULTI_KIND else {}
 
 
 JOB_BATCH_DESC = (getattr(task, "JOB_DESC", "") + _BLOCKS_DESC +
@@ -795,6 +1088,7 @@ async def get_completed_jobs(args):
         # time its batch job had left, did no work, so it does not count as a submit.
         if res.get("refused"):
             _submit_count -= 1
+            _bucket_submit_count[info["bucket"]] -= 1
             res["submits_used"] = _submit_count
         if "error" not in res:
             _last_success_time = time.time()
@@ -804,7 +1098,8 @@ async def get_completed_jobs(args):
         # submit's ts, they give how long the job waited.
         _append_jobs_log({"event": "completed", "job_id": job_id, "key": info["key"],
                           "error": "error" in res, "refused": bool(res.get("refused")),
-                          **{k: res[k] for k in ("started_at", "wall_seconds") if k in res}})
+                          **{k: res[k] for k in ("started_at", "wall_seconds", "ran_on")
+                             if k in res}})
         _release_claim(info["key"])
         del _jobs[job_id]
     pending = [{"job_id": jid, "key": i["key"], "args": i["args"], "bucket": i["bucket"]}
@@ -1096,8 +1391,9 @@ def create_server():
     the matching function -- remote_fn for the remote tools, local_fn for the local."""
     tools = []
     if HAS_REMOTE:
-        tools += [submit_job_batch if BATCH_MODE else submit_job,
-                  get_completed_jobs, release_claim, abandon_job]
+        tools += (list(KIND_TOOLS.values()) if MULTI_KIND
+                  else [submit_job_batch if BATCH_MODE else submit_job])
+        tools += [get_completed_jobs, release_claim, abandon_job]
     if HAS_LOCAL:
         tools += [submit_local_batch if BATCH_MODE else submit_local,
                   get_local_completed]
@@ -1116,8 +1412,9 @@ def tool_names():
     """Fully-qualified names for ClaudeAgentOptions(allowed_tools=...)."""
     names = []
     if HAS_REMOTE:
-        names += ["submit_job_batch" if BATCH_MODE else "submit_job",
-                  "get_completed_jobs", "release_claim", "abandon_job"]
+        names += ([f"submit_{k}" for k in KIND_TOOLS] if MULTI_KIND
+                  else ["submit_job_batch" if BATCH_MODE else "submit_job"])
+        names += ["get_completed_jobs", "release_claim", "abandon_job"]
     if HAS_LOCAL:
         names += ["submit_local_batch" if BATCH_MODE else "submit_local",
                   "get_local_completed"]

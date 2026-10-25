@@ -44,6 +44,10 @@ _started_lock = threading.Lock()
 WORKER_JOB_BUDGET = (int(os.environ["WORKER_JOB_BUDGET"])
                      if os.environ.get("WORKER_JOB_BUDGET") else None)
 _jobs_given = 0
+# The same per bucket, as JSON: {"gpu": 16}, for a campaign whose buckets cost
+# differently. A role's `bucket_submits` is a worker's share of each.
+WORKER_BUCKET_BUDGET = json.loads(os.environ.get("WORKER_JOB_BUDGET_BUCKETS") or "{}")
+_bucket_given = {}
 # How long past its max_runtime a worker is given to collect what it has in flight and
 # write up before it is stopped.
 WIND_DOWN_SECONDS = int(os.environ.get("WORKER_WIND_DOWN", "3600"))
@@ -113,37 +117,42 @@ def _cpu_count(cpus):
 
 
 def branch_parents(repo, branch):
-    """The branches `branch` was made from, for one a coordinator set up itself: those
-    whose tip it contains and that no other such branch contains, the one on its
-    first-parent line first. Several for a merge of several parents; ["master"] or
-    similar for one made from the base. Branches made after it are not its parents;
-    where several share a tip, the oldest is taken, since the others were made from it."""
-    def tip(ref):
-        return _git(repo, "rev-parse", ref).stdout.strip()
-    head = tip(branch)
-    if not head:
-        return []
-    names = [n for n in _git(repo, "for-each-ref", "--format=%(refname:short)",
-                             "refs/heads/").stdout.split() if n != branch]
+    """The branches `branch` was made from, for one a coordinator set up itself: for each
+    other branch, the newest commit the two share; those that no other branch's shared
+    commit builds on, the one on its first-parent line first. Several for a merge of
+    several parents; ["master"] or similar for one made from the base alone. A branch
+    made from an earlier commit of another, such as its best result rather than its last,
+    still counts. Branches made after it are not its parents; where several share the
+    same commit, the oldest is taken, since the others were made from it."""
+    def git(*a):
+        return _git(repo, *a).stdout.strip()
+
+    def is_anc(x, y):
+        return _git(repo, "merge-base", "--is-ancestor", x, y).returncode == 0
+
     def created(name):
         log = _git(repo, "reflog", "show", "--date=unix", "--format=%gd",
                    f"refs/heads/{name}").stdout.split()
         m = re.search(r"@\{(\d+)\}", log[-1]) if log else None
         return int(m.group(1)) if m else 0
+
+    head = git("rev-parse", branch)
+    if not head:
+        return []
+    names = [n for n in git("for-each-ref", "--format=%(refname:short)",
+                            "refs/heads/").split() if n != branch]
     born = created(branch)
-    by_tip = {}
+    shared = {}
     for n in names:
         if born and created(n) > born:
             continue
-        t = tip(n)
-        if t and _git(repo, "merge-base", "--is-ancestor", t, head).returncode == 0:
-            by_tip.setdefault(t, []).append(n)
-    tips = [t for t in by_tip if not any(
-        o != t and _git(repo, "merge-base", "--is-ancestor", t, o).returncode == 0
-        for o in by_tip)]
-    line = _git(repo, "rev-list", "--first-parent", head).stdout.split()
-    tips.sort(key=lambda t: line.index(t) if t in line else len(line))
-    return [min(by_tip[t], key=created) for t in tips]
+        mb = git("merge-base", branch, n)
+        if mb:
+            shared.setdefault(mb, []).append(n)
+    tips = [c for c in shared if not any(o != c and is_anc(c, o) for o in shared)]
+    line = git("rev-list", "--first-parent", head).split()
+    tips.sort(key=lambda c: line.index(c) if c in line else len(line))
+    return [min(shared[c], key=created) for c in tips]
 
 
 def prepare_worktree(repo, branch, parent):
@@ -177,6 +186,8 @@ def run_worker(args, *, repo, roles, timeout=None):
                       its notes, for anything reading the run to find
         tools         the Claude Code tools a worker of this kind is given, as an
                       AGENT_TOOLS value; the coordinator's set if unset
+        bucket_submits  the worker's budget per bucket, e.g. {"gpu": 4, "cpu": 100};
+                      a bucket it does not name is limited only by max_submits
 
     `timeout` is how long the worker may run before it is stopped: unset, its
     max_runtime plus WIND_DOWN_SECONDS, since a worker at its time limit still collects
@@ -217,6 +228,16 @@ def run_worker(args, *, repo, roles, timeout=None):
             jobs = min(jobs, WORKER_JOB_BUDGET - _jobs_given)
         if jobs < 1:
             return _error("the workers' shared job budget is spent", args)
+        # Per bucket: the role's share of each, cut to what the shared pool has left.
+        bucket_jobs = {b: int(n) for b, n in (role.get("bucket_submits") or {}).items()}
+        for b in bucket_jobs:
+            if b in WORKER_BUCKET_BUDGET:
+                bucket_jobs[b] = max(0, min(bucket_jobs[b], int(WORKER_BUCKET_BUDGET[b])
+                                            - _bucket_given.get(b, 0)))
+        if bucket_jobs and not any(bucket_jobs.values()):
+            return _error("the workers' shared budget is spent in every bucket", args)
+        for b, n in bucket_jobs.items():
+            _bucket_given[b] = _bucket_given.get(b, 0) + n
         _started[kind] = _started.get(kind, 0) + 1
         _jobs_given += jobs
     worktree, problem = prepare_worktree(repo, branch, parent)
@@ -224,6 +245,8 @@ def run_worker(args, *, repo, roles, timeout=None):
         with _started_lock:
             _started[kind] -= 1
             _jobs_given -= jobs
+            for b, n in bucket_jobs.items():
+                _bucket_given[b] -= n
         return _error(problem, args)
     # A branch the coordinator set up itself names no parent; read it from git, so the
     # record shows what the worker builds on.
@@ -260,6 +283,7 @@ def run_worker(args, *, repo, roles, timeout=None):
         "AGENT_CWD": worktree,
         "USER_PROMPT_FILE": user_prompt,
         "MAX_SUBMITS": str(jobs),
+        "MAX_SUBMITS_BUCKETS": json.dumps(bucket_jobs) if bucket_jobs else "",
         "MAX_RUNTIME": str(role.get("max_runtime", 3600)),
         "LOCAL_MAX_CONCURRENT": "1",
         # A worker writes up before goal_met, so its run ends there. A run forked from
@@ -273,6 +297,8 @@ def run_worker(args, *, repo, roles, timeout=None):
     })
     if work_dir:
         env["WORK_DIR"] = work_dir
+    # The worker's directory on every other system the campaign uses, by the same name.
+    env["WORK_SUBDIR"] = branch
     if role.get("tools"):
         env["AGENT_TOOLS"] = role["tools"]
     model = role.get("model") or os.environ.get("WORKER_MODEL")
@@ -308,12 +334,29 @@ def run_worker(args, *, repo, roles, timeout=None):
     # else its local ones, as tools.submit_count does.
     used = (meta.get("remote_submitted") if meta.get("endpoint")
             else meta.get("local_submitted")) or 0
+    used_b = meta.get("remote_submitted_buckets") or {}
     with _started_lock:
         _jobs_given -= jobs - min(used, jobs)
         left = (WORKER_JOB_BUDGET - _jobs_given) if WORKER_JOB_BUDGET is not None else None
+        # What the worker did not use of each bucket goes back to the pool.
+        for b, n in bucket_jobs.items():
+            _bucket_given[b] -= n - min(int(used_b.get(b, 0)), n)
+        left_b = {b: int(WORKER_BUCKET_BUDGET[b]) - _bucket_given.get(b, 0)
+                  for b in WORKER_BUCKET_BUDGET}
     if not meta:
-        return _error(f"worker on {branch} exited {proc.returncode} without starting a "
-                      f"run; see {home}/console.log", args)
+        # It never ran -- a failed preflight, most often -- so it counts against nothing:
+        # not this kind's limit, and, marked refused, not the coordinator's submits. Its
+        # branch can be launched again.
+        with _started_lock:
+            _started[kind] -= 1
+        try:
+            with open(os.path.join(home, "console.log"), errors="replace") as f:
+                said = [l.rstrip() for l in f if l.startswith(("PREFLIGHT", "  - "))][-4:]
+        except OSError:
+            said = []
+        return {**_error(f"worker on {branch} exited {proc.returncode} without starting a "
+                         f"run; see {home}/console.log", args),
+                "refused": True, "reason": "\n".join(said)}
     # The worker's score is that of the newest scored commit it made: commits after it,
     # such as notes, carry none, and its parent's commits are not its own.
     commit, subject, score = None, "", None
@@ -348,4 +391,7 @@ def run_worker(args, *, repo, roles, timeout=None):
         "jobs_given": jobs,
         "jobs_used": used,
         "shared_jobs_left": left,
+        **({"bucket_jobs_given": bucket_jobs,
+            "bucket_jobs_used": {b: used_b.get(b, 0) for b in bucket_jobs},
+            "shared_bucket_jobs_left": left_b} if bucket_jobs else {}),
     }
