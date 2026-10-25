@@ -1550,7 +1550,9 @@ function renderStatus(s) {
                // logs those completions, so the count would stay up for good.
                const out = s.status === "running"
                  ? ((s.inflight_bucket || {})[k] || 0) : 0;
-               const multi = Object.keys(s.systems || {}).length > 1;
+               // Systems named when the buckets span more than one, whether or not this
+               // agent sends work itself (a coordinator's buckets are its workers').
+               const multi = new Set(shapes.map(([, sb]) => sb.system).filter(Boolean)).size > 1;
                // The pool's shape, whether other agents share it, and this agent's tasks
                // in flight; the rest is in the resources view, which the line opens.
                const mx = b.max_blocks || 1;

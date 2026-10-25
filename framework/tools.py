@@ -107,11 +107,15 @@ for _k in KINDS.values():
 
 
 def _run_remote(source, name, args, target):
-    """Runs on the compute system in place of the task's remote function: defines that
-    function from its source, calls it, and adds `ran_on` to a dict result -- the host,
-    when the task started and ended, and, under a batch scheduler, the batch job (block)
-    it ran in with that job's start, walltime and nodes as the scheduler reports them on
-    the node. Whatever cannot be read is left out; the task's own result is unchanged.
+    """Runs on the compute system in place of the task's remote function. It first reads
+    the batch job (block) it landed in from the scheduler on the node -- PBS or Slurm --
+    and hands the task that block as target["block"] (start, walltime_s, end, nodes,
+    queue), so a task can size itself to the time left without asking the scheduler.
+    A job whose args give `needs_seconds` and that does not fit in the time left is
+    handed back with `retry_after` instead of run, so it goes to a fresh block. Then it
+    defines the task's function from its source, calls it, and adds `ran_on` to a dict
+    result -- the host, when the task started and ended, and the block. Whatever cannot
+    be read is left out; the task's own result is otherwise unchanged.
 
     Shipped by source, like any remote function: everything it uses is imported here."""
     import os
@@ -120,12 +124,7 @@ def _run_remote(source, name, args, target):
     import subprocess
     import time
 
-    started = time.time()
-    scope = {}
-    exec(compile(source, f"<{name}>", "exec"), scope)
-    result = scope[name](args, target)
-    ran_on = {"host": socket.gethostname(), "started_at": round(started, 1),
-              "ended_at": round(time.time(), 1)}
+    ran_on = {"host": socket.gethostname()}
 
     def stamp(text, fmt):
         return round(time.mktime(time.strptime(text.strip(), fmt)), 1)
@@ -174,6 +173,26 @@ def _run_remote(source, name, args, target):
                 ran_on["block_queue"] = f["Partition"]
     except Exception as e:
         ran_on["block_error"] = f"{type(e).__name__}: {e}"
+
+    block = {k: ran_on[f"block_{k}"] for k in ("start", "walltime_s", "nodes", "queue")
+             if f"block_{k}" in ran_on}
+    if ran_on.get("batch_job"):
+        block["batch_job"] = ran_on["batch_job"]
+    if "start" in block and "walltime_s" in block:
+        block["end"] = block["start"] + block["walltime_s"]
+        # A margin for starting up and handing back the result.
+        left = round(block["end"] - 120 - time.time())
+        need = int((args or {}).get("needs_seconds") or 0) if isinstance(args, dict) else 0
+        if need > left:
+            return {"retry_after": max(left, 0) + 60, "ran_on": ran_on,
+                    "error": f"{left} s left in this batch job, the job needs {need} s"}
+    target = {**target, "block": block}
+
+    started = time.time()
+    scope = {}
+    exec(compile(source, f"<{name}>", "exec"), scope)
+    result = scope[name](args, target)
+    ran_on.update(started_at=round(started, 1), ended_at=round(time.time(), 1))
     if isinstance(result, dict):
         result = {**result, "ran_on": ran_on}
     return result
@@ -757,6 +776,19 @@ def _batch_schema(schema):
 # RETRY_LIMIT is set.
 RETRY_LIMIT = int(os.environ.get("RETRY_LIMIT", "0")) or None
 RETRY_MARGIN = 60
+# A submission the Globus Compute service turns away before the task reaches the
+# endpoint: several agents submitting at once ("already in use: possibly due to
+# concurrent requests -- please try again"), or a user endpoint still starting ("did not
+# signal readiness"). The service says to try again, so the job is resubmitted after a
+# short wait, a few times, before it counts as failed.
+SUBMIT_RETRIES = 5
+SUBMIT_RETRY_WAIT = 20
+
+
+def _service_refused(exc):
+    text = f"{getattr(exc, 'code', '') or ''} {exc}"
+    return ("RESOURCE_CONFLICT" in text or "already in use" in text
+            or "did not signal readiness" in text)
 
 
 class _RetryingFuture(Future):
@@ -770,6 +802,7 @@ class _RetryingFuture(Future):
         self._inner = None
         self.job_id = job_id
         self.retries = []
+        self.refusals = 0
         self._start()
 
     @property
@@ -786,6 +819,15 @@ class _RetryingFuture(Future):
         try:
             res = inner.result()
         except BaseException as e:
+            if _service_refused(e) and self.refusals < SUBMIT_RETRIES:
+                self.refusals += 1
+                _append_jobs_log({"event": "resubmit", "job_id": self.job_id,
+                                  "after_s": SUBMIT_RETRY_WAIT,
+                                  "reason": str(e).splitlines()[0][:200]})
+                timer = threading.Timer(SUBMIT_RETRY_WAIT * self.refusals, self._again)
+                timer.daemon = True
+                timer.start()
+                return
             self.set_exception(e)
             return
         wait = res.get("retry_after") if isinstance(res, dict) else None
