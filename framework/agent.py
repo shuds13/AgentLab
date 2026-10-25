@@ -884,6 +884,7 @@ def _start_run_dir():
                 for name, b in tools._SYS["buckets"].items()}
     _write_meta(buckets=_buckets, default_bucket=tools._default_bucket,
                 max_submits=tools.MAX_SUBMITS, max_runtime_s=MAX_RUNTIME,
+                max_submits_buckets=tools.BUCKET_SUBMITS,
                 max_turns=MAX_TURNS, critic=CRITIC_LABEL,
                 run_id=RUN_ID, handle=HANDLE, system=SYSTEM, role=ROLE,
                 endpoint=tools.ENDPOINT_ID if tools.HAS_REMOTE else "",
@@ -1207,6 +1208,7 @@ def preflight():
     # Named as the environment variables that set them, so a value that looks wrong
     # can be searched for in run.sh without a translation step.
     limits = [f"MAX_SUBMITS={tools.MAX_SUBMITS}"]
+    limits += [f"{b}={n}" for b, n in tools.BUCKET_SUBMITS.items()]
     if tools.HAS_REMOTE:
         limits.append(f"MAX_CONCURRENT={tools.MAX_CONCURRENT}")
     if tools.HAS_LOCAL:
@@ -1386,6 +1388,11 @@ async def main():
     label = getattr(tools.task, "SUBMITS_LABEL", None) or \
         f"{'remote ' if tools.HAS_REMOTE else ''}jobs this run may submit"
     at_once.append(f"{label}: {tools.MAX_SUBMITS}")
+    # Budgets per bucket, where the campaign or the role sets them.
+    for _b, _n in tools.BUCKET_SUBMITS.items():
+        _sy = tools._SYS["buckets"][_b]["system"] if tools.MULTI_SYSTEM else ""
+        at_once.append(f"jobs this run may submit to bucket {_b}"
+                       + (f" ({_sy})" if _sy else "") + f": {_n}")
     at_once.extend(getattr(tools.task, "RUN_LIMITS", []))
     if MAX_RUNTIME:
         at_once.append(f"wall clock for this run: {MAX_RUNTIME}s")
@@ -1624,7 +1631,7 @@ async def main():
                 # only once nothing is in flight: a job that comes back refused gives its
                 # submit back, and the run can still use it.
                 over_time = MAX_RUNTIME is not None and (time.time() - start_time) >= MAX_RUNTIME
-                spent = tools.submit_count() >= tools.MAX_SUBMITS and tools.jobs_in_flight() == 0
+                spent = tools.budget_spent() and tools.jobs_in_flight() == 0
                 if stopping is None and (spent or over_time):
                     stopping = "time limit" if over_time else f"budget ({tools.MAX_SUBMITS} submits)"
                     tools.request_stop()
@@ -1748,6 +1755,7 @@ async def main():
                     # submit_count() is the local count in a run with no remote
                     # backend, so it is remote only when there is one.
                     remote_submitted=tools.submit_count() if tools.HAS_REMOTE else 0,
+                    remote_submitted_buckets=tools.bucket_submit_counts() if tools.HAS_REMOTE else {},
                     local_submitted=tools.local_submit_count(),
                     uptime_s=int(time.time() - start_time))
         for path in (pid_file, os.path.join(RUN_DIR, "heartbeat")):

@@ -44,6 +44,10 @@ _started_lock = threading.Lock()
 WORKER_JOB_BUDGET = (int(os.environ["WORKER_JOB_BUDGET"])
                      if os.environ.get("WORKER_JOB_BUDGET") else None)
 _jobs_given = 0
+# The same per bucket, as JSON: {"gpu": 16}, for a campaign whose buckets cost
+# differently. A role's `bucket_submits` is a worker's share of each.
+WORKER_BUCKET_BUDGET = json.loads(os.environ.get("WORKER_JOB_BUDGET_BUCKETS") or "{}")
+_bucket_given = {}
 # How long past its max_runtime a worker is given to collect what it has in flight and
 # write up before it is stopped.
 WIND_DOWN_SECONDS = int(os.environ.get("WORKER_WIND_DOWN", "3600"))
@@ -177,6 +181,8 @@ def run_worker(args, *, repo, roles, timeout=None):
                       its notes, for anything reading the run to find
         tools         the Claude Code tools a worker of this kind is given, as an
                       AGENT_TOOLS value; the coordinator's set if unset
+        bucket_submits  the worker's budget per bucket, e.g. {"gpu": 4, "cpu": 100};
+                      a bucket it does not name is limited only by max_submits
 
     `timeout` is how long the worker may run before it is stopped: unset, its
     max_runtime plus WIND_DOWN_SECONDS, since a worker at its time limit still collects
@@ -217,6 +223,16 @@ def run_worker(args, *, repo, roles, timeout=None):
             jobs = min(jobs, WORKER_JOB_BUDGET - _jobs_given)
         if jobs < 1:
             return _error("the workers' shared job budget is spent", args)
+        # Per bucket: the role's share of each, cut to what the shared pool has left.
+        bucket_jobs = {b: int(n) for b, n in (role.get("bucket_submits") or {}).items()}
+        for b in bucket_jobs:
+            if b in WORKER_BUCKET_BUDGET:
+                bucket_jobs[b] = max(0, min(bucket_jobs[b], int(WORKER_BUCKET_BUDGET[b])
+                                            - _bucket_given.get(b, 0)))
+        if bucket_jobs and not any(bucket_jobs.values()):
+            return _error("the workers' shared budget is spent in every bucket", args)
+        for b, n in bucket_jobs.items():
+            _bucket_given[b] = _bucket_given.get(b, 0) + n
         _started[kind] = _started.get(kind, 0) + 1
         _jobs_given += jobs
     worktree, problem = prepare_worktree(repo, branch, parent)
@@ -224,6 +240,8 @@ def run_worker(args, *, repo, roles, timeout=None):
         with _started_lock:
             _started[kind] -= 1
             _jobs_given -= jobs
+            for b, n in bucket_jobs.items():
+                _bucket_given[b] -= n
         return _error(problem, args)
     # A branch the coordinator set up itself names no parent; read it from git, so the
     # record shows what the worker builds on.
@@ -260,6 +278,7 @@ def run_worker(args, *, repo, roles, timeout=None):
         "AGENT_CWD": worktree,
         "USER_PROMPT_FILE": user_prompt,
         "MAX_SUBMITS": str(jobs),
+        "MAX_SUBMITS_BUCKETS": json.dumps(bucket_jobs) if bucket_jobs else "",
         "MAX_RUNTIME": str(role.get("max_runtime", 3600)),
         "LOCAL_MAX_CONCURRENT": "1",
         # A worker writes up before goal_met, so its run ends there. A run forked from
@@ -310,9 +329,15 @@ def run_worker(args, *, repo, roles, timeout=None):
     # else its local ones, as tools.submit_count does.
     used = (meta.get("remote_submitted") if meta.get("endpoint")
             else meta.get("local_submitted")) or 0
+    used_b = meta.get("remote_submitted_buckets") or {}
     with _started_lock:
         _jobs_given -= jobs - min(used, jobs)
         left = (WORKER_JOB_BUDGET - _jobs_given) if WORKER_JOB_BUDGET is not None else None
+        # What the worker did not use of each bucket goes back to the pool.
+        for b, n in bucket_jobs.items():
+            _bucket_given[b] -= n - min(int(used_b.get(b, 0)), n)
+        left_b = {b: int(WORKER_BUCKET_BUDGET[b]) - _bucket_given.get(b, 0)
+                  for b in WORKER_BUCKET_BUDGET}
     if not meta:
         # It never ran -- a failed preflight, most often -- so it counts against nothing:
         # not this kind's limit, and, marked refused, not the coordinator's submits. Its
@@ -361,4 +386,7 @@ def run_worker(args, *, repo, roles, timeout=None):
         "jobs_given": jobs,
         "jobs_used": used,
         "shared_jobs_left": left,
+        **({"bucket_jobs_given": bucket_jobs,
+            "bucket_jobs_used": {b: used_b.get(b, 0) for b in bucket_jobs},
+            "shared_bucket_jobs_left": left_b} if bucket_jobs else {}),
     }

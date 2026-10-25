@@ -320,12 +320,16 @@ for _name, _over in _cam_buckets.items():
     # A bucket's own cap on jobs in flight. Popped out: user_config goes to the endpoint
     # as the batch system's configuration and this is not one of its settings.
     _cap = _cfg.pop("max_concurrent", None)
+    # A bucket's own budget of submits for this run, set in campaign.json. Popped out for
+    # the same reason; a role's per-bucket budget (MAX_SUBMITS_BUCKETS) overrides it.
+    _bsub = _cfg.pop("max_submits", None)
     # num_nodes is the old spelling; send only nodes_per_block, which MEPs expect.
     _npb = _cfg.pop("num_nodes", None)
     _npb = _cfg.setdefault("nodes_per_block", 1 if _npb is None else _npb)
     _SYS["buckets"][_name] = {"num_nodes": _npb, "nodes_per_block": _npb,
                               "system": _bsys, "user_config": _cfg,
                               "max_concurrent": int(_cap) if _cap else None,
+                              "max_submits": int(_bsub) if _bsub is not None else None,
                               # The endpoint templates' default for max_idletime.
                               "idle_s": int(_cfg.get("max_idletime", 600))}
 _default_bucket = next(iter(_SYS["buckets"]))
@@ -403,6 +407,15 @@ _jobs = {}                 # remote: job_id -> {"future", "args", "key", "bucket
 _job_counter = itertools.count(1)
 _submit_count = 0
 MAX_SUBMITS = int(os.environ.get("MAX_SUBMITS", "60"))   # backstop on total jobs per run
+# Budgets per bucket, for work that differs in cost -- cheap CPU checks on one system,
+# GPU scores on another. MAX_SUBMITS_BUCKETS (JSON, as spawn sets it from a role) wins
+# over each bucket's own `max_submits`; a bucket with neither is limited only by
+# MAX_SUBMITS. A submit a task declines gives its submit back, here as in the total.
+BUCKET_SUBMITS = {b: v["max_submits"] for b, v in _SYS["buckets"].items()
+                  if v.get("max_submits") is not None}
+BUCKET_SUBMITS.update({b: int(n) for b, n in
+                       json.loads(os.environ.get("MAX_SUBMITS_BUCKETS") or "{}").items()})
+_bucket_submit_count = {b: 0 for b in _SYS["buckets"]}
 
 _local_jobs = {}           # local: job_id -> {"future", "args"}
 _local_counter = itertools.count(1)
@@ -581,6 +594,21 @@ def submit_count():
     """Jobs submitted this process that MAX_SUBMITS caps. Remote where the task has
     remote_fn, else the local jobs -- so a local-only run is bounded the same way."""
     return _submit_count if HAS_REMOTE else _local_submit_count
+
+
+def bucket_submit_counts():
+    """Remote jobs submitted this process, per bucket."""
+    return dict(_bucket_submit_count)
+
+
+def budget_spent():
+    """Whether this run can submit nothing more: the total is spent, or every bucket has
+    a budget and each is spent."""
+    if submit_count() >= MAX_SUBMITS:
+        return True
+    return bool(HAS_REMOTE and BUCKET_SUBMITS and not HAS_LOCAL
+                and all(b in BUCKET_SUBMITS for b in _SYS["buckets"])
+                and all(_bucket_submit_count.get(b, 0) >= n for b, n in BUCKET_SUBMITS.items()))
 
 
 def local_submit_count():
@@ -833,6 +861,7 @@ def _fire_remote(args, kind="job"):
         return {"error": f"submit failed: {e}"}
 
     _submit_count += 1
+    _bucket_submit_count[bucket] = _bucket_submit_count.get(bucket, 0) + 1
     _jobs[job_id] = {"future": fut, "args": args, "key": key, "bucket": bucket}
     _append_jobs_log({"event": "submit", "job_id": job_id, "key": key, "args": args,
                       "kind": kind, "bucket": bucket, "system": _b["system"],
@@ -855,6 +884,11 @@ async def _submit_one(args, kind="job"):
                 f"max_concurrent={MAX_CONCURRENT}). Collect a finished job "
                 f"with get_completed_jobs before submitting more."}], "is_error": True}
     _b = _bucket_of(args, kind)
+    _lim = BUCKET_SUBMITS.get(_b)
+    if _lim is not None and _bucket_submit_count.get(_b, 0) >= _lim:
+        return {"content": [{"type": "text", "text":
+                f"submit refused: bucket {_b!r} has used its {_lim} submits for this run"}],
+                "is_error": True}
     _cap = _SYS["buckets"].get(_b, {}).get("max_concurrent")
     if _cap and _remote_pending_count(_b) >= _cap:
         return {"content": [{"type": "text", "text":
@@ -871,9 +905,12 @@ async def _submit_one(args, kind="job"):
     # run goes, so it belongs in what a submit answers rather than in a prompt written
     # once at the start -- and it counts this run's submits, not the rows in a record
     # that outlives the run.
-    return {"content": [{"type": "text", "text": json.dumps(
-        {"job_id": job_id, "key": key,
-         "submits_used": _submit_count, "submits_allowed": MAX_SUBMITS})}]}
+    out = {"job_id": job_id, "key": key,
+           "submits_used": _submit_count, "submits_allowed": MAX_SUBMITS}
+    if BUCKET_SUBMITS:
+        out["bucket_submits"] = {b: {"used": _bucket_submit_count.get(b, 0), "allowed": n}
+                                 for b, n in BUCKET_SUBMITS.items()}
+    return {"content": [{"type": "text", "text": json.dumps(out)}]}
 
 
 @tool("submit_job", getattr(task, "JOB_DESC", "") + _BLOCKS_DESC, getattr(task, "JOB_SCHEMA", {}))
@@ -993,6 +1030,7 @@ async def get_completed_jobs(args):
         # time its batch job had left, did no work, so it does not count as a submit.
         if res.get("refused"):
             _submit_count -= 1
+            _bucket_submit_count[info["bucket"]] -= 1
             res["submits_used"] = _submit_count
         if "error" not in res:
             _last_success_time = time.time()
