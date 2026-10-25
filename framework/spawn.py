@@ -117,37 +117,42 @@ def _cpu_count(cpus):
 
 
 def branch_parents(repo, branch):
-    """The branches `branch` was made from, for one a coordinator set up itself: those
-    whose tip it contains and that no other such branch contains, the one on its
-    first-parent line first. Several for a merge of several parents; ["master"] or
-    similar for one made from the base. Branches made after it are not its parents;
-    where several share a tip, the oldest is taken, since the others were made from it."""
-    def tip(ref):
-        return _git(repo, "rev-parse", ref).stdout.strip()
-    head = tip(branch)
-    if not head:
-        return []
-    names = [n for n in _git(repo, "for-each-ref", "--format=%(refname:short)",
-                             "refs/heads/").stdout.split() if n != branch]
+    """The branches `branch` was made from, for one a coordinator set up itself: for each
+    other branch, the newest commit the two share; those that no other branch's shared
+    commit builds on, the one on its first-parent line first. Several for a merge of
+    several parents; ["master"] or similar for one made from the base alone. A branch
+    made from an earlier commit of another, such as its best result rather than its last,
+    still counts. Branches made after it are not its parents; where several share the
+    same commit, the oldest is taken, since the others were made from it."""
+    def git(*a):
+        return _git(repo, *a).stdout.strip()
+
+    def is_anc(x, y):
+        return _git(repo, "merge-base", "--is-ancestor", x, y).returncode == 0
+
     def created(name):
         log = _git(repo, "reflog", "show", "--date=unix", "--format=%gd",
                    f"refs/heads/{name}").stdout.split()
         m = re.search(r"@\{(\d+)\}", log[-1]) if log else None
         return int(m.group(1)) if m else 0
+
+    head = git("rev-parse", branch)
+    if not head:
+        return []
+    names = [n for n in git("for-each-ref", "--format=%(refname:short)",
+                            "refs/heads/").split() if n != branch]
     born = created(branch)
-    by_tip = {}
+    shared = {}
     for n in names:
         if born and created(n) > born:
             continue
-        t = tip(n)
-        if t and _git(repo, "merge-base", "--is-ancestor", t, head).returncode == 0:
-            by_tip.setdefault(t, []).append(n)
-    tips = [t for t in by_tip if not any(
-        o != t and _git(repo, "merge-base", "--is-ancestor", t, o).returncode == 0
-        for o in by_tip)]
-    line = _git(repo, "rev-list", "--first-parent", head).stdout.split()
-    tips.sort(key=lambda t: line.index(t) if t in line else len(line))
-    return [min(by_tip[t], key=created) for t in tips]
+        mb = git("merge-base", branch, n)
+        if mb:
+            shared.setdefault(mb, []).append(n)
+    tips = [c for c in shared if not any(o != c and is_anc(c, o) for o in shared)]
+    line = git("rev-list", "--first-parent", head).split()
+    tips.sort(key=lambda c: line.index(c) if c in line else len(line))
+    return [min(shared[c], key=created) for c in tips]
 
 
 def prepare_worktree(repo, branch, parent):
