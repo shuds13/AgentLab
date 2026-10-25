@@ -791,6 +791,22 @@ def _service_refused(exc):
             or "did not signal readiness" in text)
 
 
+def _log_task_id(job_id, fut):
+    """Record a submission's Globus task id in the jobs log, so the task can be looked up
+    with the service. The executor sets it once its batch submit returns, after submit()
+    has handed back the future, so it is waited for in the background."""
+    def wait():
+        for _ in range(600):
+            tid = getattr(fut, "task_id", None)
+            if tid:
+                _append_jobs_log({"event": "task", "job_id": job_id, "task_id": tid})
+                return
+            if fut.done():
+                return
+            time.sleep(0.5)
+    threading.Thread(target=wait, daemon=True).start()
+
+
 class _RetryingFuture(Future):
     """One job across its submissions: done when a submission returns anything other
     than a retry_after answer, or when the retries are spent."""
@@ -812,6 +828,7 @@ class _RetryingFuture(Future):
     def _start(self):
         self._inner = self._submit()
         self._inner.add_done_callback(self._landed)
+        _log_task_id(self.job_id, self._inner)
 
     def _landed(self, inner):
         if self.done():
@@ -906,8 +923,7 @@ def _fire_remote(args, kind="job"):
     _bucket_submit_count[bucket] = _bucket_submit_count.get(bucket, 0) + 1
     _jobs[job_id] = {"future": fut, "args": args, "key": key, "bucket": bucket}
     _append_jobs_log({"event": "submit", "job_id": job_id, "key": key, "args": args,
-                      "kind": kind, "bucket": bucket, "system": _b["system"],
-                      "task_id": getattr(fut, "task_id", None)})
+                      "kind": kind, "bucket": bucket, "system": _b["system"]})
     return {"job_id": job_id, "key": key}
 
 
