@@ -556,7 +556,8 @@ def _submits(path, run_id):
                     if b:
                         inflight[b] = inflight.get(b, 0) - 1
                     continue
-                if not event.endswith("submit"):
+                # A resubmit resends a job the service turned away; it is not a new one.
+                if event not in ("submit", "local_submit"):
                     continue
                 total += 1
                 this_run[where] += mine
