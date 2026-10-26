@@ -778,6 +778,7 @@ def lab_summary(campaign):
         "campaign": campaign, "run": meta.get("run_id"),
         "handle": meta.get("handle"), "status": meta.get("status"),
         "stop_reason": meta.get("stop_reason"), "model": meta.get("model"),
+        "effort": meta.get("effort"),
         "system": meta.get("system"), "endpoint": meta.get("endpoint"),
         "started_at": meta.get("started_at"), "ended_at": meta.get("ended_at"),
         "elapsed_s": _elapsed(meta),
@@ -823,6 +824,7 @@ def status(campaign, run=None):
         "run": meta.get("run_id"), "handle": meta.get("handle"),
         "campaign": campaign, "status": meta.get("status"),
         "stop_reason": meta.get("stop_reason"), "model": meta.get("model"),
+        "effort": meta.get("effort"),
         "critic": meta.get("critic"), "host": meta.get("host"),
         "system": meta.get("system"),
         "session_id": meta.get("session_id"), "session_cwd": meta.get("session_cwd"),
@@ -1602,7 +1604,8 @@ function renderStatus(s) {
                                                 : `${esc(k)} ${+v.toPrecision(7)}`))
         .join(" \u00b7 ")]] : []),
     ["elapsed", bar(s.elapsed_s, s.max_runtime_s, hms)],
-    ["model", `${s.model || "\u2014"} \u00b7 context ` + (s.context_tokens == null
+    ["model", `${s.model || "\u2014"}` + (s.effort ? ` \u00b7 effort ${s.effort}` : "")
+        + " \u00b7 context " + (s.context_tokens == null
         ? "no data"
         : s.context_pct == null
         ? `${short(s.context_tokens)} (window not known yet)`

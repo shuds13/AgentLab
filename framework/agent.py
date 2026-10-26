@@ -27,6 +27,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     AgentDefinition,
     AssistantMessage,
+    HookMatcher,
     ResultMessage,
     SystemMessage,
 )
@@ -335,7 +336,18 @@ def _as_context(usage):
             "pct": usage.get("percentage"), "model": usage.get("model")}
 
 
-_last_context = {}          # tokens/window/pct/model, from the most recent turn
+_last_context = {}          # tokens/window/pct/model/effort, from the most recent turn
+
+
+async def _note_effort(input_data, tool_use_id, context):
+    """PreToolUse hook: record the effort level the CLI applied to the turn. No message
+    or query reports it; hook input does, after any fallback for the model. A
+    subagent's calls (agent_id set) carry the subagent's level, not the agent's."""
+    level = (input_data.get("effort") or {}).get("level")
+    if level and not input_data.get("agent_id") and level != _last_context.get("effort"):
+        _last_context["effort"] = level
+        _write_meta(effort=level)
+    return {}
 
 
 def _note_turn_context(usage, model=None):
@@ -662,6 +674,9 @@ def agent_tools():
 # campaign on a cheaper model before giving a machine to a long run. An alias
 # ('sonnet', 'opus') or a full model name; which ones work depends on the lab's gateway.
 AGENT_MODEL = os.environ.get("AGENT_MODEL", "").strip()
+# The agent's effort level (low, medium, high, xhigh, max). Unset leaves it to Claude
+# Code, which takes it from the settings files or the model's default.
+AGENT_EFFORT = os.environ.get("AGENT_EFFORT", "").strip()
 RESOLVED_MODEL = ""      # what the agent will actually run as; filled in by preflight
 
 
@@ -1203,6 +1218,7 @@ def preflight():
     print(f"job tools:    {' '.join(job)}", flush=True)
     print(f"claude tools: {' '.join(claude)}", flush=True)
     print(f"model:        {RESOLVED_MODEL or '(could not be determined)'}", flush=True)
+    print(f"effort:       {AGENT_EFFORT or '(left to Claude Code)'}", flush=True)
     print(f"critic:       {CRITIC_LABEL}", flush=True)
     # The budget and the resources a job asks for. They come from three files and the
     # environment, so the resolved values are the only honest way to show them -- and
@@ -1423,8 +1439,10 @@ async def main():
         # which decides nothing in a run with nobody there to ask.
         tools=agent_tools(),
         **({"model": AGENT_MODEL} if AGENT_MODEL else {}),
+        **({"effort": AGENT_EFFORT} if AGENT_EFFORT else {}),
         **({"settings": _agent_settings_file()} if GATEWAY_URL or FENCE_FILES else {}),
         agents=subagent_defs(),
+        hooks={"PreToolUse": [HookMatcher(hooks=[_note_effort])]},
         max_buffer_size=MAX_MESSAGE_BYTES,
         permission_mode="bypassPermissions",
         system_prompt=system_prompt,

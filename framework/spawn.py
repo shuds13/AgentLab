@@ -191,6 +191,8 @@ def run_worker(args, *, repo, roles, timeout=None):
         max_runtime   the worker's wall clock, in seconds
         fork          True when the kind starts from an earlier worker's session
         model         the worker's model; WORKER_MODEL, then the coordinator's, if unset
+        effort        the worker's effort level; WORKER_EFFORT, then the coordinator's,
+                      if unset
         max_per_run   how many of this kind one coordinating run may start; unlimited
                       if unset
         records       the files a worker of this kind keeps in its worktree, such as
@@ -315,6 +317,9 @@ def run_worker(args, *, repo, roles, timeout=None):
     model = role.get("model") or os.environ.get("WORKER_MODEL")
     if model:
         env["AGENT_MODEL"] = model
+    effort = role.get("effort") or os.environ.get("WORKER_EFFORT")
+    if effort:
+        env["AGENT_EFFORT"] = effort
     if role.get("fork"):
         env["RESUME_SESSION"] = parent_session
 
