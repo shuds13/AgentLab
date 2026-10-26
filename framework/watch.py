@@ -1123,6 +1123,8 @@ PAGE = """<!doctype html>
  table { border-collapse:collapse; margin:12px; }
  #res h3 { margin:14px 12px 2px; font-size:14px; color:#cfd8e0; }
  #res .note { margin:2px 12px; color:#8a9aaa; }
+ #res .live { margin:4px 12px 6px; padding:2px 0 2px 10px; border-left:3px solid #3d7a3d; color:#8a9aaa; }
+ #res .live b { color:#e8f0f6; }
  #res table.grid td, #res table.grid th { padding:2px 14px 2px 0; text-align:left;
                                          white-space:nowrap; }
  #res table.grid th { color:#6f8296; font-weight:normal; border-bottom:1px solid #2b3946; }
@@ -1456,20 +1458,28 @@ async function renderResources() {
     h += '<div class="note">This run sent no work to another system.</div>';
   for (const sy of d.systems || []) {
     if (resSystem && sy.system !== resSystem) continue;
-    const ntasks = sy.blocks.reduce((n, b) => n + b.tasks.length, 0);
     h += `<h3 class="sys">${esc(sy.system)}</h3><div class="note">endpoint ${esc(sy.endpoint)}</div>`;
+    // The limits, in grey: the whole pool, each bucket's blocks, what one block runs.
+    // Then what is happening now, with its values in bold.
+    h += `<div class="note">${sy.max_node_hours != null ? `max node-hours ${sy.max_node_hours} · ` : ""}`
+      + `pool shared by all agents</div>`;
     for (const [k, b] of Object.entries(sy.buckets || {})) {
-      const who = (sy.sharing || {})[k] || [];
-      const per = b.nodes_per_job && b.nodes_per_job < (b.num_nodes || 1)
-        ? ` (${(b.num_nodes || 1) / b.nodes_per_job} jobs at once)` : "";
-      h += `<div class="note">bucket <b>${esc(k)}</b>: ${b.num_nodes || 1} node per block${per} on `
-        + `${esc(b.queue || "?")}, ${esc(b.walltime || "?")}, up to ${b.max_blocks || 1} `
-        + `block${(b.max_blocks || 1) === 1 ? "" : "s"} \u00b7 a pool shared by `
-        + `${who.length} agent${who.length === 1 ? "" : "s"}</div>`;
+      const n = b.num_nodes || 1, per = b.nodes_per_job || n;
+      const jobs = per < n ? `${n / per} concurrent ${per}-node jobs` : `one ${n}-node job at a time`;
+      h += `<div class="note">bucket <b>${esc(k)}</b>: ${n}-node blocks, `
+        + `max concurrent blocks ${b.max_blocks || 1}</div>`
+        + `<div class="note">per block: ${jobs}, ${esc(b.queue || "?")} queue, `
+        + `${esc(b.walltime || "?")} walltime</div>`;
     }
-    h += `<div class="note">${sy.blocks.length} blocks \u00b7 at least ${sy.node_hours}`
-      + (sy.max_node_hours != null ? ` of ${sy.max_node_hours}` : "") + ` node-hours `
-      + `(nodes \u00d7 time from block start to its last task) \u00b7 ${ntasks} tasks</div>`;
+    const here = (d.tasks || []).filter(t => t.system === sy.system);
+    const flying = here.filter(t => t.state === "waiting or running");
+    const busy = [...new Set(flying.map(t => t.agent))];
+    h += `<div class="live">node-hours used <b>${sy.node_hours}</b>`
+      + (sy.max_node_hours != null ? ` / ${sy.max_node_hours}` : "")
+      + ` (at least: block start to its last task)<br>`
+      + `blocks so far <b>${sy.blocks.length}</b> · tasks in flight <b>${flying.length}</b>`
+      + ` (running or queued) from <b>${busy.length}</b> agent${busy.length === 1 ? "" : "s"}`
+      + ` · done <b>${here.length - flying.length}</b></div>`;
     h += '<table class="grid"><tr><th>block</th><th>queue</th><th>nodes</th><th>waited</th>'
       + '<th>started</th><th>walltime</th><th>to last task</th><th>node-hours</th><th></th></tr>';
     for (const b of sy.blocks) {
