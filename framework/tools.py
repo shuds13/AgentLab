@@ -345,7 +345,20 @@ for _name, _over in _cam_buckets.items():
     # num_nodes is the old spelling; send only nodes_per_block, which MEPs expect.
     _npb = _cfg.pop("num_nodes", None)
     _npb = _cfg.setdefault("nodes_per_block", 1 if _npb is None else _npb)
+    # The nodes one job gets. By default the whole block, which runs its jobs one after
+    # another; at 1, every node of the block runs a job of its own, which needs a worker
+    # on every node rather than only the first (MpiExecLauncher). Popped out: it is the
+    # framework's, not the endpoint's.
+    _npj = int(_cfg.pop("nodes_per_job", _npb))
+    if _npj not in (1, int(_npb)):
+        raise SystemExit(f"bucket {_name!r}: nodes_per_job must be 1 or nodes_per_block "
+                         f"({_npb}), not {_npj}")
+    if _npj < int(_npb):
+        _cfg.setdefault("launcher_type", "MpiExecLauncher")
+        _cfg.setdefault("max_workers_per_node", 1)
     _SYS["buckets"][_name] = {"num_nodes": _npb, "nodes_per_block": _npb,
+                              "nodes_per_job": _npj,
+                              "jobs_per_block": int(_npb) // _npj,
                               "system": _bsys, "user_config": _cfg,
                               "max_concurrent": int(_cap) if _cap else None,
                               "max_submits": int(_bsub) if _bsub is not None else None,
@@ -355,16 +368,25 @@ _default_bucket = next(iter(_SYS["buckets"]))
 
 # The batch jobs (blocks) remote work runs in, for the submit tools' descriptions: a job
 # sized past its block's walltime can never run.
-_BLOCKS_DESC = "\n\nJobs run in batch jobs (blocks) of this shape:\n" + "\n".join(
-    f"- {name}{' on ' + b['system'] if MULTI_SYSTEM else ''}: {b['nodes_per_block']} node(s), walltime "
-    f"{b['user_config'].get('walltime') or 'unset'}, queue {b['user_config'].get('queue') or 'unset'}"
-    for name, b in _SYS["buckets"].items()) + (
-    "\nA block runs one job after another and may be shared with other agents, so a job "
-    "can start in a block with less than its walltime left. A job never gets more than "
-    "its block's walltime.")
+def _block_shape(name):
+    b = _SYS["buckets"][name]
+    jobs = (f", {b['jobs_per_block']} jobs of {b['nodes_per_job']} node(s) at once"
+            if b["jobs_per_block"] > 1 else "")
+    return (f"- {name}{' on ' + b['system'] if MULTI_SYSTEM else ''}: "
+            f"{b['nodes_per_block']} node(s){jobs}, walltime "
+            f"{b['user_config'].get('walltime') or 'unset'}, queue "
+            f"{b['user_config'].get('queue') or 'unset'}")
 
-# Total jobs in flight, across all buckets. Defaults to the sum of the bucket caps.
-_bucket_sum = sum(b["max_concurrent"] or 1 for b in _SYS["buckets"].values())
+
+_BLOCKS_DESC = "\n\nJobs run in batch jobs (blocks) of this shape:\n" + "\n".join(
+    _block_shape(name) for name in _SYS["buckets"]) + (
+    "\nA block runs one job after another, unless its shape says several at once, and "
+    "may be shared with other agents, so a job can start in a block with less than its "
+    "walltime left. A job never gets more than its block's walltime.")
+
+# Total jobs in flight, across all buckets. Defaults to the sum of the bucket caps, a
+# bucket without one counting the jobs one block runs at once.
+_bucket_sum = sum(b["max_concurrent"] or b["jobs_per_block"] for b in _SYS["buckets"].values())
 MAX_CONCURRENT = int(os.environ.get("MAX_CONCURRENT",
                                     _cam.get("max_concurrent",
                                              _sys_cfg.get("max_concurrent", _bucket_sum))))
@@ -391,7 +413,7 @@ for _name in SYSTEMS:
     SYSTEMS[_name]["target"] = _target(_name)
 TARGET = SYSTEMS[SYSTEM]["target"]
 WORK_DIR = _usr["work_dir"]     # surfaced at preflight and recorded in meta.json
-TARGET["nranks"] = _SYS["buckets"][_default_bucket]["nodes_per_block"] * TARGET["ppn"]
+TARGET["nranks"] = _SYS["buckets"][_default_bucket]["nodes_per_job"] * TARGET["ppn"]
 
 REMOTE_TIMEOUT = int(os.environ.get("JOB_TIMEOUT", "43200"))   # 12h client-side wait
 LOCAL_TIMEOUT = int(os.environ.get("LOCAL_JOB_TIMEOUT", "14400"))     # 4h
@@ -903,10 +925,10 @@ def _fire_remote(args, kind="job"):
                          f"{sorted(_SYS['buckets'])} -- check the bucket in task.py."}
     _b = _SYS["buckets"][bucket]
     target = dict(SYSTEMS[_b["system"]]["target"])
-    target["nranks"] = _b.get("nodes_per_block", 1) * target["ppn"]
+    target["nranks"] = _b.get("nodes_per_job", 1) * target["ppn"]
     # The shape the job actually got, so it can size itself to the allocation it is in.
     target["bucket"] = bucket
-    target["num_nodes"] = _b.get("nodes_per_block", 1)
+    target["num_nodes"] = _b.get("nodes_per_job", 1)
     target["walltime"] = _b.get("user_config", {}).get("walltime", "")
     job_id = next(_job_counter)
     try:
@@ -983,11 +1005,8 @@ def _kind_tool(kind):
     spec = KINDS[kind]
     named = [spec["bucket"]] if spec.get("bucket") else list(_SYS["buckets"])
     blocks = "\n\nJobs run in batch jobs (blocks) of this shape:\n" + "\n".join(
-        f"- {n}{' on ' + _SYS['buckets'][n]['system'] if MULTI_SYSTEM else ''}: "
-        f"{_SYS['buckets'][n]['nodes_per_block']} node(s), walltime "
-        f"{_SYS['buckets'][n]['user_config'].get('walltime') or 'unset'}, queue "
-        f"{_SYS['buckets'][n]['user_config'].get('queue') or 'unset'}"
-        for n in named if n in _SYS["buckets"]) + _BLOCKS_DESC[_BLOCKS_DESC.index("\nA block"):]
+        _block_shape(n) for n in named if n in _SYS["buckets"]) + \
+        _BLOCKS_DESC[_BLOCKS_DESC.index("\nA block"):]
 
     @tool(f"submit_{kind}", spec.get("desc", "") + blocks, spec.get("schema", {}))
     async def submit(args):

@@ -17,8 +17,15 @@ engine:
 
   provider:
     type: PBSProProvider
+    # launcher_type as on ALCF's endpoint. String options arrive JSON-quoted, hence `in`.
     launcher:
+{%- if "MpiExecLauncher" in launcher_type|default("") %}
+      type: MpiExecLauncher        # a worker pool on every node, for a job per node
+      bind_cmd: --cpu-bind
+      overrides: --ppn 1
+{%- else %}
       type: SimpleLauncher         # the task's own mpiexec spans the allocation
+{%- endif %}
 
     account: {{ account }}
     queue: {{ queue }}

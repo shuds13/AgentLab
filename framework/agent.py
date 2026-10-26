@@ -877,6 +877,7 @@ def _start_run_dir():
     _buckets = {name: {"queue": b["user_config"].get("queue")
                                 or b["user_config"].get("qos", ""),
                        "num_nodes": b.get("nodes_per_block"),
+                       "nodes_per_job": b.get("nodes_per_job"),
                        "max_blocks": b["user_config"].get("max_blocks", 1),
                        "walltime": b["user_config"].get("walltime", ""),
                        "max_concurrent": b.get("max_concurrent"),
@@ -1227,6 +1228,8 @@ def preflight():
             shown = ", ".join(f"{k}={v}" for k, v in sorted(res.items())
                               if v != "" and v is not None
                               and k not in ("init_blocks", "min_blocks"))
+            if b.get("jobs_per_block", 1) > 1:
+                shown += f", nodes_per_job={b['nodes_per_job']}"
             if b.get("max_concurrent"):
                 shown += f", max_concurrent={b['max_concurrent']}"
             if tools.MULTI_SYSTEM:
