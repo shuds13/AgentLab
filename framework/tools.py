@@ -26,6 +26,7 @@ from concurrent.futures import wait as _futures_wait
 
 from claude_agent_sdk import tool, create_sdk_mcp_server
 
+import node_hours as _node_hours
 import transfer as _transfer
 from globus_compute_sdk import Executor
 from globus_compute_sdk.serialize import ComputeSerializer, AllCodeStrategies
@@ -414,6 +415,22 @@ for _name in SYSTEMS:
 TARGET = SYSTEMS[SYSTEM]["target"]
 WORK_DIR = _usr["work_dir"]     # surfaced at preflight and recorded in meta.json
 TARGET["nranks"] = _SYS["buckets"][_default_bucket]["nodes_per_job"] * TARGET["ppn"]
+
+# Node-hours the whole launch -- the top run and its workers -- may use on each system,
+# counted from the blocks its tasks ran in (node_hours.py). Experimental, and a soft cap:
+# it stops new submits, but tasks already sent still run. MAX_NODE_HOURS is a number for
+# the main system or a JSON object by system; otherwise campaign.json's `node_hours`.
+_nh = os.environ.get("MAX_NODE_HOURS", "").strip()
+NODE_HOURS = ({k: float(v) for k, v in json.loads(_nh).items()} if _nh.startswith("{")
+              else {SYSTEM: float(_nh)} if _nh
+              else {k: float(v) for k, v in (_cam.get("node_hours") or {}).items()})
+
+
+def node_hours_used():
+    """Node-hours this launch has used so far, by system."""
+    return _node_hours.used(WORKSPACE_DIR,
+                            _node_hours.launch_runs(WORKSPACE_DIR, os.environ.get("RUN_ID", "")))
+
 
 REMOTE_TIMEOUT = int(os.environ.get("JOB_TIMEOUT", "43200"))   # 12h client-side wait
 LOCAL_TIMEOUT = int(os.environ.get("LOCAL_JOB_TIMEOUT", "14400"))     # 4h
@@ -924,6 +941,13 @@ def _fire_remote(args, kind="job"):
         return {"error": f"bucket {bucket!r} is not one of "
                          f"{sorted(_SYS['buckets'])} -- check the bucket in task.py."}
     _b = _SYS["buckets"][bucket]
+    _nh_cap = NODE_HOURS.get(_b["system"])
+    if _nh_cap is not None:
+        _nh_used = node_hours_used().get(_b["system"], 0)
+        if _nh_used >= _nh_cap:
+            _release_claim(key)
+            return {"error": f"submit refused: {_b['system']} node-hours for this launch "
+                             f"are used ({_nh_used:.1f} of {_nh_cap:g})."}
     target = dict(SYSTEMS[_b["system"]]["target"])
     target["nranks"] = _b.get("nodes_per_job", 1) * target["ppn"]
     # The shape the job actually got, so it can size itself to the allocation it is in.

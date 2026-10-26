@@ -170,6 +170,17 @@ def prepare_worktree(repo, branch, parent):
     return path, None
 
 
+def _node_hours_left():
+    """The launch's node-hours left by system, where it has a budget. tools is imported
+    here, not at the top: it imports the task module, which imports this one."""
+    import tools
+    if not tools.NODE_HOURS:
+        return {}
+    used = tools.node_hours_used()
+    return {"node_hours_left": {sy: round(cap - used.get(sy, 0), 1)
+                                for sy, cap in tools.NODE_HOURS.items()}}
+
+
 def run_worker(args, *, repo, roles, timeout=None):
     """Start one worker, wait for it to finish, and return what it produced.
 
@@ -391,6 +402,7 @@ def run_worker(args, *, repo, roles, timeout=None):
         "jobs_given": jobs,
         "jobs_used": used,
         "shared_jobs_left": left,
+        **_node_hours_left(),
         **({"bucket_jobs_given": bucket_jobs,
             "bucket_jobs_used": {b: used_b.get(b, 0) for b in bucket_jobs},
             "shared_bucket_jobs_left": left_b} if bucket_jobs else {}),

@@ -886,6 +886,7 @@ def _start_run_dir():
     _write_meta(buckets=_buckets, default_bucket=tools._default_bucket,
                 max_submits=tools.MAX_SUBMITS, max_runtime_s=MAX_RUNTIME,
                 max_submits_buckets=tools.BUCKET_SUBMITS,
+                max_node_hours=tools.NODE_HOURS,
                 max_turns=MAX_TURNS, critic=CRITIC_LABEL,
                 run_id=RUN_ID, handle=HANDLE, system=SYSTEM, role=ROLE,
                 endpoint=tools.ENDPOINT_ID if tools.HAS_REMOTE else "",

@@ -28,6 +28,8 @@ import re
 import subprocess
 import threading
 import time
+
+import node_hours
 import sys
 import urllib.parse
 import webbrowser
@@ -297,21 +299,13 @@ def resources(campaign, run=None, light=False):
         blocks = {}
 
         def block(on):
-            # A batch job where there is one; else the host, for a system without one.
-            bid = on.get("batch_job") or (on.get("host") and "host " + on["host"])
+            bid = node_hours.block_key(on)
             if not bid:
                 return None
             b = blocks.setdefault(bid, {"id": bid, "queue": None, "nodes": None,
                                         "queued_at": None, "start": None, "walltime_s": None,
                                         "last": None, "tasks": [], "refused": []})
-            for field, key in (("queue", "block_queue"), ("nodes", "block_nodes"),
-                               ("start", "block_start"), ("queued_at", "block_queued_at"),
-                               ("walltime_s", "block_walltime_s")):
-                if b[field] is None and on.get(key) is not None:
-                    b[field] = on[key]
-            end = on.get("ended_at")
-            if end and (b["last"] is None or end > b["last"]):
-                b["last"] = end
+            node_hours.add(b, on)
             return b
 
         for t in mine:
@@ -327,11 +321,12 @@ def resources(campaign, run=None, light=False):
                                              mine=t["mine"]))
         rows = sorted(blocks.values(), key=lambda b: b["start"] or b["last"] or 0)
         for b in rows:
-            span = (b["last"] - b["start"]) if (b["start"] and b["last"]) else None
-            b["node_hours"] = round((b["nodes"] or 1) * span / 3600, 2) if span else None
+            nh = node_hours.hours(b)
+            b["node_hours"] = round(nh, 2) if nh else None
             b["agents"] = sorted({t["agent"] for t in b["tasks"]})
         sysd.update(blocks=rows,
-                    node_hours=round(sum(b["node_hours"] or 0 for b in rows), 1))
+                    node_hours=round(sum(node_hours.hours(b) or 0 for b in rows), 1),
+                    max_node_hours=(top.get("max_node_hours") or {}).get(name))
         out.append(sysd)
     return {"systems": out, "tasks": tasks, "selected": selected}
 
@@ -1465,12 +1460,15 @@ async function renderResources() {
     h += `<h3 class="sys">${esc(sy.system)}</h3><div class="note">endpoint ${esc(sy.endpoint)}</div>`;
     for (const [k, b] of Object.entries(sy.buckets || {})) {
       const who = (sy.sharing || {})[k] || [];
-      h += `<div class="note">bucket <b>${esc(k)}</b>: ${b.num_nodes || 1} node per block on `
+      const per = b.nodes_per_job && b.nodes_per_job < (b.num_nodes || 1)
+        ? ` (${(b.num_nodes || 1) / b.nodes_per_job} jobs at once)` : "";
+      h += `<div class="note">bucket <b>${esc(k)}</b>: ${b.num_nodes || 1} node per block${per} on `
         + `${esc(b.queue || "?")}, ${esc(b.walltime || "?")}, up to ${b.max_blocks || 1} `
         + `block${(b.max_blocks || 1) === 1 ? "" : "s"} \u00b7 a pool shared by `
         + `${who.length} agent${who.length === 1 ? "" : "s"}</div>`;
     }
-    h += `<div class="note">${sy.blocks.length} blocks \u00b7 at least ${sy.node_hours} node-hours `
+    h += `<div class="note">${sy.blocks.length} blocks \u00b7 at least ${sy.node_hours}`
+      + (sy.max_node_hours != null ? ` of ${sy.max_node_hours}` : "") + ` node-hours `
       + `(nodes \u00d7 time from block start to its last task) \u00b7 ${ntasks} tasks</div>`;
     h += '<table class="grid"><tr><th>block</th><th>queue</th><th>nodes</th><th>waited</th>'
       + '<th>started</th><th>walltime</th><th>to last task</th><th>node-hours</th><th></th></tr>';

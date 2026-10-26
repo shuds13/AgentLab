@@ -79,6 +79,12 @@ Five decide how much runs at once:
 - `max_concurrent` — tasks the agent may have in flight for this bucket. Agent-side,
   unlike the other three.
 
+`node_hours` (experimental), beside `buckets`, gives node-hours per system for a whole
+launch, the top run and its workers together, e.g. `{"polaris": 48}`; `MAX_NODE_HOURS`
+overrides it for one launch. Each block counts its nodes from its start to its last
+task's end, so the time a block is held idle afterwards is not counted. Once a system's
+budget is used, submits to it are refused; tasks already sent still run.
+
 Machine-specific keys belong in `systems/<system>.json` rather than here, or the
 campaign will not run anywhere else.
 
