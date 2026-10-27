@@ -166,7 +166,7 @@ def change(directory, changes, who=""):
                 after = amount
             elif before is None:
                 raise ValueError(f"{name}{'.' + key if key else ''} has no limit to add to; "
-                                 f"set one with =N")
+                                 f"give a number, with no sign, to set one")
             else:
                 after = before + amount if op == "+" else before - amount
             if isinstance(after, float) and after.is_integer() and name != "node_hours":

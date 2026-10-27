@@ -114,14 +114,17 @@ REMOTE_PID="$("${SSH[@]}" -n "$HOST" \
      > $REMOTE_LOG 2>&1 </dev/null & echo \$!")"
 [ -n "$REMOTE_PID" ] || { echo "the watcher did not start" >&2; exit 1; }
 
-REMOTE_PORT=""
+REMOTE_URL=""
 for _ in $(seq 0 30); do
-    REMOTE_PORT="$("${SSH[@]}" "$HOST" \
-        "grep -o 'http://127.0.0.1:[0-9]*' $REMOTE_LOG 2>/dev/null | head -1 | grep -o '[0-9]*$'" \
+    REMOTE_URL="$("${SSH[@]}" "$HOST" \
+        "grep -o 'http://127.0.0.1:[0-9]*/[?k=A-Za-z0-9_-]*' $REMOTE_LOG 2>/dev/null | head -1" \
         2>/dev/null || true)"
-    [ -n "$REMOTE_PORT" ] && break
+    [ -n "$REMOTE_URL" ] && break
     sleep 0.5
 done
+# The port, and the key the page needs to make changes, from the link it printed.
+REMOTE_PORT="$(echo "$REMOTE_URL" | sed -n 's|^http://127.0.0.1:\([0-9]*\).*|\1|p')"
+KEY_QUERY="$(echo "$REMOTE_URL" | sed -n 's|^http://127.0.0.1:[0-9]*/||p')"
 if [ -z "$REMOTE_PORT" ]; then
     echo "[watch] the watcher started but said no port. Its output:" >&2
     "${SSH[@]}" "$HOST" "cat $REMOTE_LOG" >&2 || true
@@ -133,7 +136,7 @@ LOCAL_PORT="$(free_port "$REMOTE_PORT")"
 FORWARD="$LOCAL_PORT:127.0.0.1:$REMOTE_PORT"
 "${SSH[@]}" -O forward -L "$FORWARD" "$HOST"
 
-URL="http://127.0.0.1:$LOCAL_PORT/"
+URL="http://127.0.0.1:$LOCAL_PORT/$KEY_QUERY"
 echo "[watch] watching $HOST:$REMOTE_PORT at $URL   (Ctrl-C closes it)"
 [ "$AUTO_OPEN" = true ] && { (xdg-open "$URL" || open "$URL") >/dev/null 2>&1 || true; }
 

@@ -79,7 +79,8 @@ campaign.json, and for a run that starts workers `WORKER_JOB_BUDGET` and each ki
 totals for the whole run, and every check reads them there. The watch's status page shows
 each with how much is used. `bin/budget.sh <workspace>` shows them and changes them, live
 or between parts: `bin/budget.sh <workspace> submits=+10 workers.explorer=+4
-node_hours.polaris=+5 runtime_s=+2h`. The agent is told at its next turn, and a run winding
+node_hours.polaris=+5 runtime_s=+2h`, or on the watch's budgets tab, for a run of the
+user the watch runs as, opened with the link the watch prints. The agent is told at its next turn, and a run winding
 down because a budget was spent goes on when it is raised. A continued run keeps its
 budgets; the values in `run.sh` and campaign.json do not replace them.
 

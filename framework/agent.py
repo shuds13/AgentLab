@@ -15,6 +15,7 @@ import itertools
 import json
 import re
 import os
+import secrets
 import shutil
 import signal
 import socket
@@ -839,12 +840,14 @@ def _start_watcher():
         # Preflight runs before the run directory exists, so make it.
         os.makedirs(RUN_DIR, exist_ok=True)
         watch_log = open(os.path.join(RUN_DIR, "watch.log"), "w")
+        # The key that lets the page make changes (watch.py), in the link printed here.
+        key = secrets.token_urlsafe(18)
         _watcher = subprocess.Popen(
             [sys.executable, os.path.join(SCRIPT_DIR, "watch.py"), CAMPAIGN,
              "--port", str(port), "--no-open", f"--exit-when-idle={WATCH_IDLE}"],
-            stdout=watch_log, stderr=subprocess.STDOUT)
+            stdout=watch_log, stderr=subprocess.STDOUT, env={**os.environ, "WATCH_KEY": key})
         bar = "*" * 60
-        print(f"\n{bar}\n*  Watch this run at  http://127.0.0.1:{port}/\n{bar}\n",
+        print(f"\n{bar}\n*  Watch this run at  http://127.0.0.1:{port}/?k={key}\n{bar}\n",
               flush=True)
     except Exception as e:
         print(f"[watch] could not start the viewer (ignored): {e}", flush=True)

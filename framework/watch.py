@@ -5,8 +5,7 @@ it is writing.
 
 A run is long and quiet -- minutes can pass inside one turn with nothing printed -- and
 whoever started it usually has no terminal attached to it. This serves the same files
-they would otherwise `tail`, on localhost, read-only, so a run can be followed without
-touching it.
+they would otherwise `tail`, on localhost, so a run can be followed without touching it.
 
 Usage:
     python watch.py [campaign] [--port 8765] [--no-open]
@@ -14,17 +13,22 @@ Usage:
 It reads the campaign's workspace and serves what it finds. The campaign named on the
 command line is the one it opens on, and with none named it opens on the one most
 recently active; the page can switch to any other campaign in the lab, since one
-watcher can serve them all. The one thing it writes is a message you type: that goes
-to the board the agent reads between turns. Stop it with Ctrl-C; the run is unaffected
-either way.
+watcher can serve them all. What it writes: a message you type, which goes to the board
+the agent reads between turns; and a change to a run's budgets, on the budgets tab, for
+runs of the user it runs as. Both need the page opened with the link it prints, which
+carries its key. Stop it with Ctrl-C; the run is unaffected either way.
 """
 
+import getpass
 import glob
+import hashlib
 import html
+import http.cookies
 import http.server
 import json
 import os
 import re
+import secrets
 import subprocess
 import threading
 import time
@@ -611,6 +615,14 @@ def budget_rows(campaign, run_dir, meta, counts, elapsed, started):
             row("workers", kind, f"{kind} workers started",
                 sum(1 for w in started if w["kind"] == kind), n)
     return rows
+
+
+def owns(run_dir):
+    """Whether a run belongs to the user this watcher runs as, by its directory."""
+    try:
+        return os.stat(run_dir).st_uid == os.getuid()
+    except (OSError, TypeError):
+        return False
 
 
 def budgets_view(campaign, run=None):
@@ -1265,6 +1277,14 @@ PAGE = """<!doctype html>
  table { border-collapse:collapse; margin:12px; }
  #res h3 { margin:14px 12px 2px; font-size:14px; color:#cfd8e0; }
  #res .note { margin:2px 12px; color:#8a9aaa; }
+ #res a { color:#8ab4d8; }
+ #res input.bchange { background:#1b1b1b; color:#ddd; border:1px solid #333; padding:2px 5px;
+                      font:inherit; }
+ #res input.bchange::placeholder { color:#555; }
+ #res input.bchange:focus { outline:none; border-color:#3d7a3d; }
+ #res button.braise { background:#222; color:#bbb; border:1px solid #333; padding:2px 8px;
+                      cursor:pointer; font:inherit; }
+ #res button.braise:hover { color:#fff; border-color:#3d7a3d; }
  #res .live { margin:4px 12px 6px; padding:2px 0 2px 10px; border-left:3px solid #3d7a3d; color:#8a9aaa; }
  #res .live b { color:#e8f0f6; }
  #res table.grid td, #res table.grid th { padding:2px 14px 2px 0; text-align:left;
@@ -1586,9 +1606,43 @@ const budgetCell = r => {
     ? `${fmt(r.used == null ? 0 : r.used)} <span style="color:#777">(no limit)</span>`
     : bar(r.used || 0, r.limit, fmt);
 };
+// A change typed into the budgets tab, kept while the view refreshes underneath it.
+let budgetNote = "";
+const budgetEditing = () => [...document.querySelectorAll("#res input.bchange")]
+  .some(i => i.value || i === document.activeElement);
+// Each budget the page may change gets a box for the change: +N or -N, or N to set it.
+const budgetInput = (d, r) => d.writable
+  ? `<td><input class="bchange" size="6" placeholder="${r.unit === "s" ? "+30m" : "+N"}"`
+    + ` data-run="${esc(d.run)}" data-name="${esc(r.name)}" data-key="${esc(r.key || "")}">`
+    + ` <button class="braise">apply</button></td>` : "";
+async function applyBudget(input) {
+  const body = {name: input.dataset.name, key: input.dataset.key || null,
+                change: input.value.trim()};
+  if (!body.change) return;
+  let r;
+  try {
+    r = await (await fetch("/budget?c=" + encodeURIComponent(campaign) + "&run="
+      + encodeURIComponent(input.dataset.run), {method: "POST",
+      body: JSON.stringify(body)})).json();
+  } catch (e) { r = {ok: false, error: String(e)}; }
+  budgetNote = r.ok ? "changed: " + r.done.join("; ") + ". The agent is told at its next turn."
+                    : "not changed: " + r.error;
+  input.value = "";
+  input.blur();
+  renderBudgets();
+}
+document.addEventListener("click", e => {
+  const b = e.target.closest("#res button.braise");
+  if (b) applyBudget(b.parentElement.querySelector("input.bchange"));
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "Enter" && e.target.matches && e.target.matches("#res input.bchange"))
+    applyBudget(e.target);
+});
 async function renderBudgets() {
   const d = await (await fetch(url("/budgets"))).json();
   if (tab !== "budgets") return;
+  if (budgetEditing()) return;
   view.className = "";
   if (!d.run) { view.innerHTML = '<div id="res"><div class="note">no run yet</div></div>'; return; }
   const ofRun = d.rows.filter(r => r.name !== "node_hours");
@@ -1596,14 +1650,17 @@ async function renderBudgets() {
   let h = '<div id="res">';
   h += `<h3>${esc(d.run)}</h3><div class="note">totals for the whole run`
     + (d.part > 1 ? `, over its ${d.part} parts` : "") + `</div>`;
+  if (budgetNote) h += `<div class="note">${esc(budgetNote)}</div>`;
   h += '<table class="grid">' + ofRun.map(r =>
-    `<tr><td>${esc(r.label)}</td><td>${budgetCell(r)}</td></tr>`).join("") + "</table>";
+    `<tr><td>${esc(r.label)}</td><td>${budgetCell(r)}</td>${budgetInput(d, r)}</tr>`)
+    .join("") + "</table>";
   // What the run draws on elsewhere: node-hours per system and the block shapes.
   const shapes = Object.entries(d.buckets || {});
   if (ofSys.length || shapes.length) {
     h += `<h3>resources</h3>`;
     h += '<table class="grid">' + ofSys.map(r =>
-      `<tr><td>${esc(r.label)}</td><td>${budgetCell(r)}</td></tr>`).join("");
+      `<tr><td>${esc(r.label)}</td><td>${budgetCell(r)}</td>${budgetInput(d, r)}</tr>`)
+      .join("");
     for (const [k, b] of shapes) {
       const wall = (b.walltime || "").replace(/^0?(\\d+):00:00$/, "$1h");
       h += `<tr><td>bucket ${esc(k)}</td><td>` + [b.system, b.queue,
@@ -1633,9 +1690,11 @@ async function renderBudgets() {
       + (c.key ? ` (${esc(c.key)})` : "") + `</td><td>${c.before == null ? "no limit" : c.before}`
       + ` \u2192 ${c.after}</td></tr>`).join("") + "</table>";
   }
-  h += `<div class="note" style="margin-top:12px">change with <code>bin/budget.sh `
-    + `${esc(d.workspace)} NAME=+N</code>, e.g. submits=+10, workers.explorer=+4, `
-    + `node_hours.polaris=+5, runtime_s=+2h</div>`;
+  h += `<div class="note" style="margin-top:12px">`
+    + (d.writable ? "a change is +N or -N, or N to set it; run time also takes m or h. "
+                  : "read-only here: changes need the watcher's own link, on a run of its user. ")
+    + `From a shell: <code>bin/budget.sh ${esc(d.workspace)} NAME=+N</code>, e.g. `
+    + `submits=+10, workers.explorer=+4, node_hours.polaris=+5, runtime_s=+2h</div>`;
   view.innerHTML = h + "</div>";
 }
 
@@ -2250,7 +2309,10 @@ async function say() {
   if (!text) return;
   box.value = "";
   const to = scope === "lab" ? "/say?lab" : url("/say");
-  try { await fetch(to, {method: "POST", body: text}); } catch (e) {}
+  try {
+    const r = await (await fetch(to, {method: "POST", body: text})).json();
+    if (r.error) { box.value = text; alert(r.error); return; }
+  } catch (e) {}
   // Show the conversation the message just joined, rather than leaving you on whatever
   // you were reading with no sign it went anywhere.
   chat();
@@ -2672,6 +2734,7 @@ async function labControl(action) {
   button.textContent = action === "start" ? "starting\u2026" : "stopping\u2026";
   try {
     var d = await (await fetch("/services?do=" + action, {method: "POST"})).json();
+    if (d && d.error) alert(d.error);
   } catch (e) {}
   delete button.dataset.busy;
   button.disabled = false;
@@ -2807,9 +2870,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         type(self).last_request = time.time()
         super().handle_one_request()
 
-    def _send(self, body, ctype="text/plain; charset=utf-8"):
+    def _send(self, body, ctype="text/plain; charset=utf-8", status=200, headers=()):
         data = body.encode() if isinstance(body, str) else body
-        self.send_response(200)
+        self.send_response(status)
+        for name, value in headers:
+            self.send_header(name, value)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         # Everything here is live: the page is generated from code that changes under
@@ -2820,14 +2885,41 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    # Changes are made as the user running this watcher, so they are taken only from a
+    # page opened with its key: the link it printed. Another user on the machine can
+    # reach the port, and a web page in the browser can send to localhost; neither has
+    # the key. The page keeps it in a cookie of this watcher's own.
+    key = ""
+
+    def _cookie_name(self):
+        return "watchkey_" + hashlib.sha256(self.key.encode()).hexdigest()[:10]
+
+    def _can_write(self):
+        jar = http.cookies.SimpleCookie(self.headers.get("Cookie") or "")
+        held = jar.get(self._cookie_name())
+        return bool(self.key) and held is not None and secrets.compare_digest(
+            held.value, self.key)
+
+    def _refuse_write(self):
+        self._send(json.dumps({"ok": False, "sent": False,
+                               "error": "this page cannot make changes: open the link "
+                                        "the watcher printed when it started"}),
+                   "application/json", status=403)
+
     def do_POST(self):
-        """The one write: a message for the agent. It lands on the board the agent reads
-        between turns, and in the conversation the page shows."""
+        """The writes: a message for the agent, which lands on the board it reads between
+        turns; starting or stopping the lab's services; and a change to a run's budget."""
         url = urllib.parse.urlparse(self.path)
-        if url.path not in ("/say", "/services"):
+        if url.path not in ("/say", "/services", "/budget"):
             self.send_error(404)
             return
+        if not self._can_write():
+            self._refuse_write()
+            return
         q = urllib.parse.parse_qs(url.query, keep_blank_values=True)
+        if url.path == "/budget":
+            self._send(json.dumps(self._change_budget(q)), "application/json")
+            return
         if url.path == "/services":
             # The lab's processes, started and stopped from the page that reports them.
             action = (q.get("do") or [""])[0]
@@ -2877,6 +2969,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         self._send(json.dumps({"sent": True}), "application/json")
 
+    def _change_budget(self, q):
+        """Apply one change to a run's budget: {"name", "key", "change"} in the body,
+        the change as bin/budget.sh takes it (+N, -N, N; runtime_s also with s, m, h).
+        Only a run of the user this watcher runs as."""
+        run_dir = run_path(self._campaign(q), (q.get("run") or [""])[0] or None)
+        if not run_dir:
+            return {"ok": False, "error": "no such run"}
+        if not owns(run_dir):
+            return {"ok": False, "error": "only the user who started this run can "
+                                          "change its budgets"}
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+            name, key = str(body.get("name", "")), body.get("key")
+            change = str(body.get("change", "")).strip()
+            done = budgets.change(run_dir, [budgets._parse(
+                f"{name}{'.' + str(key) if key else ''}={change}")],
+                who=f"{getpass.getuser()} (watch)")
+        except (ValueError, TypeError, json.JSONDecodeError) as e:
+            return {"ok": False, "error": str(e)}
+        except OSError as e:
+            return {"ok": False, "error": f"could not write the budget: {e}"}
+        return {"ok": True, "done": [budgets.describe(c) for c in done]}
+
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
         # `?lab` carries no value, and a query key without one is dropped unless
@@ -2886,11 +3001,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         run = (q.get("run") or [""])[0] or None    # a past run, else the newest
         if url.path == "/":
             # The page opens where the address says, so a bookmark is showing the right
-            # place before the first poll rather than a moment after it.
+            # place before the first poll rather than a moment after it. Opened with the
+            # key, the page may make changes from then on (see _can_write).
+            given = (q.get("k") or [""])[0]
+            headers = ()
+            if self.key and given and secrets.compare_digest(given, self.key):
+                headers = (("Set-Cookie", f"{self._cookie_name()}={self.key}; Path=/; "
+                                          f"HttpOnly; SameSite=Strict"),)
             self._send(PAGE % {"campaign": html.escape(campaign),
                                "campaign_json": json.dumps(campaign),
                                "scope_json": json.dumps(self._scope(q))},
-                       "text/html; charset=utf-8")
+                       "text/html; charset=utf-8", headers=headers)
         elif url.path == "/campaigns":
             self._send(json.dumps(self._choices()), "application/json")
         elif url.path == "/running":
@@ -2923,7 +3044,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif url.path == "/status":
             self._send(json.dumps(status(campaign, run)), "application/json")
         elif url.path == "/budgets":
-            self._send(json.dumps(budgets_view(campaign, run)), "application/json")
+            view = budgets_view(campaign, run)
+            # Whether this page may change them: opened with the key, and the run is
+            # this watcher's user's own.
+            view["writable"] = bool(view.get("run")) and self._can_write() and owns(
+                run_path(campaign, view["run"]))
+            self._send(json.dumps(view), "application/json")
         elif url.path == "/resources":
             self._send(json.dumps(resources(campaign, run, light="light" in q)),
                        "application/json")
@@ -3097,7 +3223,10 @@ def main():
             continue
     else:
         sys.exit(f"no free port between {port} and {port + 19}")
-    url = f"http://127.0.0.1:{port}/"
+    # The key the page needs to make changes; a run that starts its own watcher gives
+    # one, so the link it prints works.
+    Handler.key = os.environ.get("WATCH_KEY") or secrets.token_urlsafe(18)
+    url = f"http://127.0.0.1:{port}/?k={Handler.key}"
     opened = campaign if args else "the lab"
     print(f"watching {opened} at {url}  (Ctrl-C to stop; the run is unaffected)",
           flush=True)
