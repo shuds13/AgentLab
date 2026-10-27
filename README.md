@@ -32,6 +32,12 @@ Examples:
 
 *A multi-agent example mid-run: a coordinator and 21 workers. The selected refiner-3c holds the best score so far; refiner-13a, at the bottom, is still running.*
 
+Looking at compute resources:
+
+![AgentLab resources view: a GPU bucket on Polaris shared by all agents, with its node-hour budget, the block and each agent's tasks on it](docs/images/resource-block-polaris.png)
+
+*AgentLab resources view: a GPU bucket on Polaris shared by all agents. This run sets a 4 node-hour budget and a limit of one block at a time. So far all the agents' tasks have run in the first block. New blocks are started as needed until the node-hour budget is used or no tasks remain. Resource buckets can be added for multiple systems.*
+
 ## Structure
 
 ```
