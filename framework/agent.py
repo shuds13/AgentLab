@@ -11,6 +11,7 @@ Usage:
 
 import asyncio
 import glob
+import itertools
 import json
 import re
 import os
@@ -42,6 +43,7 @@ WORKSPACE_DIR = os.environ.get("WORKSPACE_DIR") or (
 os.environ["WORKSPACE_DIR"] = WORKSPACE_DIR
 
 import critic  # noqa: E402
+import budgets  # noqa: E402
 import tools  # noqa: E402
 from tools import create_server, shutdown_executor  # noqa: E402
 
@@ -77,7 +79,33 @@ METHOD_FILE = os.environ.get("METHOD_FILE", "method.md")
 # One timestamp per process, shared by the log file and this run's directory so the
 # two line up. RUN_ID names the run dir and is what kill_agent.sh targets.
 RUN_STAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
-RUN_ID = f"{SYSTEM}_{ROLE}_{RUN_STAMP}" if ROLE_SET else f"{SYSTEM}_{RUN_STAMP}"
+
+
+def _run_to_continue(name):
+    """The run CONTINUE_RUN names: a run id, or "last" for the newest run on this system
+    that no other run started. "" when there is none."""
+    if name != "last":
+        return name
+    found = []
+    for path in glob.glob(os.path.join(WORKSPACE_DIR, "runs", "*", "meta.json")):
+        try:
+            with open(path) as f:
+                meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (not meta.get("parent_run") and meta.get("system") == SYSTEM
+                and (meta.get("role") == ROLE or not ROLE_SET)):
+            found.append((meta.get("part_started_at") or meta.get("started_at") or "",
+                          os.path.basename(os.path.dirname(path))))
+    return max(found)[1] if found else ""
+
+
+# CONTINUE_RUN carries an earlier run on as the same run: its run id, directory and log,
+# its conversation, and its workers. Budgets given to the continuation are added to what
+# the run has used.
+CONTINUE_RUN = (os.environ.get("CONTINUE_RUN") or "").strip()
+CONTINUED = _run_to_continue(CONTINUE_RUN) if CONTINUE_RUN else ""
+RUN_ID = CONTINUED or (f"{SYSTEM}_{ROLE}_{RUN_STAMP}" if ROLE_SET else f"{SYSTEM}_{RUN_STAMP}")
 RUN_DIR = os.path.join(WORKSPACE_DIR, "runs", RUN_ID)
 os.environ["RUN_ID"] = RUN_ID      # tools stamps the job log with it
 LOG_PATH = os.path.join(LOG_DIR, f"run_{RUN_ID}.log")   # the name the viewer looks for
@@ -196,6 +224,20 @@ FINALIZE_PROMPT = _prompt("FINALIZE_PROMPT",
 # costs what it costs and brings any stale conclusions with it, so it is off by default.
 # The session must belong to this user on this machine.
 RESUME_SESSION = (os.environ.get("RESUME_SESSION") or "").strip()
+
+
+def _read_meta(run_dir):
+    try:
+        with open(os.path.join(run_dir, "meta.json")) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+# The run as it was left. A continuation carries on its conversation.
+PREV_META = _read_meta(RUN_DIR) if CONTINUED else {}
+if CONTINUED and not RESUME_SESSION:
+    RESUME_SESSION = PREV_META.get("session_id") or ""
 # The directory the agent works in: the framework's own unless a run is given one, as a
 # worker on its own git worktree is.
 AGENT_CWD = os.path.abspath(os.environ.get("AGENT_CWD") or SCRIPT_DIR)
@@ -378,7 +420,8 @@ def _inherited_cost():
     """What the session this run forks had already consumed, per model. The CLI's totals
     on a resumed session include the original conversation, so a forked run subtracts
     these to report only its own. Known when that session was a run in this workspace."""
-    if not RESUME_SESSION:
+    # A continuation is the same run, so its cost runs on from the earlier part's.
+    if not RESUME_SESSION or (CONTINUED and RESUME_SESSION == PREV_META.get("session_id")):
         return {}
     for path in glob.glob(os.path.join(WORKSPACE_DIR, "runs", "*", "meta.json")):
         try:
@@ -861,6 +904,188 @@ _last_heartbeat = 0.0
 SNAPSHOT_MAX_BYTES = 256 * 1024
 
 
+# What a continuation found of the run as it was left: filled in by _start_part.
+CONTINUATION = {}
+# Seconds the run ran in its earlier parts; 0 for a run that is not a continuation.
+RUN_S_BEFORE = 0
+# When this part started, for the run time its budget is held to.
+PART_START = time.time()
+# Files of a run dir that are its live state rather than a snapshot of what it was given.
+_RUN_STATE = {"meta.json", "heartbeat", "phase", "stop", "watch.log",
+              budgets.FILE, budgets.LOG, "budgets.lock"}
+
+
+def _alive(run_dir):
+    try:
+        with open(os.path.join(run_dir, "heartbeat")) as f:
+            return time.time() - float(f.read().strip()) <= AGENT_ALIVE_WITHIN
+    except (OSError, ValueError):
+        return False
+
+
+def _workers_of(run_id):
+    """(run dir, meta) of every worker the run started."""
+    for path in glob.glob(os.path.join(WORKSPACE_DIR, "runs", "*", "meta.json")):
+        meta = _read_meta(os.path.dirname(path))
+        if meta.get("parent_run") == run_id:
+            yield os.path.dirname(path), meta
+
+
+def _start_part():
+    """Set the run dir up for a continuation. What the earlier part was given moves to
+    part<N>/ with a note of where the run had got to, and its end is cleared from the
+    meta. The counts the budgets are held to take up where the earlier part left them:
+    the budgets are the run's totals."""
+    global RUN_S_BEFORE
+    n = 1 + len(glob.glob(os.path.join(RUN_DIR, "part[0-9]*")))
+    part_dir = os.path.join(RUN_DIR, f"part{n}")
+    os.makedirs(part_dir)
+    for name in os.listdir(RUN_DIR):
+        path = os.path.join(RUN_DIR, name)
+        if os.path.isfile(path) and name not in _RUN_STATE:
+            shutil.move(path, os.path.join(part_dir, name))
+    shutil.copy2(os.path.join(RUN_DIR, "meta.json"), part_dir)
+    try:
+        os.remove(os.path.join(RUN_DIR, "stop"))
+    except OSError:
+        pass
+    # Workers left marked running had their process end with the run's.
+    workers = []
+    for wdir, w in _workers_of(RUN_ID):
+        if w.get("status") == "running":
+            w.update(status="stopped", stop_reason="ended with the run, before it finished")
+            with open(os.path.join(wdir, "meta.json"), "w") as f:
+                json.dump(w, f, indent=2)
+        workers.append({k: w.get(k) for k in ("run_id", "branch", "kind", "session_id",
+                                               "stop_reason")})
+    # The run's jobs so far, from the job log: job ids carry on from the last, the submits
+    # count as tools counts them (a refused job gives its submit back), and what is
+    # still in flight is found.
+    last = {"submit": 0, "local_submit": 0}
+    count = {"submit": 0, "local_submit": 0}
+    by_bucket = {}
+    open_jobs = {}            # submitted and not yet returned: (event, id) -> (key, bucket)
+    try:
+        with open(tools.JOBS_LOG) as f:
+            for line in f:
+                if f'"{RUN_ID}"' not in line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if r.get("run") != RUN_ID:
+                    continue
+                ev, jid = r.get("event"), r.get("job_id")
+                if ev in last:
+                    last[ev] = max(last[ev], int(jid or 0))
+                    count[ev] += 1
+                    if r.get("bucket"):
+                        by_bucket[r["bucket"]] = by_bucket.get(r["bucket"], 0) + 1
+                    open_jobs[(ev, jid)] = (r.get("key"), r.get("bucket"))
+                elif ev in ("completed", "abandoned", "local_completed"):
+                    sub = "local_submit" if ev == "local_completed" or r.get("local") else "submit"
+                    key, bucket = open_jobs.pop((sub, jid), (None, None))
+                    if r.get("refused"):
+                        count[sub] -= 1
+                        if bucket:
+                            by_bucket[bucket] -= 1
+    except OSError:
+        pass
+    # What the earlier part left in flight is not collected: recorded as abandoned, so
+    # it is not counted as still running.
+    for (ev, job_id), (key, _bucket) in open_jobs.items():
+        tools._append_jobs_log({"event": "abandoned", "job_id": job_id, "key": key,
+                                "local": ev == "local_submit",
+                                "reason": "the run's earlier part ended with it in flight"})
+        # Its claim was held by the earlier part's process: released, so the same work
+        # can be submitted again.
+        if ev == "submit" and key:
+            tools._release_claim(key)
+    tools._job_counter = itertools.count(last["submit"] + 1)
+    tools._local_counter = itertools.count(last["local_submit"] + 1)
+    tools._submit_count = count["submit"]
+    tools._local_submit_count = count["local_submit"]
+    tools._bucket_submit_count.update(by_bucket)
+    spawn = sys.modules.get("spawn")
+    if spawn is not None:
+        spawn.count_earlier(WORKSPACE_DIR, RUN_ID)
+    # The scores carry on: a name this part does not report keeps its last value.
+    tools._scores.update(PREV_META.get("scores") or {})
+    # Time between parts is not run time: it is kept as paused, so the run's elapsed
+    # time is what its parts ran for.
+    def _ts(iso):
+        try:
+            return datetime.fromisoformat(iso).timestamp()
+        except (TypeError, ValueError):
+            return None
+    start, end = _ts(PREV_META.get("started_at")), _ts(PREV_META.get("ended_at"))
+    paused = PREV_META.get("paused_s") or 0
+    RUN_S_BEFORE = (end - start - paused) if start and end else 0
+    with open(os.path.join(part_dir, "progress.json"), "w") as f:
+        json.dump({"ended_at": PREV_META.get("ended_at"),
+                   "stop_reason": PREV_META.get("stop_reason"),
+                   "run_s": int(RUN_S_BEFORE),
+                   "submitted": count, "submitted_buckets": by_bucket,
+                   "node_hours_used": {sy: round(h, 2)
+                                       for sy, h in tools.node_hours_used().items()},
+                   "budgets": budgets.load(RUN_DIR),
+                   "workers": workers}, f, indent=2)
+    meta = dict(PREV_META)
+    meta["paused_s"] = int(paused + (time.time() - end if end else 0))
+    for k in ("stop_reason", "ended_at", "goal_met", "end_requested", "uptime_s",
+              "remote_submitted", "remote_submitted_buckets", "local_submitted"):
+        meta.pop(k, None)
+    meta["part"] = n + 1
+    with open(os.path.join(RUN_DIR, "meta.json"), "w") as f:
+        json.dump(meta, f, indent=2)
+    CONTINUATION.update(part=n + 1, part_dir=part_dir,
+                        stop_reason=PREV_META.get("stop_reason") or "no reason recorded",
+                        stopped_short=[w for w in workers if w["stop_reason"] != "goal met"])
+
+
+def _changed_since_part():
+    """The snapshot files that differ from the earlier part's."""
+    old_dir = CONTINUATION["part_dir"]
+    names = {n for n in os.listdir(old_dir) if n not in _RUN_STATE | {"progress.json"}}
+    names |= {n for n in os.listdir(RUN_DIR)
+              if os.path.isfile(os.path.join(RUN_DIR, n)) and n not in _RUN_STATE}
+    changed = []
+    for name in sorted(names):
+        texts = []
+        for d in (old_dir, RUN_DIR):
+            try:
+                with open(os.path.join(d, name), "rb") as f:
+                    texts.append(f.read())
+            except OSError:
+                texts.append(None)
+        if texts[0] != texts[1]:
+            changed.append(name)
+    return changed
+
+
+def _seed_budgets():
+    """Record the run's budgets (budgets.py) from what it was started with. A continued
+    run keeps the budgets it has; they are raised with bin/budget.sh."""
+    values = {"submits": tools.MAX_SUBMITS, "submits_buckets": dict(tools.BUCKET_SUBMITS),
+              "runtime_s": MAX_RUNTIME}
+    # Node-hours are the launch's: the run that starts workers holds them.
+    if not RUN_META.get("parent_run"):
+        values["node_hours"] = dict(tools.NODE_HOURS)
+    # A run that starts workers: their shared job budget and how many of each kind.
+    spawn = sys.modules.get("spawn")
+    roles = getattr(tools.task, "ROLES", None)
+    if spawn is not None and isinstance(roles, dict):
+        values.update(spawn.budget_seed(roles))
+    # A continued run from before budgets files keeps the limits its meta recorded.
+    if CONTINUED:
+        values.update(budgets.from_meta(os.path.join(CONTINUATION["part_dir"])))
+    try:
+        budgets.seed(RUN_DIR, values)
+    except OSError as e:
+        print(f"[run] could not record budgets (the starting values hold): {e}", flush=True)
+
+
 def _start_run_dir():
     os.makedirs(RUN_DIR, exist_ok=True)
     # What this run was given, so it is reproducible from its own record: its prompts,
@@ -900,11 +1125,11 @@ def _start_run_dir():
                        "max_concurrent": b.get("max_concurrent"),
                        "system": b.get("system")}
                 for name, b in tools._SYS["buckets"].items()}
+    _seed_budgets()
     _write_meta(buckets=_buckets, default_bucket=tools._default_bucket,
-                max_submits=tools.MAX_SUBMITS, max_runtime_s=MAX_RUNTIME,
-                max_submits_buckets=tools.BUCKET_SUBMITS,
-                max_node_hours=tools.NODE_HOURS,
-                max_turns=MAX_TURNS, critic=CRITIC_LABEL,
+                submits_label=tools.submits_label(),
+                max_turns=MAX_TURNS + ((PREV_META.get("turns") or 0) if CONTINUED else 0),
+                critic=CRITIC_LABEL,
                 run_id=RUN_ID, handle=HANDLE, system=SYSTEM, role=ROLE,
                 endpoint=tools.ENDPOINT_ID if tools.HAS_REMOTE else "",
                 work_dir=tools.WORK_DIR,
@@ -914,7 +1139,11 @@ def _start_run_dir():
                 has_local=tools.HAS_LOCAL,
                 started_by=os.environ.get("STARTED_BY", ""),
                 host=socket.gethostname(), pid=os.getpid(),
-                started_at=datetime.now().isoformat(timespec="seconds"),
+                # A continuation keeps the run's start; its own is the part's.
+                started_at=(PREV_META.get("started_at") if CONTINUED else None)
+                or datetime.now().isoformat(timespec="seconds"),
+                **({"part_started_at": datetime.now().isoformat(timespec="seconds")}
+                   if CONTINUED else {}),
                 user_prompt_file=USER_PROMPT_FILE,
                 # How this run works, by its method file's name: director, explorer, ...
                 method=os.path.splitext(os.path.basename(METHOD_FILE))[0],
@@ -1089,6 +1318,25 @@ def _probe_model():
 def preflight():
     """Verify everything this run needs BEFORE starting. Fail fast with a clear
     message instead of discovering a missing piece mid-run and spinning."""
+    # A continuation needs the run as it was left, ended: checked before anything is
+    # written into its directory.
+    if CONTINUE_RUN:
+        why = None
+        if not CONTINUED or not PREV_META:
+            why = f"no run {CONTINUE_RUN!r} with a meta.json in {WORKSPACE_DIR}/runs"
+        elif _alive(RUN_DIR):
+            why = f"run {RUN_ID} is still running"
+        elif any(_alive(d) for d, _ in _workers_of(RUN_ID)):
+            why = f"a worker of run {RUN_ID} is still running"
+        elif not RESUME_SESSION:
+            why = f"run {RUN_ID} recorded no session to carry on"
+        if why:
+            print(f"PREFLIGHT FAILED -- cannot continue: {why}", flush=True)
+            sys.exit(1)
+        print(f"Continuing run {RUN_ID}", flush=True)
+        # Before anything of this part's is written into the run dir.
+        if not CHECK_ONLY:
+            _start_part()
     # First, so its address is at the top of the output rather than below the settings:
     # the address is what someone needs, and a run prints a screenful before it starts.
     if not CHECK_ONLY:
@@ -1237,6 +1485,11 @@ def preflight():
     if MAX_RUNTIME:
         limits.append(f"MAX_RUNTIME={MAX_RUNTIME}s")
     print(f"budget:       {', '.join(limits)}", flush=True)
+    # A continued run keeps the budgets it has: the values above do not replace them.
+    if CONTINUED and budgets.load(RUN_DIR):
+        print(f"              continuing: the run's own budgets hold "
+              f"({os.path.join(RUN_DIR, budgets.FILE)}); raise them with bin/budget.sh",
+              flush=True)
     print(f"waiting:      BATCH_MODE={'true' if tools.BATCH_MODE else 'false'} "
           f"({'all jobs' if tools.BATCH_MODE else 'first job'} to finish)", flush=True)
     if tools.HAS_REMOTE:
@@ -1394,10 +1647,94 @@ async def drain_turn(client, turn_num):
         _refresh_context(client)
 
 
+def _run_seconds():
+    """Seconds the run has run: its earlier parts and this one."""
+    return RUN_S_BEFORE + time.time() - PART_START
+
+
+def _runtime_limit():
+    return budgets.limit("runtime_s", fallback=MAX_RUNTIME)
+
+
+def _over_time():
+    cap = _runtime_limit()
+    return cap is not None and _run_seconds() >= cap
+
+
+def _budget_lines():
+    """Each of the run's budgets with how much of it is used, as the agent is told."""
+    out = []
+    cap = tools.max_submits()
+    if cap is not None:
+        out.append(f"{tools.submits_label()}: {tools.submit_count()} of {cap:g}")
+    used_b = tools.bucket_submit_counts()
+    for b, n in tools.bucket_submits().items():
+        out.append(f"submits to bucket {b}: {used_b.get(b, 0)} of {n:g} used")
+    cap = _runtime_limit()
+    if cap is not None:
+        out.append(f"run time: {_run_seconds() / 60:.0f} of {cap / 60:.0f} min used")
+    caps = {sy: tools.node_hours_cap(sy) for sy in tools.SYSTEMS}
+    caps = {sy: c for sy, c in caps.items() if c is not None}
+    if caps:
+        used = tools.node_hours_used()
+        out += [f"node-hours on {sy}: {used.get(sy, 0):.1f} of {c:g} used"
+                for sy, c in caps.items()]
+    spawn = sys.modules.get("spawn")
+    if spawn is not None:
+        pool = spawn._pool_limit()
+        if pool is not None:
+            out.append(f"jobs given to workers: {spawn._jobs_given} of {pool:g}")
+        for kind, n in (budgets.limit("workers", fallback={}) or {}).items():
+            if n is not None:
+                out.append(f"{kind} workers: {spawn._started.get(kind, 0)} of {n:g} started")
+    return out
+
+
+def _budget_prompt(changes, tail=""):
+    """Tell the agent its budgets changed, and where each stands."""
+    body = ("Your budgets have been changed:\n" +
+            "\n".join(f"- {budgets.describe(c)}" for c in changes) +
+            "\n\nWhere each budget stands, for the whole run:\n" +
+            "\n".join(f"- {l}" for l in _budget_lines()))
+    return body + ("\n\n" + tail if tail else "")
+
+
+def _continuation_prompt(system_prompt, user_prompt):
+    """What a continued run's agent is told on resuming: where its budgets stand, and
+    whatever it was given that has changed since the earlier part."""
+    c = CONTINUATION
+    changed = _changed_since_part()
+    lines = [f"This run is being continued (part {c['part']}). The earlier part stopped: "
+             f"{c['stop_reason']}. Jobs it had in flight are not collected.",
+             "", "Where each budget stands, for the whole run:"]
+    lines += [f"- {l}" for l in _budget_lines()]
+    # A run from before instructions.md was kept is compared by its prompt files.
+    old_had = os.path.exists(os.path.join(c["part_dir"], "instructions.md"))
+    sources = (["instructions.md"] if old_had
+               else ["prompt.md", os.path.basename(method_path())])
+    if any(n in changed for n in sources):
+        lines += ["", "Your instructions have changed. These replace them:", "",
+                  system_prompt, "", "---"]
+    if os.path.basename(USER_PROMPT_FILE) in changed:
+        lines += ["", "The user prompt has changed. It now reads:", "", user_prompt, "", "---"]
+    other = [n for n in changed if n not in sources + ["instructions.md",
+                                                       os.path.basename(USER_PROMPT_FILE)]]
+    if other:
+        lines += ["", f"Also changed since the earlier part: {', '.join(other)}."]
+    if c["stopped_short"]:
+        lines += ["", "Workers that stopped before finishing:"]
+        lines += [f"- {w['branch']} ({w['kind']}): {w['stop_reason']}; session "
+                  f"{w['session_id'] or 'unknown'}" for w in c["stopped_short"]]
+        lines.append("A worker of a kind that forks a session can carry one of these on.")
+    lines += ["", "Carry on."]
+    return "\n".join(lines)
+
+
 async def main():
     system_prompt = load_prompt()
     system_prompt += "\n\n" + load_framework()
     system_prompt += "\n\n" + load_method()
+    instructions = system_prompt
     # The run's limits, which the agent cannot discover except by being refused: what
     # runs at once, and the job budget, which is this run's alone. Each submit reports
     # how much of the budget is left.
@@ -1409,16 +1746,19 @@ async def main():
     # A task whose jobs are something other than plain jobs, such as worker agents, names
     # them, and states any further limit on the run (SUBMITS_LABEL, RUN_LIMITS).
     label = getattr(tools.task, "SUBMITS_LABEL", None) or \
+        ("worker agents this run may start" if tools.submits_start_workers() else None) or \
         f"{'remote ' if tools.HAS_REMOTE else ''}jobs this run may submit"
-    at_once.append(f"{label}: {tools.MAX_SUBMITS}")
+    # The budgets in force: a continued run's are its own, which may have been raised.
+    if tools.max_submits() is not None:
+        at_once.append(f"{label}: {tools.max_submits():g}")
     # Budgets per bucket, where the campaign or the role sets them.
-    for _b, _n in tools.BUCKET_SUBMITS.items():
+    for _b, _n in tools.bucket_submits().items():
         _sy = tools._SYS["buckets"][_b]["system"] if tools.MULTI_SYSTEM else ""
         at_once.append(f"jobs this run may submit to bucket {_b}"
                        + (f" ({_sy})" if _sy else "") + f": {_n}")
     at_once.extend(getattr(tools.task, "RUN_LIMITS", []))
-    if MAX_RUNTIME:
-        at_once.append(f"wall clock for this run: {MAX_RUNTIME}s")
+    if _runtime_limit():
+        at_once.append(f"wall clock for this run: {_runtime_limit():g}s")
     # A campaign on several systems: where this agent's files go on each.
     if tools.HAS_REMOTE and tools.MULTI_SYSTEM:
         at_once.extend(f"your work directory on {n}: {sy['work_dir']}"
@@ -1466,6 +1806,8 @@ async def main():
     print("=" * 60, flush=True)
 
     start_time = time.time()
+    global PART_START
+    PART_START = start_time
     stop_reason = "ended (agent stream closed)"
 
     # PID file keyed by SYSTEM+ROLE so kill_agent.sh can target THIS agent when
@@ -1477,6 +1819,13 @@ async def main():
     with open(pid_file, "w") as f:
         f.write(str(os.getpid()))
     _start_run_dir()
+    # The instructions as the agent was given them, budgets filled in, so a continuation
+    # can tell whether they changed.
+    try:
+        with open(os.path.join(RUN_DIR, "instructions.md"), "w") as f:
+            f.write(instructions)
+    except OSError as e:
+        print(f"[run] could not snapshot instructions.md (ignored): {e}", flush=True)
 
     # Neither signal can be left to the default. SIGTERM (plain `kill`) is not caught,
     # so `finally` would be skipped and no finish ping fired. SIGINT (Ctrl-C) raises
@@ -1521,7 +1870,10 @@ async def main():
             prompt = load_user_prompt()
             # A resumed session keeps the system prompt it was started with and ignores
             # a new one, so a run that resumes one is given its own instructions here.
-            if RESUME_SESSION:
+            if CONTINUED:
+                prompt = _continuation_prompt(system_prompt, prompt)
+                print(f"Continuation message:\n{prompt}", flush=True)
+            elif RESUME_SESSION:
                 prompt = ("This run continues an earlier conversation. That conversation's "
                           "instructions no longer apply; these are this run's, in place of "
                           "them.\n\n" + system_prompt + "\n\n---\n\n" + prompt)
@@ -1540,8 +1892,16 @@ async def main():
             # not itself put up for review.
             answering_critic = False
             stopping = None           # set to the reason once the run starts winding down
+            # Set while it winds down because a budget was spent or its time was up: a
+            # raise of that budget takes the wind-down back.
+            stopped_by_budget = False
+            # Budget changes already accounted for: those made before this part started
+            # are in the budgets it was told of.
+            _, budget_seen = budgets.changes_since(RUN_DIR, 0)
             finalize_turns = 0
-            for turn_num in range(1, MAX_TURNS + 1):
+            # A continuation's turns are numbered on from the earlier part's.
+            first_turn = (PREV_META.get("turns") or 0) + 1 if CONTINUED else 1
+            for turn_num in range(first_turn, first_turn + MAX_TURNS):
                 print(f"\n===== TURN {turn_num} =====", flush=True)
                 _heartbeat()
                 _set_phase(f"turn {turn_num}: reasoning")
@@ -1626,6 +1986,16 @@ async def main():
                             answering_critic = bool(found)
                             if found:
                                 prompt = _critic_prompt(found, reply, tail=prompt)
+                # Budgets changed (bin/budget.sh): tell the agent, and go on with the run if
+                # the change lifts the limit it was winding down for.
+                changes, budget_seen = budgets.changes_since(RUN_DIR, budget_seen)
+                if changes:
+                    if stopped_by_budget and not tools.budget_spent() and not _over_time():
+                        stopping, stopped_by_budget, finalize_turns = None, False, 0
+                        tools.resume_submits()
+                        print("Budget raised -- the run goes on.", flush=True)
+                        prompt = CONTINUE_PROMPT
+                    prompt = _budget_prompt(changes, tail=prompt)
                 # Announcements board changed between turns -> surface it first.
                 board = tools.read_announcements()
                 if board and board != last_announcements:
@@ -1655,10 +2025,12 @@ async def main():
                 # stop condition; keep exploring new regions. The budget counts as spent
                 # only once nothing is in flight: a job that comes back refused gives its
                 # submit back, and the run can still use it.
-                over_time = MAX_RUNTIME is not None and (time.time() - start_time) >= MAX_RUNTIME
+                over_time = _over_time()
                 spent = tools.budget_spent() and tools.jobs_in_flight() == 0
                 if stopping is None and (spent or over_time):
-                    stopping = "time limit" if over_time else f"budget ({tools.MAX_SUBMITS} submits)"
+                    stopping = ("time limit" if over_time
+                                else f"budget ({tools.max_submits():g} submits)")
+                    stopped_by_budget = True
                     tools.request_stop()
                     if over_time:
                         _drain_workers(stopping)
@@ -1720,6 +2092,9 @@ async def main():
                         last_announcements = board
                         if board_update:
                             break
+                    # A budget change is told at the turn it breaks out to.
+                    if budgets.changes_since(RUN_DIR, budget_seen)[1] > budget_seen:
+                        break
                     since_tick += ANNOUNCE_POLL
                     if since_tick < WAIT_TIMEOUT:
                         continue
@@ -1775,6 +2150,7 @@ async def main():
         # down can block (a local job runs for as long as it runs), and if that
         # happens the run must still end up correctly recorded rather than frozen as
         # "running" forever. The run dir itself STAYS -- it is the run history.
+        # The counts are the run's: a continuation takes them up where it left them.
         _write_meta(status="stopped", stop_reason=stop_reason,
                     ended_at=datetime.now().isoformat(timespec="seconds"),
                     # submit_count() is the local count in a run with no remote
@@ -1782,7 +2158,7 @@ async def main():
                     remote_submitted=tools.submit_count() if tools.HAS_REMOTE else 0,
                     remote_submitted_buckets=tools.bucket_submit_counts() if tools.HAS_REMOTE else {},
                     local_submitted=tools.local_submit_count(),
-                    uptime_s=int(time.time() - start_time))
+                    uptime_s=int(_run_seconds()))
         for path in (pid_file, os.path.join(RUN_DIR, "heartbeat")):
             try:
                 os.remove(path)
@@ -1811,7 +2187,8 @@ if __name__ == "__main__":
         print("preflight only: the run was not started.", flush=True)
         sys.exit(0)
     os.makedirs(LOG_DIR, exist_ok=True)
-    with open(LOG_PATH, "w") as log_file:
+    # A continuation adds to the run's log.
+    with open(LOG_PATH, "a" if CONTINUED else "w") as log_file:
         sys.stdout = Tee(log_file, sys.__stdout__)
         sys.stderr = Tee(log_file, sys.__stderr__)
         try:

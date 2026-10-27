@@ -62,6 +62,7 @@ collects what is in flight, writes up, and exits.
 |---|---|---|
 | `PREFLIGHT` | unset | run the checks, print the tools and the model, and stop without starting the run |
 | `RESUME_SESSION` | — | a Claude session id to start from, so a run continues a conversation you had with an agent. Forked, so that transcript is untouched; its whole context comes with it |
+| `CONTINUE_RUN` | unset | carry an ended run on as the same run: a run id, or `last` for the newest on this system. Its conversation is resumed and its budgets hold (see below). What the earlier part was given moves to `runs/<id>/part<N>/` with `progress.json`, where it had got to; jobs it left in flight are recorded as abandoned. The agent is told where its budgets stand, whatever it was given that changed, and which workers stopped before finishing |
 | `MAX_SUBMITS` | 60 | jobs submitted before winding down |
 | `MAX_RUNTIME` | unset | seconds from start before winding down; unset means no limit |
 | `STALL_LIMIT` | unset | seconds with nothing completing before giving up; unset means wait |
@@ -71,6 +72,16 @@ collects what is in flight, writes up, and exits.
 | `MAX_CONCURRENT` | `max_concurrent` in campaign.json, else the system file, else 1 | remote jobs in flight at once |
 | — | `max_concurrent` on a bucket in campaign.json | that bucket's own limit, under the run-wide one. Use it where one shape is costlier than another |
 | `LOCAL_MAX_CONCURRENT` | `local_max_concurrent` in campaign.json, else the system file, else 1 | local jobs at once; one by default, since a local job is assumed to use the whole machine |
+
+A run's budgets — `MAX_SUBMITS`, the per-bucket submits, `MAX_RUNTIME`, `node_hours` in
+campaign.json, and for a run that starts workers `WORKER_JOB_BUDGET` and each kind's
+`max_per_run` — are what it starts with. They are recorded in `runs/<id>/budgets.json` as
+totals for the whole run, and every check reads them there. The watch's status page shows
+each with how much is used. `bin/budget.sh <workspace>` shows them and changes them, live
+or between parts: `bin/budget.sh <workspace> submits=+10 workers.explorer=+4
+node_hours.polaris=+5 runtime_s=+2h`. The agent is told at its next turn, and a run winding
+down because a budget was spent goes on when it is raised. A continued run keeps its
+budgets; the values in `run.sh` and campaign.json do not replace them.
 
 Both follow the same order — environment, campaign, system, default. The system file
 carries a site default, conservative because queue policy and an allocation bound it as

@@ -27,6 +27,8 @@ import subprocess
 import sys
 import threading
 
+import budgets
+
 FRAMEWORK_DIR = os.path.dirname(os.path.abspath(__file__))
 # The CPUs workers may use, as a taskset list such as "0-15". Every worker is held to
 # the same set, so it bounds what all of them use together on a shared machine, their
@@ -51,6 +53,43 @@ _bucket_given = {}
 # How long past its max_runtime a worker is given to collect what it has in flight and
 # write up before it is stopped.
 WIND_DOWN_SECONDS = int(os.environ.get("WORKER_WIND_DOWN", "3600"))
+
+
+# The limits in force now: the run's budgets file (budgets.py), which may be raised while
+# it goes, else what the run started with.
+def _pool_limit():
+    return budgets.limit("worker_jobs", fallback=WORKER_JOB_BUDGET)
+
+
+def _pool_bucket_limits():
+    out = dict(WORKER_BUCKET_BUDGET)
+    out.update(budgets.limit("worker_jobs_buckets", fallback={}) or {})
+    return {b: n for b, n in out.items() if n is not None}
+
+
+def budget_seed(roles):
+    """The workers' budgets a coordinating run starts with, for its budgets file."""
+    return {"worker_jobs": WORKER_JOB_BUDGET,
+            "worker_jobs_buckets": dict(WORKER_BUCKET_BUDGET),
+            "workers": {kind: role.get("max_per_run") for kind, role in roles.items()}}
+
+
+def count_earlier(workspace, run_id):
+    """Take up the counts where an earlier part of the run left them: the workers it
+    started, by kind, and the jobs they used out of the shared budget. A continued run's
+    budgets are its totals, so its earlier workers count against them."""
+    global _jobs_given
+    with _started_lock:
+        for meta in _metas(workspace):
+            if meta.get("parent_run") != run_id:
+                continue
+            kind = meta.get("kind") or ""
+            _started[kind] = _started.get(kind, 0) + 1
+            used = (meta.get("remote_submitted") if meta.get("endpoint")
+                    else meta.get("local_submitted")) or 0
+            _jobs_given += int(used)
+            for b, n in (meta.get("remote_submitted_buckets") or {}).items():
+                _bucket_given[b] = _bucket_given.get(b, 0) + int(n)
 
 
 def _git(repo, *args):
@@ -174,11 +213,13 @@ def _node_hours_left():
     """The launch's node-hours left by system, where it has a budget. tools is imported
     here, not at the top: it imports the task module, which imports this one."""
     import tools
-    if not tools.NODE_HOURS:
+    caps = {sy: tools.node_hours_cap(sy) for sy in tools.SYSTEMS}
+    caps = {sy: cap for sy, cap in caps.items() if cap is not None}
+    if not caps:
         return {}
     used = tools.node_hours_used()
     return {"node_hours_left": {sy: round(cap - used.get(sy, 0), 1)
-                                for sy, cap in tools.NODE_HOURS.items()}}
+                                for sy, cap in caps.items()}}
 
 
 def run_worker(args, *, repo, roles, timeout=None):
@@ -228,7 +269,9 @@ def run_worker(args, *, repo, roles, timeout=None):
         return _error(f"branch {branch} was worked on by {earlier}; give this worker a "
                       f"new branch name", args)
     global _jobs_given
-    limit = role.get("max_per_run")
+    limit = budgets.limit("workers", kind, fallback=role.get("max_per_run"))
+    pool = _pool_limit()
+    pool_buckets = _pool_bucket_limits()
     try:
         jobs = int(args.get("jobs") or role.get("max_submits", 10))
     except (TypeError, ValueError):
@@ -237,15 +280,15 @@ def run_worker(args, *, repo, roles, timeout=None):
         if limit is not None and _started.get(kind, 0) >= limit:
             return _error(f"this run has started {limit} {kind} worker(s), the most it "
                           f"may", args)
-        if WORKER_JOB_BUDGET is not None:
-            jobs = min(jobs, WORKER_JOB_BUDGET - _jobs_given)
+        if pool is not None:
+            jobs = min(jobs, pool - _jobs_given)
         if jobs < 1:
             return _error("the workers' shared job budget is spent", args)
         # Per bucket: the role's share of each, cut to what the shared pool has left.
         bucket_jobs = {b: int(n) for b, n in (role.get("bucket_submits") or {}).items()}
         for b in bucket_jobs:
-            if b in WORKER_BUCKET_BUDGET:
-                bucket_jobs[b] = max(0, min(bucket_jobs[b], int(WORKER_BUCKET_BUDGET[b])
+            if b in pool_buckets:
+                bucket_jobs[b] = max(0, min(bucket_jobs[b], int(pool_buckets[b])
                                             - _bucket_given.get(b, 0)))
         if bucket_jobs and not any(bucket_jobs.values()):
             return _error("the workers' shared budget is spent in every bucket", args)
@@ -287,7 +330,7 @@ def run_worker(args, *, repo, roles, timeout=None):
 
     env = dict(os.environ)
     # What belongs to the coordinator's run and not to the worker's.
-    for name in ("RESUME_SESSION", "WATCH", "RUN_ID"):
+    for name in ("RESUME_SESSION", "CONTINUE_RUN", "WATCH", "RUN_ID"):
         env.pop(name, None)
     env.update({
         "ROLE": branch,
@@ -353,12 +396,12 @@ def run_worker(args, *, repo, roles, timeout=None):
     used_b = meta.get("remote_submitted_buckets") or {}
     with _started_lock:
         _jobs_given -= jobs - min(used, jobs)
-        left = (WORKER_JOB_BUDGET - _jobs_given) if WORKER_JOB_BUDGET is not None else None
+        pool, pool_buckets = _pool_limit(), _pool_bucket_limits()
+        left = (pool - _jobs_given) if pool is not None else None
         # What the worker did not use of each bucket goes back to the pool.
         for b, n in bucket_jobs.items():
             _bucket_given[b] -= n - min(int(used_b.get(b, 0)), n)
-        left_b = {b: int(WORKER_BUCKET_BUDGET[b]) - _bucket_given.get(b, 0)
-                  for b in WORKER_BUCKET_BUDGET}
+        left_b = {b: int(pool_buckets[b]) - _bucket_given.get(b, 0) for b in pool_buckets}
     if not meta:
         # It never ran -- a failed preflight, most often -- so it counts against nothing:
         # not this kind's limit, and, marked refused, not the coordinator's submits. Its

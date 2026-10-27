@@ -26,6 +26,7 @@ from concurrent.futures import wait as _futures_wait
 
 from claude_agent_sdk import tool, create_sdk_mcp_server
 
+import budgets
 import node_hours as _node_hours
 import transfer as _transfer
 from globus_compute_sdk import Executor
@@ -695,6 +696,13 @@ def request_stop():
     _stop_requested = True
 
 
+def resume_submits():
+    """Take back a wind-down: a run whose budget was spent, or whose time was up, has had
+    it raised and goes on."""
+    global _stop_requested
+    _stop_requested = False
+
+
 def stop_is_requested():
     return _stop_requested
 
@@ -710,14 +718,56 @@ def bucket_submit_counts():
     return dict(_bucket_submit_count)
 
 
+# The limits in force now. A run's budgets file holds them (budgets.py) and may be raised
+# while the run goes, so they are read there at each check; MAX_SUBMITS, BUCKET_SUBMITS
+# and NODE_HOURS are what the run starts with, and what holds before the file exists.
+def max_submits():
+    """Jobs this run may submit, or None for no limit."""
+    return budgets.limit("submits", fallback=MAX_SUBMITS)
+
+
+def bucket_submits():
+    """Jobs this run may submit to each bucket that has a limit."""
+    out = {}
+    for b in _SYS["buckets"]:
+        n = budgets.limit("submits_buckets", b, fallback=BUCKET_SUBMITS.get(b))
+        if n is not None:
+            out[b] = n
+    return out
+
+
+def node_hours_cap(system):
+    """Node-hours the launch may use on `system`, or None. The budget is the top run's,
+    which its workers share."""
+    return budgets.limit("node_hours", system, fallback=NODE_HOURS.get(system),
+                         directory=budgets.top_run_dir())
+
+
+def submits_start_workers():
+    """Whether this run's submits budget counts workers it starts: its local jobs each
+    run a worker agent (spawn.py) and it sends no remote work, which the budget would
+    count instead."""
+    return not HAS_REMOTE and "spawn" in sys.modules
+
+
+def submits_label():
+    """What the submits budget counts, as anything showing it names it."""
+    return "workers started" if submits_start_workers() else "jobs submitted"
+
+
+def _reached(count, cap):
+    return cap is not None and count >= cap
+
+
 def budget_spent():
     """Whether this run can submit nothing more: the total is spent, or every bucket has
     a budget and each is spent."""
-    if submit_count() >= MAX_SUBMITS:
+    if _reached(submit_count(), max_submits()):
         return True
-    return bool(HAS_REMOTE and BUCKET_SUBMITS and not HAS_LOCAL
-                and all(b in BUCKET_SUBMITS for b in _SYS["buckets"])
-                and all(_bucket_submit_count.get(b, 0) >= n for b, n in BUCKET_SUBMITS.items()))
+    caps = bucket_submits()
+    return bool(HAS_REMOTE and caps and not HAS_LOCAL
+                and all(b in caps for b in _SYS["buckets"])
+                and all(_bucket_submit_count.get(b, 0) >= n for b, n in caps.items()))
 
 
 def local_submit_count():
@@ -1008,7 +1058,7 @@ def _fire_remote(args, kind="job"):
         return {"error": f"bucket {bucket!r} is not one of "
                          f"{sorted(_SYS['buckets'])} -- check the bucket in task.py."}
     _b = _SYS["buckets"][bucket]
-    _nh_cap = NODE_HOURS.get(_b["system"])
+    _nh_cap = node_hours_cap(_b["system"])
     if _nh_cap is not None:
         _nh_used = node_hours_used().get(_b["system"], 0)
         if _nh_used >= _nh_cap:
@@ -1049,9 +1099,9 @@ async def _submit_one(args, kind="job"):
     global _submit_count
     if _stop_requested:
         return {"content": [{"type": "text", "text": _WINDDOWN_REFUSAL}], "is_error": True}
-    if _submit_count >= MAX_SUBMITS:
+    if _reached(_submit_count, max_submits()):
         return {"content": [{"type": "text", "text":
-                f"submit refused: hit MAX_SUBMITS={MAX_SUBMITS} total-jobs cap for this run"}],
+                f"submit refused: this run has used its {max_submits()} submits"}],
                 "is_error": True}
     if _remote_pending_count() >= MAX_CONCURRENT:
         return {"content": [{"type": "text", "text":
@@ -1059,8 +1109,8 @@ async def _submit_one(args, kind="job"):
                 f"max_concurrent={MAX_CONCURRENT}). Collect a finished job "
                 f"with get_completed_jobs before submitting more."}], "is_error": True}
     _b = _bucket_of(args, kind)
-    _lim = BUCKET_SUBMITS.get(_b)
-    if _lim is not None and _bucket_submit_count.get(_b, 0) >= _lim:
+    _lim = bucket_submits().get(_b)
+    if _reached(_bucket_submit_count.get(_b, 0), _lim):
         return {"content": [{"type": "text", "text":
                 f"submit refused: bucket {_b!r} has used its {_lim} submits for this run"}],
                 "is_error": True}
@@ -1081,10 +1131,10 @@ async def _submit_one(args, kind="job"):
     # once at the start -- and it counts this run's submits, not the rows in a record
     # that outlives the run.
     out = {"job_id": job_id, "key": key,
-           "submits_used": _submit_count, "submits_allowed": MAX_SUBMITS}
-    if BUCKET_SUBMITS:
+           "submits_used": _submit_count, "submits_allowed": max_submits()}
+    if bucket_submits():
         out["bucket_submits"] = {b: {"used": _bucket_submit_count.get(b, 0), "allowed": n}
-                                 for b, n in BUCKET_SUBMITS.items()}
+                                 for b, n in bucket_submits().items()}
     return {"content": [{"type": "text", "text": json.dumps(out)}]}
 
 
@@ -1129,12 +1179,13 @@ async def submit_job_batch(args):
         return {"content": [{"type": "text", "text":
                 "submit refused: `jobs` must be a list of parameter sets"}], "is_error": True}
     room = MAX_CONCURRENT - _remote_pending_count()
-    left = MAX_SUBMITS - _submit_count
+    cap = max_submits()
+    left = cap - _submit_count if cap is not None else BATCH_SIZE
     wanted = min(BATCH_SIZE, room, left)
     if wanted <= 0:
         return {"content": [{"type": "text", "text":
                 f"submit refused: {_remote_pending_count()} job(s) running of "
-                f"{MAX_CONCURRENT}, {max(left, 0)} of {MAX_SUBMITS} submits left. "
+                f"{MAX_CONCURRENT}, {max(left, 0)} of {cap} submits left. "
                 f"Collect with get_completed_jobs."}], "is_error": True}
     if len(jobs) != wanted:
         return {"content": [{"type": "text", "text":
@@ -1143,7 +1194,7 @@ async def submit_job_batch(args):
     fired = [dict(_fire_remote(j), args=j) for j in jobs]
     out = {"submitted": [f for f in fired if "error" not in f],
            "refused": [f for f in fired if "error" in f],
-           "submits_used": _submit_count, "submits_allowed": MAX_SUBMITS}
+           "submits_used": _submit_count, "submits_allowed": max_submits()}
     return {"content": [{"type": "text", "text": json.dumps(out)}]}
 
 
@@ -1230,9 +1281,10 @@ async def submit_local(args):
     global _local_submit_count
     if _stop_requested:
         return {"content": [{"type": "text", "text": _WINDDOWN_REFUSAL}], "is_error": True}
-    if not HAS_REMOTE and _local_submit_count >= MAX_SUBMITS:
+    if not HAS_REMOTE and _reached(_local_submit_count, max_submits()):
+        what = "workers" if submits_start_workers() else "submits"
         return {"content": [{"type": "text", "text":
-                f"submit refused: hit MAX_SUBMITS={MAX_SUBMITS} total-jobs cap for this run"}],
+                f"submit refused: this run has used its {max_submits()} {what}"}],
                 "is_error": True}
     if _local_pending_count() >= LOCAL_MAX_CONCURRENT:
         return {"content": [{"type": "text", "text":
@@ -1244,7 +1296,7 @@ async def submit_local(args):
     # local jobs are uncapped, so there is a count to report and no allowance.
     out = {"job_id": job_id, "args": args, "local_submits_used": _local_submit_count}
     if not HAS_REMOTE:
-        out["submits_allowed"] = MAX_SUBMITS
+        out["submits_allowed"] = max_submits()
     return {"content": [{"type": "text", "text": json.dumps(out)}]}
 
 
@@ -1276,12 +1328,13 @@ async def submit_local_batch(args):
         return {"content": [{"type": "text", "text":
                 "submit refused: `jobs` must be a list of parameter sets"}], "is_error": True}
     room = LOCAL_MAX_CONCURRENT - _local_pending_count()
-    left = MAX_SUBMITS - _local_submit_count if not HAS_REMOTE else len(jobs)
+    cap = max_submits() if not HAS_REMOTE else None
+    left = cap - _local_submit_count if cap is not None else len(jobs)
     wanted = min(BATCH_SIZE, room, left)
     if wanted <= 0:
         return {"content": [{"type": "text", "text":
                 f"submit refused: {_local_pending_count()} job(s) still running of "
-                f"{LOCAL_MAX_CONCURRENT}, {max(left, 0)} of {MAX_SUBMITS} submits left. "
+                f"{LOCAL_MAX_CONCURRENT}, {max(left, 0)} of {cap} submits left. "
                 f"Collect with get_local_completed."}], "is_error": True}
     if len(jobs) != wanted:
         return {"content": [{"type": "text", "text":
@@ -1290,7 +1343,7 @@ async def submit_local_batch(args):
     fired = [{"job_id": _fire_local(j), "args": j} for j in jobs]
     out = {"submitted": fired, "local_submits_used": _local_submit_count}
     if not HAS_REMOTE:
-        out["submits_allowed"] = MAX_SUBMITS
+        out["submits_allowed"] = max_submits()
     return {"content": [{"type": "text", "text": json.dumps(out)}]}
 
 

@@ -29,6 +29,7 @@ import subprocess
 import threading
 import time
 
+import budgets
 import node_hours
 import sys
 import urllib.parse
@@ -326,7 +327,8 @@ def resources(campaign, run=None, light=False):
             b["agents"] = sorted({t["agent"] for t in b["tasks"]})
         sysd.update(blocks=rows,
                     node_hours=round(sum(node_hours.hours(b) or 0 for b in rows), 1),
-                    max_node_hours=(top.get("max_node_hours") or {}).get(name))
+                    max_node_hours=(_budget_limits(top_dir, top).get("node_hours")
+                                    or {}).get(name))
         out.append(sysd)
     return {"systems": out, "tasks": tasks, "selected": selected}
 
@@ -519,6 +521,138 @@ def _count_lines(path):
         return 0
 
 
+def _budget_limits(run_dir, meta):
+    """A run's budgets (budgets.py), or for a run from before it had a budgets file, the
+    limits its meta recorded."""
+    found = budgets.load(run_dir)
+    if found:
+        return found
+    return {"submits": meta.get("max_submits"),
+            "submits_buckets": meta.get("max_submits_buckets") or {},
+            "runtime_s": meta.get("max_runtime_s"),
+            "node_hours": meta.get("max_node_hours") or {}}
+
+
+def _submits_by_run(path):
+    """Jobs each run has submitted, {run: {"remote": n, "local": n, "buckets": {b: n}}},
+    as tools counts them: a job that came back refused gives its submit back."""
+    out, bucket_of = {}, {}
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ev = r.get("event")
+                if ev not in ("submit", "local_submit", "completed", "local_completed"):
+                    continue
+                where = "local" if ev.startswith("local_") else "remote"
+                run = r.get("run")
+                c = out.setdefault(run, {"remote": 0, "local": 0, "buckets": {}})
+                if ev.endswith("submit"):
+                    c[where] += 1
+                    if r.get("bucket"):
+                        bucket_of[(run, r.get("job_id"))] = r["bucket"]
+                        c["buckets"][r["bucket"]] = c["buckets"].get(r["bucket"], 0) + 1
+                elif r.get("refused"):
+                    c[where] -= 1
+                    b = bucket_of.get((run, r.get("job_id"))) if where == "remote" else None
+                    if b:
+                        c["buckets"][b] -= 1
+    except OSError:
+        pass
+    return out
+
+
+def budget_rows(campaign, run_dir, meta, counts, elapsed, started):
+    """Every budget of a run with what it has used: {name, key, label, used, limit,
+    unit}. A limit of None is no limit. `counts` is _submits_by_run's, `started` the
+    runs it started."""
+    ws = workspace(campaign)
+    lim = _budget_limits(run_dir, meta)
+    mine = counts.get(meta.get("run_id")) or {"remote": 0, "local": 0, "buckets": {}}
+    rows = []
+
+    def row(name, key, label, used, limit, unit=""):
+        rows.append({"name": name, "key": key, "label": label, "used": used,
+                     "limit": limit, "unit": unit})
+
+    # A coordinator's submits are the workers it starts. meta.json says which; a run
+    # from before it did is a coordinator if it started workers and sent no remote work.
+    row("submits", None, meta.get("submits_label")
+        or ("workers started" if started and not meta.get("endpoint") else "jobs submitted"),
+        mine["remote" if meta.get("endpoint") else "local"], lim.get("submits"))
+    for b, n in (lim.get("submits_buckets") or {}).items():
+        row("submits_buckets", b, f"jobs submitted, {b}", mine["buckets"].get(b, 0), n)
+    row("runtime_s", None, "run time", elapsed, lim.get("runtime_s"), "s")
+    # Node-hours are the launch's, held by the run that started it.
+    if not meta.get("parent_run"):
+        caps = lim.get("node_hours") or {}
+        if caps:
+            used = node_hours.used(ws, node_hours.launch_runs(ws, meta.get("run_id")))
+            for sy, cap in caps.items():
+                row("node_hours", sy, f"node-hours, {sy}", round(used.get(sy, 0), 1),
+                    cap, "h")
+    # A run that starts workers: the jobs they have used of their shared budget, and how
+    # many of each kind it has started.
+    if "worker_jobs" in lim or lim.get("workers"):
+        used = 0
+        for w in started:
+            wm = _meta(os.path.join(ws, "runs", w["run"], "meta.json"))
+            used += (counts.get(w["run"]) or {}).get(
+                "remote" if wm.get("endpoint") else "local", 0)
+        row("worker_jobs", None, "jobs given to workers", used, lim.get("worker_jobs"))
+        for b, n in (lim.get("worker_jobs_buckets") or {}).items():
+            row("worker_jobs_buckets", b, f"jobs given to workers, {b}",
+                sum((counts.get(w["run"]) or {}).get("buckets", {}).get(b, 0)
+                    for w in started), n)
+        for kind, n in (lim.get("workers") or {}).items():
+            row("workers", kind, f"{kind} workers started",
+                sum(1 for w in started if w["kind"] == kind), n)
+    return rows
+
+
+def budgets_view(campaign, run=None):
+    """The budgets tab: every budget of a run tree in one place. The run's own, the
+    resources it draws on, each worker's, and the changes made to them."""
+    run_dir = run_path(campaign, run)
+    if not run_dir:
+        return {"run": None}
+    meta = _meta(os.path.join(run_dir, "meta.json"))
+    selected = None
+    if meta.get("parent_run") and run_path(campaign, meta["parent_run"]):
+        selected = meta.get("run_id")
+        run_dir = run_path(campaign, meta["parent_run"])
+        meta = _meta(os.path.join(run_dir, "meta.json"))
+    ws = workspace(campaign)
+    counts = _submits_by_run(os.path.join(ws, "jobs.jsonl"))
+    started = workers(campaign, meta.get("run_id"))
+    out = {"run": meta.get("run_id"), "selected": selected, "status": meta.get("status"),
+           "part": meta.get("part") or 1, "workspace": os.path.basename(ws),
+           "rows": budget_rows(campaign, run_dir, meta, counts, _elapsed(meta), started),
+           "buckets": meta.get("buckets") or {}, "workers": [], "changes": []}
+    for w in started:
+        wdir = os.path.join(ws, "runs", w["run"])
+        wm = _meta(os.path.join(wdir, "meta.json"))
+        out["workers"].append({"run": w["run"], "branch": w["branch"], "kind": w["kind"],
+                               "status": w["status"],
+                               "rows": budget_rows(campaign, wdir, wm, counts,
+                                                   _elapsed(wm), [])})
+    try:
+        with open(os.path.join(run_dir, budgets.LOG)) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                out["changes"] += [dict(c, ts=r.get("ts"), who=r.get("who"))
+                                   for c in r.get("changes", [])]
+    except OSError:
+        pass
+    return out
+
+
 def _submits(path, run_id):
     """Jobs fired, in total and by this run, and how many of this run's have come back.
     This run's counts are split by where the work ran. The log spans every run of the
@@ -584,13 +718,14 @@ def _phase(run_dir):
 
 def _elapsed(meta):
     """How long the run took, not how long ago it began: once it has ended, the clock
-    stops where it stopped."""
+    stops where it stopped. A continued run's time between parts is left out."""
     started, ended = meta.get("started_at"), meta.get("ended_at")
     if not started:
         return None
     try:
         end = datetime.fromisoformat(ended).timestamp() if ended else time.time()
-        return int(end - datetime.fromisoformat(started).timestamp())
+        return int(end - datetime.fromisoformat(started).timestamp()
+                   - (meta.get("paused_s") or 0))
     except Exception:
         return None
 
@@ -821,7 +956,11 @@ def status(campaign, run=None):
     tree_usd = (sum(w["usd"] or 0 for w in started_runs) + (own_usd or 0)
                 if started_runs else None)
     elapsed = _elapsed(meta)
+    budget = budget_rows(campaign, run_dir, meta,
+                         _submits_by_run(os.path.join(ws, "jobs.jsonl")), elapsed,
+                         started_runs)
     return {
+        "budgets": budget,
         "run": meta.get("run_id"), "handle": meta.get("handle"),
         "campaign": campaign, "status": meta.get("status"),
         "stop_reason": meta.get("stop_reason"), "model": meta.get("model"),
@@ -1315,12 +1454,18 @@ function setTabs(files) {
   w.className = (tab === "tree" || tab.startsWith("f:")) ? "on" : "";
   t.appendChild(w);
   w.onclick = () => { openTab("tree"); setTabs(files); };
+  // Every budget of the run tree in one place.
+  const bg = document.createElement("button");
+  bg.textContent = "budgets";
+  bg.className = tab === "budgets" ? "on" : "";
+  bg.style.marginLeft = "auto";
+  bg.onclick = () => { openTab("budgets"); setTabs(files); };
+  t.appendChild(bg);
   // The files the run was handed open in a panel: several of them, each read once and
   // referred back to while the log moves.
   const f = document.createElement("button");
   f.textContent = "inputs";
   f.className = sideOpen ? "on" : "";
-  f.style.marginLeft = "auto";
   f.onclick = () => { sideOpen = !sideOpen; showSide(); setTabs(files); };
   t.appendChild(f);
   if (SHOW_RAW && tab.endsWith(".md")) {
@@ -1432,6 +1577,67 @@ async function loadSharing() {
   } catch (e) {}
 }
 const sharedBy = k => (sharing[k] || []).length;
+
+// The budgets tab: every budget of the run tree with how much of it is used. The run's
+// own, the resources it draws on, each worker's, and the changes made to them.
+const budgetCell = r => {
+  const fmt = r.unit === "s" ? hms : r.unit === "h" ? (v => (+v).toFixed(1)) : String;
+  return r.limit == null
+    ? `${fmt(r.used == null ? 0 : r.used)} <span style="color:#777">(no limit)</span>`
+    : bar(r.used || 0, r.limit, fmt);
+};
+async function renderBudgets() {
+  const d = await (await fetch(url("/budgets"))).json();
+  if (tab !== "budgets") return;
+  view.className = "";
+  if (!d.run) { view.innerHTML = '<div id="res"><div class="note">no run yet</div></div>'; return; }
+  const ofRun = d.rows.filter(r => r.name !== "node_hours");
+  const ofSys = d.rows.filter(r => r.name === "node_hours");
+  let h = '<div id="res">';
+  h += `<h3>${esc(d.run)}</h3><div class="note">totals for the whole run`
+    + (d.part > 1 ? `, over its ${d.part} parts` : "") + `</div>`;
+  h += '<table class="grid">' + ofRun.map(r =>
+    `<tr><td>${esc(r.label)}</td><td>${budgetCell(r)}</td></tr>`).join("") + "</table>";
+  // What the run draws on elsewhere: node-hours per system and the block shapes.
+  const shapes = Object.entries(d.buckets || {});
+  if (ofSys.length || shapes.length) {
+    h += `<h3>resources</h3>`;
+    h += '<table class="grid">' + ofSys.map(r =>
+      `<tr><td>${esc(r.label)}</td><td>${budgetCell(r)}</td></tr>`).join("");
+    for (const [k, b] of shapes) {
+      const wall = (b.walltime || "").replace(/^0?(\\d+):00:00$/, "$1h");
+      h += `<tr><td>bucket ${esc(k)}</td><td>` + [b.system, b.queue,
+        `${b.num_nodes || 1}-node blocks` + (wall ? ` ${wall}` : ""),
+        `max ${b.max_blocks || 1} at a time`].filter(Boolean).map(esc).join(" \u00b7 ")
+        + `</td></tr>`;
+    }
+    h += "</table>";
+    if (shapes.length) h += `<div class="note"><a href="#" data-tab="resources">blocks and tasks in resources</a></div>`;
+  }
+  if ((d.workers || []).length) {
+    h += `<h3>workers</h3><table class="grid"><tr><th>worker</th><th>kind</th>`
+      + `<th>status</th><th>jobs</th><th>run time</th></tr>`;
+    for (const w of d.workers) {
+      const get = n => w.rows.find(r => r.name === n);
+      const cls = d.selected ? (w.run === d.selected ? "me" : "other") : "";
+      h += `<tr class="${cls}"><td>${esc(w.branch || w.run)}</td><td>${esc(w.kind || "")}</td>`
+        + `<td>${esc(w.status || "")}</td>`
+        + `<td>${get("submits") ? budgetCell(get("submits")) : ""}</td>`
+        + `<td>${get("runtime_s") ? budgetCell(get("runtime_s")) : ""}</td></tr>`;
+    }
+    h += "</table>";
+  }
+  if ((d.changes || []).length) {
+    h += `<h3>changes</h3><table class="grid">` + d.changes.map(c =>
+      `<tr><td>${clock(c.ts)}</td><td>${esc(c.who || "")}</td><td>${esc(c.name)}`
+      + (c.key ? ` (${esc(c.key)})` : "") + `</td><td>${c.before == null ? "no limit" : c.before}`
+      + ` \u2192 ${c.after}</td></tr>`).join("") + "</table>";
+  }
+  h += `<div class="note" style="margin-top:12px">change with <code>bin/budget.sh `
+    + `${esc(d.workspace)} NAME=+N</code>, e.g. submits=+10, workers.explorer=+4, `
+    + `node_hours.polaris=+5, runtime_s=+2h</div>`;
+  view.innerHTML = h + "</div>";
+}
 
 // The resources tab: per system, its buckets and who shares them, the batch jobs
 // (blocks) that were up while this run was, and the tasks each ran.
@@ -1584,21 +1790,14 @@ function renderStatus(s) {
                return `<a href="#" data-tab="resources" title="show in resources" `
                  + `style="color:${out ? "#2e7d32" : "#777"}">` + esc(text) + `</a>`;
              }).join("<br>") : "")],
-    // The budget counts remote jobs where the run has an endpoint, else local ones,
-    // as tools.submit_count does.
-    // With a budget per bucket, a bar for each; otherwise one for the run's total.
-    ["jobs submitted", Object.keys(s.max_submits_buckets || {}).length
-      ? shapes.map(([k]) => `${esc(k)}: ` + ((s.max_submits_buckets || {})[k] != null
-          ? bar((s.jobs_bucket || {})[k] || 0, s.max_submits_buckets[k])
-          : String((s.jobs_bucket || {})[k] || 0))).join("<br>")
-      : bar(s.endpoint ? s.jobs_remote : s.jobs_local, s.max_submits)
-        // Every configured shape, so one that has taken no work yet still shows as zero.
-        + (shapes.length > 1
-           ? ` <span style="color:#777">(` + shapes.map(([k]) =>
-               `${(s.jobs_bucket || {})[k] || 0} ${k}`).join(", ") + `)</span>` : "")
-        + (s.endpoint && s.has_local
-           ? ` <span style="color:#777">(${s.jobs_remote} on ${s.system || "endpoint"}, `
-             + `${s.jobs_local} here)</span>` : "")],
+    // Every budget of the run with how much of it is used: a total for the whole run,
+    // which bin/budget.sh can raise.
+    ...(s.budgets || []).map(r => {
+      const fmt = r.unit === "s" ? hms : r.unit === "h" ? (v => (+v).toFixed(1)) : String;
+      return [r.label, r.limit == null
+        ? `${fmt(r.used == null ? 0 : r.used)} <span style="color:#777">(no limit)</span>`
+        : bar(r.used || 0, r.limit, fmt)];
+    }),
     ["still running", `${s.jobs_run - s.jobs_done - (s.jobs_abandoned || 0)} of `
         + `${s.jobs_run} submitted, ${s.jobs_done} returned`
         + (s.jobs_abandoned ? `, ${s.jobs_abandoned} abandoned` : "")],
@@ -1608,7 +1807,6 @@ function renderStatus(s) {
         .map(([k, v]) => (k === s.primary_score ? `<b>${esc(k)} ${+v.toPrecision(7)}</b>`
                                                 : `${esc(k)} ${+v.toPrecision(7)}`))
         .join(" \u00b7 ")]] : []),
-    ["elapsed", bar(s.elapsed_s, s.max_runtime_s, hms)],
     ["model", `${s.model || "\u2014"}` + (s.effort ? ` \u00b7 effort ${s.effort}` : "")
         + " \u00b7 context " + (s.context_tokens == null
         ? "no data"
@@ -1889,6 +2087,7 @@ async function refresh() {
       view.className = ""; renderStatus(s); loadSharing(); return;
     }
     if (tab === "resources") { await renderResources(); return; }
+    if (tab === "budgets") { await renderBudgets(); return; }
     if (tab === "tree") { await renderTree(); return; }
     if (tab === "log") {
       view.className = "";
@@ -2723,6 +2922,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "application/json")
         elif url.path == "/status":
             self._send(json.dumps(status(campaign, run)), "application/json")
+        elif url.path == "/budgets":
+            self._send(json.dumps(budgets_view(campaign, run)), "application/json")
         elif url.path == "/resources":
             self._send(json.dumps(resources(campaign, run, light="light" in q)),
                        "application/json")
