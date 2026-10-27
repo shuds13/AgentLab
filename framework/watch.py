@@ -1467,8 +1467,12 @@ async function renderResources() {
     h += `<div class="note">${sy.max_node_hours != null ? `max node-hours ${sy.max_node_hours} · ` : ""}`
       + `pool shared by all agents</div>`;
     for (const [k, b] of Object.entries(sy.buckets || {})) {
-      const n = b.num_nodes || 1, per = b.nodes_per_job || n;
-      const jobs = per < n ? `${n / per} concurrent ${per}-node jobs` : `one ${n}-node job at a time`;
+      const n = b.num_nodes || 1, per = b.nodes_per_job || n, w = b.workers_per_node || 1;
+      // Runs that predate jobs_per_block in meta counted one job per node.
+      const slots = b.jobs_per_block || n / per;
+      const jobs = slots <= 1 ? `one ${n}-node job at a time`
+        : w > 1 ? `${slots} concurrent jobs` + (per === 1 ? `, ${w} per node` : "")
+        : `${slots} concurrent ${per}-node jobs`;
       h += `<div class="note">bucket <b>${esc(k)}</b>: ${n}-node blocks, `
         + `max concurrent blocks ${b.max_blocks || 1}</div>`
         + `<div class="note">per block: ${jobs}, ${esc(b.queue || "?")} queue, `
@@ -1500,7 +1504,7 @@ async function renderResources() {
         if (kind === "refused") {
           h += `<tr class="${rowCls(t)}"><td class="sub" colspan="3">${esc(t.agent)} \u00b7 task ${t.job_id}</td>`
             + `<td></td><td>${clock(t.at)}</td><td></td><td></td>`
-            + `<td>handed back: ${esc(t.reason || "")}</td></tr>`;
+            + `<td>postponed: ${esc(t.reason || "")}</td></tr>`;
           continue;
         }
         h += `<tr class="${rowCls(t)}"><td class="sub" colspan="3">${esc(t.agent)} \u00b7 task ${t.job_id}</td>`

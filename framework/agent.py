@@ -893,6 +893,8 @@ def _start_run_dir():
                                 or b["user_config"].get("qos", ""),
                        "num_nodes": b.get("nodes_per_block"),
                        "nodes_per_job": b.get("nodes_per_job"),
+                       "jobs_per_block": b.get("jobs_per_block"),
+                       "workers_per_node": b.get("workers_per_node"),
                        "max_blocks": b["user_config"].get("max_blocks", 1),
                        "walltime": b["user_config"].get("walltime", ""),
                        "max_concurrent": b.get("max_concurrent"),
@@ -1159,7 +1161,8 @@ def preflight():
                 print(f"[preflight] WARNING: could not query endpoint status ({_ep}): {e}", flush=True)
     try:
         os.makedirs(WORKSPACE_DIR, exist_ok=True)
-        _t = os.path.join(WORKSPACE_DIR, ".preflight_write_test")
+        # A file of this process's own: agents starting together share the workspace.
+        _t = os.path.join(WORKSPACE_DIR, f".preflight_write_test.{os.getpid()}")
         with open(_t, "w"):
             pass
         os.remove(_t)

@@ -88,14 +88,18 @@ HAS_LOCAL = hasattr(task, "local_fn")
 # The kinds of remote job. A task with several gives TASKS: a name to {"fn", "desc",
 # "schema", and "bucket" or "bucket_for", and optionally "key"}, and each becomes a
 # tool, submit_<name>. A task with one kind gives remote_fn with JOB_DESC, JOB_SCHEMA,
-# job_key and bucket_for, which becomes submit_job.
+# job_key and bucket_for, which becomes submit_job. Either may give an estimate --
+# estimate_seconds, or "estimate" in a kind's spec -- which runs with the job, before
+# it, as estimate(args, timings): `timings` is what earlier jobs of the kind returned
+# as `timings`, and the seconds it returns replace the job's needs_seconds.
 if getattr(task, "TASKS", None):
     KINDS = {name: dict(spec) for name, spec in task.TASKS.items()}
 elif hasattr(task, "remote_fn"):
     KINDS = {"job": {"fn": task.remote_fn, "desc": getattr(task, "JOB_DESC", ""),
                      "schema": getattr(task, "JOB_SCHEMA", {}),
                      "key": getattr(task, "job_key", None),
-                     "bucket_for": getattr(task, "bucket_for", None)}}
+                     "bucket_for": getattr(task, "bucket_for", None),
+                     "estimate": getattr(task, "estimate_seconds", None)}}
 else:
     KINDS = {}
 MULTI_KIND = bool(getattr(task, "TASKS", None))
@@ -105,6 +109,10 @@ HAS_REMOTE = bool(KINDS) and _sys_cfg.get("remote", True)
 for _k in KINDS.values():
     _k["source"] = __import__("textwrap").dedent(inspect.getsource(_k["fn"]))
     _k["name"] = _k["fn"].__name__
+    if _k.get("estimate"):
+        _k["estimate_source"] = __import__("textwrap").dedent(
+            inspect.getsource(_k["estimate"]))
+        _k["estimate_name"] = _k["estimate"].__name__
 
 
 def _run_remote(source, name, args, target):
@@ -179,15 +187,28 @@ def _run_remote(source, name, args, target):
              if f"block_{k}" in ran_on}
     if ran_on.get("batch_job"):
         block["batch_job"] = ran_on["batch_job"]
+    need = int((args or {}).get("needs_seconds") or 0) if isinstance(args, dict) else 0
+    # The task's estimate from earlier jobs' timings, where it gives one; the job's own
+    # needs_seconds otherwise.
+    est = target.get("estimate")
+    if est:
+        try:
+            scope = {}
+            exec(compile(est["source"], f"<{est['name']}>", "exec"), scope)
+            secs_est = scope[est["name"]](args, target.get("timings") or [])
+            if secs_est:
+                ran_on["needs_seconds"] = {"given": need, "estimated": int(secs_est)}
+                need = int(secs_est)
+        except Exception as e:
+            ran_on["estimate_error"] = f"{type(e).__name__}: {e}"
     if "start" in block and "walltime_s" in block:
         block["end"] = block["start"] + block["walltime_s"]
+        left = round(block["end"] - time.time())
         # A margin for starting up and handing back the result.
-        left = round(block["end"] - 120 - time.time())
-        need = int((args or {}).get("needs_seconds") or 0) if isinstance(args, dict) else 0
-        if need > left:
-            return {"retry_after": max(left, 0) + 60, "ran_on": ran_on,
-                    "error": f"{left} s left in this batch job, the job needs {need} s"}
-    target = {**target, "block": block}
+        if need > left - 30:
+            return {"retry_after": max(left - 30, 0) + 60, "ran_on": ran_on,
+                    "error": f"{left} s left in block, task needs {need} s"}
+    target = {**target, "block": block, "needs_seconds": need}
 
     started = time.time()
     scope = {}
@@ -357,9 +378,12 @@ for _name, _over in _cam_buckets.items():
     if _npj < int(_npb):
         _cfg.setdefault("launcher_type", "MpiExecLauncher")
         _cfg.setdefault("max_workers_per_node", 1)
+    # Each worker runs a job, so a block runs its job slots (one per node, or the one
+    # block) times the workers in each; the endpoint templates default to one.
+    _wpn = int(_cfg.get("max_workers_per_node", 1))
     _SYS["buckets"][_name] = {"num_nodes": _npb, "nodes_per_block": _npb,
-                              "nodes_per_job": _npj,
-                              "jobs_per_block": int(_npb) // _npj,
+                              "nodes_per_job": _npj, "workers_per_node": _wpn,
+                              "jobs_per_block": int(_npb) // _npj * _wpn,
                               "system": _bsys, "user_config": _cfg,
                               "max_concurrent": int(_cap) if _cap else None,
                               "max_submits": int(_bsub) if _bsub is not None else None,
@@ -371,8 +395,12 @@ _default_bucket = next(iter(_SYS["buckets"]))
 # sized past its block's walltime can never run.
 def _block_shape(name):
     b = _SYS["buckets"][name]
-    jobs = (f", {b['jobs_per_block']} jobs of {b['nodes_per_job']} node(s) at once"
-            if b["jobs_per_block"] > 1 else "")
+    jobs = ""
+    if b["jobs_per_block"] > 1:
+        jobs = (f", {b['jobs_per_block']} jobs at once, {b['workers_per_node']} per node"
+                if b["workers_per_node"] > 1 and b["nodes_per_job"] == 1 else
+                f", {b['jobs_per_block']} jobs at once" if b["workers_per_node"] > 1 else
+                f", {b['jobs_per_block']} jobs of {b['nodes_per_job']} node(s) at once")
     return (f"- {name}{' on ' + b['system'] if MULTI_SYSTEM else ''}: "
             f"{b['nodes_per_block']} node(s){jobs}, walltime "
             f"{b['user_config'].get('walltime') or 'unset'}, queue "
@@ -558,6 +586,29 @@ def backend_trouble():
     if bad and len(bad) == len(pend):
         return f"all {len(pend)} in-flight task(s) failed/lost: {bad}"
     return None
+
+
+TIMINGS_KEPT = 50
+
+
+def _timings(kind):
+    """The `timings` of the latest finished jobs of a kind, by any agent in any run of
+    the campaign, newest last."""
+    out = []
+    try:
+        with open(JOBS_LOG) as f:
+            for line in f:
+                if '"timings"' not in line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("event") == "completed" and r.get("kind", "job") == kind:
+                    out.append(r["timings"])
+    except OSError:
+        pass
+    return out[-TIMINGS_KEPT:]
 
 
 def _append_jobs_log(record):
@@ -830,6 +881,15 @@ def _service_refused(exc):
             or "did not signal readiness" in text)
 
 
+# A task lost with the node it ran on, as when its block is ended at walltime while the
+# task is starting there (Parsl's ManagerLost). It is submitted again, to run elsewhere.
+LOST_RETRIES = 2
+
+
+def _manager_lost(exc):
+    return "ManagerLost" in str(exc)
+
+
 def _log_task_id(job_id, fut):
     """Record a submission's Globus task id in the jobs log, so the task can be looked up
     with the service. The executor sets it once its batch submit returns, after submit()
@@ -858,6 +918,7 @@ class _RetryingFuture(Future):
         self.job_id = job_id
         self.retries = []
         self.refusals = 0
+        self.lost = 0
         self._start()
 
     @property
@@ -883,6 +944,12 @@ class _RetryingFuture(Future):
                 timer = threading.Timer(SUBMIT_RETRY_WAIT * self.refusals, self._again)
                 timer.daemon = True
                 timer.start()
+                return
+            if _manager_lost(e) and self.lost < LOST_RETRIES:
+                self.lost += 1
+                _append_jobs_log({"event": "resubmit", "job_id": self.job_id, "after_s": 0,
+                                  "reason": "ManagerLost: the task's node was lost"})
+                self._again()
                 return
             self.set_exception(e)
             return
@@ -954,6 +1021,10 @@ def _fire_remote(args, kind="job"):
     target["bucket"] = bucket
     target["num_nodes"] = _b.get("nodes_per_job", 1)
     target["walltime"] = _b.get("user_config", {}).get("walltime", "")
+    if KINDS[kind].get("estimate_source"):
+        target["estimate"] = {"source": KINDS[kind]["estimate_source"],
+                              "name": KINDS[kind]["estimate_name"]}
+        target["timings"] = _timings(kind)
     job_id = next(_job_counter)
     try:
         fut = _RetryingFuture(lambda: get_executor(bucket).submit(
@@ -967,7 +1038,7 @@ def _fire_remote(args, kind="job"):
 
     _submit_count += 1
     _bucket_submit_count[bucket] = _bucket_submit_count.get(bucket, 0) + 1
-    _jobs[job_id] = {"future": fut, "args": args, "key": key, "bucket": bucket}
+    _jobs[job_id] = {"future": fut, "args": args, "key": key, "bucket": bucket, "kind": kind}
     _append_jobs_log({"event": "submit", "job_id": job_id, "key": key, "args": args,
                       "kind": kind, "bucket": bucket, "system": _b["system"]})
     return {"job_id": job_id, "key": key}
@@ -1139,10 +1210,12 @@ async def get_completed_jobs(args):
         completed.append(res)
         # When the task started and how long it ran, where it reports them: with the
         # submit's ts, they give how long the job waited.
+        # `timings` is kept for the kind's estimate of later jobs.
         _append_jobs_log({"event": "completed", "job_id": job_id, "key": info["key"],
+                          "kind": info["kind"],
                           "error": "error" in res, "refused": bool(res.get("refused")),
-                          **{k: res[k] for k in ("started_at", "wall_seconds", "ran_on")
-                             if k in res}})
+                          **{k: res[k] for k in ("started_at", "wall_seconds", "ran_on",
+                                                 "timings") if k in res}})
         _release_claim(info["key"])
         del _jobs[job_id]
     pending = [{"job_id": jid, "key": i["key"], "args": i["args"], "bucket": i["bucket"]}
