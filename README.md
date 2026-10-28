@@ -118,6 +118,18 @@ bin/kill_agent.sh --drain <run>   stop cleanly, finishing jobs in flight
 bin/lab.sh status                 the lab's own processes, and their logs
 ```
 
+## Budgets
+
+Every limit a run stops at is a budget for the whole run: jobs it may submit, workers it
+may start, run time, and node-hours on each system. They can be raised or cut while the
+run goes, from the watch's Budgets tab or with `bin/budget.sh`, and the agent is told of
+the change at its next turn.
+
+```
+bin/budget.sh <campaign>                            the newest run's budgets
+bin/budget.sh <campaign> submits=+10 node_hours.polaris=+5
+```
+
 ## Watching
 
 A browser view of the lab: every campaign, which are running, and the files each one is
@@ -126,7 +138,7 @@ writing.
 On the machine the lab is on:
 
 ```
-bin/watch.sh                      the lab, at http://127.0.0.1:8765/
+bin/watch.sh                      the lab
 bin/watch.sh <campaign>           open on one campaign
 ```
 
@@ -142,7 +154,7 @@ arguments. Ctrl-C stops both ends.
 
 ## Writing a campaign
 
-Copy `campaigns/example-vllm-inference-opt/` and replace four files:
+Copy `campaigns/example-vllm-inference-opt/` and replace these files:
 
 | file | what it holds |
 |---|---|
@@ -162,33 +174,3 @@ whichever it defines. A task with only
 `local_fn` needs no Globus Compute endpoint.
 
 Nothing in `framework/` changes.
-
-## The example campaigns
-
-`campaigns/example-quick-optimum/` — one dial, a noisy response, a lowest point to find.
-Runs in minutes on your own machine, with no endpoint and no account. Setup starts here.
-
-`campaigns/example-multi-agent-ale-ahc016/` — a coordinator agent and its workers on
-AtCoder Heuristic Contest 016. Explorers each try one approach and refiners improve the
-best, sharing one evaluation budget. Runs on your own machine; needs g++ and Rust's cargo.
-
-`campaigns/example-local-compression/` — real work on the same footing: which zlib
-setting gets a corpus to a consumer fastest, trading encode time against transmit time.
-Also entirely on your own machine.
-
-`campaigns/example-vllm-inference-opt/` tunes single-node vLLM inference for
-Llama-3-70B on Aurora: it measures per-token decode rate and searches for a
-configuration that lowers it. It shows the shape of a campaign — a prompt stating the
-goal, what is fixed, what may vary and the leads to work; and a task that runs one
-benchmark configuration and returns metrics plus startup diagnostics.
-
-Its own README describes what a campaign directory holds and what to add for your
-problem.
-
-## Current limits
-
-- `task.py` in the example exposes a fixed set of vLLM flags. An `extra_args`
-  passthrough would let a campaign reach any flag its version supports.
-- Slack is present and unwired — `framework/secretary.py` and the bridge scripts.
-- One resource bucket per system. Several shapes per system would need
-  `systems/<system>.json` extended.
