@@ -256,7 +256,7 @@ def resources(campaign, run=None, light=False):
                     t = {"run": r["run"], "agent": metas[r["run"]].get("branch") or top_label,
                          "system": r.get("system") or metas[r["run"]].get("system"),
                          "job_id": r.get("job_id"), "key": r.get("key"), "bucket": r.get("bucket"),
-                         "kind": r.get("kind"),
+                         "kind": r.get("kind"), "idle_s": r.get("idle_s"),
                          "submitted": r.get("ts"), "started": None, "ran_s": None,
                          "state": "waiting or running", "retries": 0, "block": None,
                          "refused": [], "ran_on": None, "mine": r["run"] == selected}
@@ -303,24 +303,24 @@ def resources(campaign, run=None, light=False):
             continue
         blocks = {}
 
-        def block(on):
+        def block(on, idle_s):
             bid = node_hours.block_key(on)
             if not bid:
                 return None
             b = blocks.setdefault(bid, {"id": bid, "queue": None, "nodes": None,
                                         "queued_at": None, "start": None, "walltime_s": None,
                                         "last": None, "tasks": [], "refused": []})
-            node_hours.add(b, on)
+            node_hours.add(b, on, idle_s)
             return b
 
         for t in mine:
             if t["ran_on"]:
-                b = block(t["ran_on"])
+                b = block(t["ran_on"], t["idle_s"])
                 if b:
                     t["block"] = b["id"]
                     b["tasks"].append(t)
             for x in t["refused"]:
-                b = block(x["ran_on"])
+                b = block(x["ran_on"], t["idle_s"])
                 if b:
                     b["refused"].append(dict(x, agent=t["agent"], job_id=t["job_id"],
                                              mine=t["mine"]))

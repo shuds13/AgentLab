@@ -1090,7 +1090,8 @@ def _fire_remote(args, kind="job"):
     _bucket_submit_count[bucket] = _bucket_submit_count.get(bucket, 0) + 1
     _jobs[job_id] = {"future": fut, "args": args, "key": key, "bucket": bucket, "kind": kind}
     _append_jobs_log({"event": "submit", "job_id": job_id, "key": key, "args": args,
-                      "kind": kind, "bucket": bucket, "system": _b["system"]})
+                      "kind": kind, "bucket": bucket, "system": _b["system"],
+                      "idle_s": _b["idle_s"]})
     return {"job_id": job_id, "key": key}
 
 
