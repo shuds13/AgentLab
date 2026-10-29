@@ -139,6 +139,9 @@ several systems. See [docs/campaigns.md](docs/campaigns.md#resources).
 
 *The resources tab as a timeline: 2-node Polaris blocks with 4 workers per node, each task a green bar. A table view lists the same blocks and tasks.*
 
+Setting `max_blocks` above 1 lets a bucket's resources grow and shrink with demand: more
+blocks start while tasks are waiting, and a block is released once it has sat idle.
+
 ## Watching
 
 A browser view of the lab: every campaign, which are running, and the files each one is
