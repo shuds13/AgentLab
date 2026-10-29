@@ -55,16 +55,23 @@ def add(block, on, idle_s=None):
         block["last"] = end
 
 
-def hours(block):
-    """A block's node-hours, start to its estimated end, no later than now; None until a
-    task in it has ended."""
+def end(block):
+    """A block's estimated end, no later than now; None until a task in it has ended."""
     if not (block.get("start") and block.get("last")):
         return None
-    end = block["last"] + (block.get("idle_s") or 0)
+    e = block["last"] + (block.get("idle_s") or 0)
     if block.get("walltime_s"):
-        end = min(end, block["start"] + block["walltime_s"])
-    end = max(block["last"], min(end, time.time()))
-    return (block.get("nodes") or 1) * (end - block["start"]) / 3600
+        e = min(e, block["start"] + block["walltime_s"])
+    return max(block["last"], min(e, time.time()))
+
+
+def hours(block):
+    """A block's node-hours, start to its estimated end; None until a task in it has
+    ended."""
+    e = end(block)
+    if e is None:
+        return None
+    return (block.get("nodes") or 1) * (e - block["start"]) / 3600
 
 
 def used(workspace, runs):

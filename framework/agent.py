@@ -1869,7 +1869,7 @@ async def main():
             if NOTIFY_START:
                 notify_lab(f"🚀 Agent {HANDLE} started — "
                              f"{CAMPAIGN or 'no campaign'} on {SYSTEM}{ROLE_NOTE} · {model}"
-                             f" · critic {CRITIC_LABEL}.")
+                             + (f" · critic {CRITIC_LABEL}" if CRITIC_MODEL else "") + ".")
             prompt = load_user_prompt()
             # A resumed session keeps the system prompt it was started with and ignores
             # a new one, so a run that resumes one is given its own instructions here.

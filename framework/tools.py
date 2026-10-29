@@ -135,6 +135,11 @@ def _run_remote(source, name, args, target):
     import time
 
     ran_on = {"host": socket.gethostname()}
+    # The worker that ran it, where the engine names one: Parsl's high-throughput
+    # workers do, as a pool per node and a rank within it.
+    for key, var in (("worker_pool", "PARSL_WORKER_POOL_ID"), ("worker", "PARSL_WORKER_RANK")):
+        if os.environ.get(var):
+            ran_on[key] = os.environ[var]
 
     def stamp(text, fmt):
         return round(time.mktime(time.strptime(text.strip(), fmt)), 1)

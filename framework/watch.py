@@ -328,6 +328,7 @@ def resources(campaign, run=None, light=False):
         for b in rows:
             nh = node_hours.hours(b)
             b["node_hours"] = round(nh, 2) if nh else None
+            b["end"] = node_hours.end(b)
             b["agents"] = sorted({t["agent"] for t in b["tasks"]})
         sysd.update(blocks=rows,
                     node_hours=round(sum(node_hours.hours(b) or 0 for b in rows), 1),
@@ -1301,6 +1302,20 @@ PAGE = """<!doctype html>
  #res label.resonly { margin-left:24px; font-weight:normal; font-size:13px; color:#9aa8b5;
                       cursor:pointer; }
  #res tr.me td { color:#e8f0f6; background:#1f3a2a; }
+ #res .resview a { margin-right:8px; } #res .resview a.on { color:#e8f0f6; text-decoration:none; }
+ #res .tlb { margin:10px 12px 4px; color:#9aa8b5; } #res .tlb b { color:#e8f0f6; }
+ #res .tl { margin:0 12px 6px; }
+ #res .tl .row { display:flex; align-items:center; height:12px; margin:1px 0; }
+ #res .tl .lbl { width:150px; flex:none; font-size:11px; color:#6f8296; white-space:nowrap; overflow:hidden; }
+ #res .tl .lane { position:relative; flex:1; height:10px; background:#16212b; }
+ #res .tl .after { position:absolute; top:0; bottom:0; right:0; background:#101820; }
+ #res .tl .now { position:absolute; top:-1px; bottom:-1px; width:1px; background:#8ab4d8; }
+ #res .tl .t { position:absolute; top:1px; bottom:1px; min-width:2px; background:#3d7a3d; box-shadow:inset -1px 0 #16212b; }
+ #res .tl .t.error { background:#a8553f; } #res .tl .t.postponed { background:#6f8296; }
+ #res .tl .t.other { opacity:.35; } #res .tl .t.me { background:#5fb85f; }
+ #res .tl .axis { position:relative; flex:1; height:14px; font-size:10px; color:#6f8296; }
+ #res .tl .axis span { position:absolute; transform:translateX(-50%%); white-space:nowrap; }
+ #res .tl .axis span:first-child { transform:none; } #res .tl .axis span:last-child { transform:translateX(-100%%); }
  /* The run and the campaign are different spans of time, and their counts differ. */
  tr.sec td { color:#6f8296; padding:14px 0 2px; border-bottom:1px solid #2b3946; }
  td { padding:3px 18px 3px 0; vertical-align:top; }
@@ -1324,6 +1339,13 @@ PAGE = """<!doctype html>
              border-bottom:1px solid #24313d; letter-spacing:.08em;
              cursor:ns-resize; user-select:none; }
  #chatlog { flex:1; overflow:auto; padding:8px 12px; }
+ #chathead button { float:right; background:none; border:none; padding:0; color:#8ab4d8;
+                    font:inherit; letter-spacing:normal; cursor:pointer; }
+ /* Hidden: the bar alone, which opens it again. */
+ html.chatoff #chat { height:auto; min-height:0; }
+ html.chatoff #chatlog, html.chatoff #say { display:none; }
+ html.chatoff #chathead { cursor:pointer; border-bottom:none; }
+ html.chatoff #newest { bottom:44px; }
  #chatlog .m { margin:0 0 7px; }
  #chatlog .t { color:#666; margin-right:8px; }
  #chatlog .who { color:#7aa87a; margin-right:6px; }
@@ -1354,7 +1376,7 @@ PAGE = """<!doctype html>
 <aside id="side" hidden></aside></div>
 <button id="newest">\u2193 newest</button>
 <div id="chat">
-  <div id="chathead">CHAT</div>
+  <div id="chathead"><span id="chattitle">CHAT</span><button id="chattoggle">hide</button></div>
   <div id="chatlog" class="none">no messages yet</div>
   <div id="say"><input id="msg" autocomplete="off"
     placeholder="message the agent \u2014 it reads between turns"><button>send</button></div>
@@ -1585,8 +1607,9 @@ function bar(done, total, fmt) {
 // Which agents of this run send work to each bucket, for the status page's "shared by".
 // Read from the tasks log only, so it is cheap; refreshed every half minute.
 let sharing = {}, sharingAt = 0;
-let resOnly = false, resSystem = "";
+let resOnly = false, resSystem = "", resView = "table";
 try { resOnly = !!localStorage.getItem("resOnly"); } catch (e) {}
+try { resView = localStorage.getItem("resView") || "table"; } catch (e) {}
 async function loadSharing() {
   if (Date.now() - sharingAt < 30000) return;
   sharingAt = Date.now();
@@ -1703,6 +1726,65 @@ async function renderBudgets() {
 const clock = t => t ? new Date(t * 1000).toLocaleString([], {weekday: "short",
   hour: "2-digit", minute: "2-digit"}) : "\u2014";
 const dur = s => s == null ? "\u2014" : hms(Math.round(s));
+// One block as a timeline: a lane per worker, grouped by node, over the block's walltime.
+// A task names its worker where the engine gives one; otherwise a node's tasks are packed
+// into as few lanes as hold them, which shows how many ran at once but not which worker.
+function blockTimeline(b, perNode, pick, cls) {
+  const span = b.walltime_s || Math.max(1, (b.end || b.last) - b.start);
+  const pos = t => Math.max(0, Math.min(100, 100 * (t - b.start) / span));
+  const bars = b.tasks.filter(pick).filter(t => t.started && t.ran_s != null)
+    .map(t => ({on: t.ran_on || {}, from: t.started, to: t.started + t.ran_s,
+                kind: t.state === "done" ? "" : "error", t,
+                tip: `${t.agent} \u00b7 task ${t.job_id} \u00b7 ${dur(t.ran_s)} \u00b7 ${t.state}`}))
+    .concat(b.refused.filter(pick).map(x => {
+      const from = x.ran_on.started_at || x.at;
+      return {on: x.ran_on, from, to: x.ran_on.ended_at || from, kind: "postponed", t: x,
+              tip: `${x.agent} \u00b7 task ${x.job_id} \u00b7 postponed: ${x.reason || ""}`};
+    })).sort((p, q) => p.from - q.from);
+  const nodes = {};
+  for (const x of bars) {
+    const host = x.on.host || "?";
+    const n = nodes[host] = nodes[host] || {named: {}, packed: []};
+    if (x.on.worker != null) {
+      (n.named[x.on.worker] = n.named[x.on.worker] || []).push(x);
+    } else {
+      let lane = n.packed.find(l => l.end <= x.from);
+      if (!lane) n.packed.push(lane = {end: 0, bars: []});
+      lane.bars.push(x); lane.end = Math.max(lane.end, x.to);
+    }
+  }
+  const busy = bars.filter(x => x.kind !== "postponed").reduce((a, x) => a + x.to - x.from, 0);
+  const lanes = (b.nodes || Object.keys(nodes).length) * perNode;
+  const used = (b.end || b.last) - b.start;
+  let h = `<div class="tlb"><b>${esc(b.id)}</b> \u00b7 ${esc(b.queue || "")} \u00b7 `
+    + `${b.nodes == null ? "?" : b.nodes} node${b.nodes === 1 ? "" : "s"} \u00b7 started ${clock(b.start)}`
+    + ` \u00b7 node-hours ${b.node_hours == null ? "\u2014" : b.node_hours}`
+    + (used > 0 ? ` \u00b7 workers busy <b>${Math.round(100 * busy / (lanes * used))}%%</b>` : "")
+    + `</div><div class="tl">`;
+  const after = b.end ? `<div class="after" style="left:${pos(b.end)}%%"></div>` : "";
+  const now = Date.now() / 1000;
+  const mark = now < b.start + span && (!b.end || now - b.end < 5)
+    ? `<div class="now" style="left:${pos(now)}%%"></div>` : "";
+  const lane = (label, xs) => `<div class="row"><div class="lbl">${esc(label)}</div>`
+    + `<div class="lane">${after}${mark}` + xs.map(x =>
+      `<div class="t ${x.kind} ${cls(x.t)}" title="${esc(x.tip)}" style="left:${pos(x.from)}%%;`
+      + `width:${Math.max(0, pos(x.to) - pos(x.from))}%%"></div>`).join("") + `</div></div>`;
+  const hosts = Object.keys(nodes).sort();
+  for (const host of hosts) {
+    const n = nodes[host];
+    const rows = Object.keys(n.named).sort((p, q) => p - q)
+      .map(w => [`${host} \u00b7 ${w}`, n.named[w]])
+      .concat(n.packed.map((l, i) => [i ? "" : host, l.bars]));
+    for (let i = rows.length; i < perNode; i++) rows.push([rows.length ? "" : host, []]);
+    for (const [label, xs] of rows) h += lane(label, xs);
+  }
+  for (let i = hosts.length; i < (b.nodes || 0); i++)
+    for (let w = 0; w < perNode; w++) h += lane(w ? "" : "node ran no task", []);
+  h += `<div class="row"><div class="lbl"></div><div class="axis">`
+    + [0, 1, 2, 3, 4].map(k => `<span style="left:${25 * k}%%">${Math.round(span * k / 240)}m</span>`).join("")
+    + `</div></div></div>`;
+  return h;
+}
 async function renderResources() {
   const d = await (await fetch(url("/resources"))).json();
   if (tab !== "resources") return;
@@ -1710,7 +1792,7 @@ async function renderResources() {
   const only = !!d.selected && resOnly;
   const pick = t => !only || t.mine;
   const rowCls = t => d.selected ? (t.mine ? "me" : "other") : "";
-  let h = '<div id="res">';
+  let h = "";
   const names = (d.systems || []).map(sy => sy.system);
   if (resSystem && !names.includes(resSystem)) resSystem = "";
   // One line of controls for the whole view: which system, and whose tasks.
@@ -1721,7 +1803,10 @@ async function renderResources() {
   const toggle = d.selected
     ? `<label class="resonly"><input type="checkbox" id="resonly"${resOnly ? " checked" : ""}>`
       + ` only this agent's tasks</label>` : "";
-  if (chooser || toggle) h += `<div class="note">${chooser}${toggle}</div>`;
+  const views = `<span class="resview">` + ["table", "timeline"].map(v =>
+    `<a href="#" data-resview="${v}"${v === resView ? ' class="on"' : ""}>${v}</a>`).join("")
+    + `</span>`;
+  const ctl = `<div class="note">${views}${chooser}${toggle}</div>`;
   if (!(d.systems || []).length)
     h += '<div class="note">This run sent no work to another system.</div>';
   for (const sy of d.systems || []) {
@@ -1748,10 +1833,18 @@ async function renderResources() {
     const busy = [...new Set(flying.map(t => t.agent))];
     h += `<div class="live">node-hours used <b>${sy.node_hours}</b>`
       + (sy.max_node_hours != null ? ` / ${sy.max_node_hours}` : "")
-      + ` (at least: block start to its last task)<br>`
+      + ` (block start to its last task plus idle time)<br>`
       + `blocks so far <b>${sy.blocks.length}</b> · tasks in flight <b>${flying.length}</b>`
       + ` (running or queued) from <b>${busy.length}</b> agent${busy.length === 1 ? "" : "s"}`
       + ` · done <b>${here.length - flying.length}</b></div>`;
+    if (resView === "timeline") {
+      const shapes = Object.values(sy.buckets || {});
+      const perNode = Math.max(1, ...shapes.map(b => b.workers_per_node || 1));
+      for (const b of sy.blocks) {
+        if (only && !b.tasks.some(t => t.mine) && !b.refused.some(x => x.mine)) continue;
+        if (b.start) h += blockTimeline(b, perNode, pick, t => d.selected ? (t.mine ? "me" : "other") : "");
+      }
+    } else {
     h += '<table class="grid"><tr><th>block</th><th>queue</th><th>nodes</th><th>waited</th>'
       + '<th>started</th><th>walltime</th><th>to last task</th><th>node-hours</th><th></th></tr>';
     for (const b of sy.blocks) {
@@ -1779,6 +1872,7 @@ async function renderResources() {
       }
     }
     h += "</table>";
+    }
     // A task names its block when it finishes, so one still running has none yet.
     const loose = (d.tasks || []).filter(t => !t.block && pick(t) && t.system === sy.system);
     for (const [title, ts] of [
@@ -1794,8 +1888,21 @@ async function renderResources() {
       h += "</table>";
     }
   }
-  h += "</div>";
-  if (h !== view.dataset.body) { view.dataset.body = h; view.className = ""; view.innerHTML = h; }
+  // The controls are redrawn only when they change, so a menu held open survives the
+  // refresh that redraws the blocks beneath it.
+  if (view.dataset.body !== "res" || !document.getElementById("resbody")) {
+    view.dataset.body = "res"; view.className = "";
+    view.innerHTML = '<div id="res"><div id="resctl"></div><div id="resbody"></div></div>';
+  }
+  for (const [id, html] of [["resctl", ctl], ["resbody", h]]) {
+    const el = document.getElementById(id);
+    if (el.dataset.html !== html) { el.dataset.html = html; el.innerHTML = html; }
+  }
+  for (const a of view.querySelectorAll("a[data-resview]")) a.onclick = e => {
+    e.preventDefault(); resView = a.dataset.resview;
+    try { localStorage.setItem("resView", resView); } catch (err) {}
+    renderResources();
+  };
   const pickSys = document.getElementById("ressys");
   if (pickSys) pickSys.onchange = () => { resSystem = pickSys.value; renderResources(); };
   const box = document.getElementById("resonly");
@@ -1883,7 +1990,8 @@ function renderStatus(s) {
             ? `<a href="#" data-agent="${esc(agentByBranch[b])}">${esc(b)}</a>` : esc(b))
             .join(" + ") : "")],
       ["works on", `${esc(s.branch || "\u2014")} (${esc(s.kind || "?")})`]] : []),
-    ["critic", s.critic || "\u2014"],
+    // Only a run that has a critic names one.
+    ...(s.critic && !/^(none|no critic)/.test(s.critic) ? [["critic", esc(s.critic)]] : []),
     // The run's Claude session, to reopen afterwards with `claude -r`. Copying is
     // offered once the run has stopped: opening a session the runner still holds puts
     // a second client on it.
@@ -1899,8 +2007,8 @@ function renderStatus(s) {
   // be larger than the numbers above.
   rows.push(["campaign totals"],
             ["jobs submitted", String(s.jobs)],
-            ["results recorded", String(s.results)],
-            ["critic reviews", String(s.reviews || 0)]);
+            ["results recorded", String(s.results)]);
+  if (s.reviews) rows.push(["critic reviews", String(s.reviews)]);
   // Rewrite only the cells whose value moved. Rebuilding the table every refresh
   // replaces the nodes a selection sits in, and the ticking rows guarantee a rebuild
   // every time -- so a value you are trying to copy cannot be held long enough.
@@ -2337,11 +2445,27 @@ async function say() {
     try { localStorage.setItem(KEY, chat.offsetHeight); } catch (e) {}
   };
   bar.addEventListener("mousedown", e => {
+    if (e.target.id === "chattoggle" || document.documentElement.classList.contains("chatoff")) return;
     from = e.clientY; start = chat.offsetHeight;
     document.body.style.userSelect = "none";
     document.addEventListener("mousemove", move);
     document.addEventListener("mouseup", up);
     e.preventDefault();
+  });
+})();
+
+// Hide the chat down to its bar, and open it again from the bar; kept like its height.
+(function () {
+  const root = document.documentElement, btn = document.getElementById("chattoggle");
+  const set = off => {
+    root.classList.toggle("chatoff", off);
+    btn.textContent = off ? "show" : "hide";
+    try { localStorage.setItem("watch.chatOff", off ? "1" : ""); } catch (e) {}
+  };
+  try { set(!!localStorage.getItem("watch.chatOff")); } catch (e) {}
+  btn.addEventListener("click", e => { e.stopPropagation(); set(!root.classList.contains("chatoff")); });
+  document.getElementById("chathead").addEventListener("click", () => {
+    if (root.classList.contains("chatoff")) set(false);
   });
 })();
 
@@ -2418,7 +2542,7 @@ function showScope() {
 // cannot overwrite each other's title as they poll.
 let labState = {secretary: false, slack: false};
 function setChatBar() {
-  const head = document.getElementById("chathead"), box = document.getElementById("msg");
+  const head = document.getElementById("chattitle"), box = document.getElementById("msg");
   if (scope !== "lab") {
     head.textContent = "CHAT \u00b7 " + campaign;
     box.placeholder = "message the agent \u2014 it reads between turns";
