@@ -32,12 +32,6 @@ Examples:
 
 *A multi-agent example mid-run: a coordinator and 21 workers. The selected refiner-3c holds the best score so far; refiner-13a, at the bottom, is still running.*
 
-Looking at compute resources:
-
-![AgentLab resources view: a GPU bucket on Polaris shared by all agents, with its node-hour budget, the block and each agent's tasks on it](docs/images/resource-block-polaris.png)
-
-*AgentLab resources view: a GPU bucket on Polaris shared by all agents. This run sets a 4 node-hour budget and a limit of one block at a time. So far all the agents' tasks have run in the first block. New blocks are started as needed until the node-hour budget is used or no tasks remain. Resource buckets can be added for multiple systems.*
-
 ## Structure
 
 ```
@@ -129,6 +123,21 @@ the change at its next turn.
 bin/budget.sh <campaign>                            the newest run's budgets
 bin/budget.sh <campaign> submits=+10 node_hours.polaris=+5
 ```
+
+![AgentLab budgets view: the run's totals against their limits, the Polaris node-hours, and each worker's jobs and run time, with fields to raise any of them](docs/images/budgets.png)
+
+*The Budgets tab mid-run, with 10 more explorer workers about to be added.*
+
+## Resources
+
+A campaign's jobs run in buckets: a shape of block on one system (queue, nodes, walltime,
+workers per node) shared by all its agents. Blocks are started as tasks arrive, up to a
+set number at once, until that system's node-hours are used. Buckets can be added for
+several systems. See [docs/campaigns.md](docs/campaigns.md#resources).
+
+![AgentLab resources timeline: a GPU bucket on Polaris shared by all agents, with its node-hour budget and three blocks, each showing every worker's tasks over the hour](docs/images/resources-timeline.png)
+
+*The resources tab as a timeline: 2-node Polaris blocks with 4 workers per node, each task a green bar. A table view lists the same blocks and tasks.*
 
 ## Watching
 
