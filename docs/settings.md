@@ -137,6 +137,7 @@ refuses it. Add it where the lab's gateway does.
 | `AGENT_TOOLS` | — | change that set: `+WebSearch -Write` adjusts it, a plain list (`Read Grep Bash`) replaces it. One form or the other, not both. The job tools are always given — they come from what the task defines. |
 | `AGENT_MODEL` | — | which model the agent runs as. Unset leaves it to Claude Code. An alias (`sonnet`, `opus`) or a full model name. |
 | `AGENT_EFFORT` | — | the agent's effort level: `low`, `medium`, `high`, `xhigh` or `max`. Unset leaves it to Claude Code. |
+| `AGENT_ADVISOR` | — | a stronger model the agent consults while it works, Claude Code's advisor: an alias (`opus`) or a full model name, at least as capable as the agent's. Needs the Anthropic API or a gateway that passes the request on unchanged. |
 
 `PREFLIGHT=true ./run.sh` runs the checks, prints the tools, the model and the effort, and stops.
 

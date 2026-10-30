@@ -724,6 +724,10 @@ AGENT_MODEL = os.environ.get("AGENT_MODEL", "").strip()
 # The agent's effort level (low, medium, high, xhigh, max). Unset leaves it to Claude
 # Code, which takes it from the settings files or the model's default.
 AGENT_EFFORT = os.environ.get("AGENT_EFFORT", "").strip()
+# A stronger model the agent consults while it works (Claude Code's advisor): an alias
+# ('opus') or a full model name. Unset, there is none. Needs the Anthropic API directly or a
+# gateway that passes the request on unchanged.
+AGENT_ADVISOR = os.environ.get("AGENT_ADVISOR", "").strip()
 RESOLVED_MODEL = ""      # what the agent will actually run as; filled in by preflight
 
 
@@ -1135,7 +1139,7 @@ def _start_run_dir():
     _write_meta(buckets=_buckets, default_bucket=tools._default_bucket,
                 submits_label=tools.submits_label(),
                 max_turns=MAX_TURNS + ((PREV_META.get("turns") or 0) if CONTINUED else 0),
-                critic=CRITIC_LABEL,
+                critic=CRITIC_LABEL, advisor=AGENT_ADVISOR,
                 run_id=RUN_ID, handle=HANDLE, system=SYSTEM, role=ROLE,
                 endpoint=tools.ENDPOINT_ID if tools.HAS_REMOTE else "",
                 work_dir=tools.WORK_DIR,
@@ -1260,11 +1264,13 @@ def _gateway_settings_file():
 
 
 def _agent_settings_file():
-    """The settings file for the agent's session: the gateway's, and the file fence when
-    FENCE_FILES is set. None when there is neither."""
+    """The settings file for the agent's session: the gateway's, the advisor, and the file
+    fence when FENCE_FILES is set. None when there is none of them."""
     settings = {}
     if GATEWAY_URL:
         settings["env"] = {"ANTHROPIC_BASE_URL": GATEWAY_URL}
+    if AGENT_ADVISOR:
+        settings["advisorModel"] = AGENT_ADVISOR
     if FENCE_FILES:
         fence = f"{sys.executable} {os.path.join(SCRIPT_DIR, 'fence_writes.py')} {AGENT_CWD}"
         settings["permissions"] = {"blockReadsOutsideWorkingDirectories": True}
@@ -1503,6 +1509,7 @@ def preflight():
     print(f"claude tools: {' '.join(claude)}", flush=True)
     print(f"model:        {RESOLVED_MODEL or '(could not be determined)'}", flush=True)
     print(f"effort:       {AGENT_EFFORT or '(left to Claude Code)'}", flush=True)
+    print(f"advisor:      {AGENT_ADVISOR or 'none'}", flush=True)
     print(f"critic:       {CRITIC_LABEL}", flush=True)
     # The budget and the resources a job asks for. They come from three files and the
     # environment, so the resolved values are the only honest way to show them -- and
@@ -1816,7 +1823,8 @@ async def main():
         tools=agent_tools(),
         **({"model": AGENT_MODEL} if AGENT_MODEL else {}),
         **({"effort": AGENT_EFFORT} if AGENT_EFFORT else {}),
-        **({"settings": _agent_settings_file()} if GATEWAY_URL or FENCE_FILES else {}),
+        **({"settings": _agent_settings_file()}
+           if GATEWAY_URL or FENCE_FILES or AGENT_ADVISOR else {}),
         **({"cli_path": _sandbox_cli()} if SANDBOX == "bwrap" else {}),
         agents=subagent_defs(),
         hooks={"PreToolUse": [HookMatcher(hooks=[_note_effort])]},
