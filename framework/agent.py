@@ -273,6 +273,9 @@ END_ON_GOAL_MET = _bool_env("END_ON_GOAL_MET", False)
 # by Claude Code's own setting, writes by a hook (framework/fence_writes.py). It fences
 # the file tools only; a run that also has a shell needs Claude Code's sandbox for that.
 FENCE_FILES = _bool_env("FENCE_FILES", False)
+# Run the agent's Claude Code, and so every tool it uses, in a box of its own
+# (framework/sandbox.py). "none" or "bwrap".
+SANDBOX = os.environ.get("SANDBOX", "none").strip().lower()
 
 # A browser view of this run: the log as it is written and the files it writes. Off
 # unless asked for, and it never affects the run -- it only reads the workspace.
@@ -1277,6 +1280,22 @@ def _agent_settings_file():
     return path
 
 
+def _sandbox_cli():
+    """The agent's CLI in its box: the framework, the campaign and the Python they run
+    in, read-only; the workspace, the agent's working directory unless that is the
+    framework, and its Claude config, writable; and whatever the campaign adds."""
+    import sandbox
+    config = os.environ.get("CLAUDE_CONFIG_DIR")
+    home = os.path.expanduser("~")
+    read = [SCRIPT_DIR, CAMPAIGN_DIR] + sandbox.python_dirs()
+    write = [WORKSPACE_DIR] + ([config] if config else [os.path.join(home, ".claude"),
+                                                     os.path.join(home, ".claude.json")])
+    if AGENT_CWD != SCRIPT_DIR:
+        write.append(AGENT_CWD)
+    return sandbox.write_box(RUN_DIR, read + list(tools.SANDBOX_PATHS.get("read") or []),
+                             write + list(tools.SANDBOX_PATHS.get("write") or []), AGENT_CWD)
+
+
 # How long to wait for the CLI to say which model it resolved. It answers in about a
 # second, so this only bounds a start-up that has gone wrong.
 MODEL_PROBE_TIMEOUT = float(os.environ.get("MODEL_PROBE_TIMEOUT", "30"))
@@ -1384,6 +1403,17 @@ def preflight():
     _fw = os.path.join(SCRIPT_DIR, "framework_prompt.md")
     if not os.path.isfile(_fw):
         problems.append(f"framework_prompt.md missing: {_fw}")
+    if SANDBOX not in ("none", "bwrap"):
+        problems.append(f"SANDBOX={SANDBOX}: expected none or bwrap")
+    elif SANDBOX == "bwrap":
+        import sandbox
+        try:
+            subprocess.run(sandbox.command([], [], "/") + ["true"], check=True,
+                           capture_output=True, timeout=30)
+        except Exception as e:
+            problems.append(f"SANDBOX=bwrap: bubblewrap cannot start here ({e})")
+        for p in sandbox.missing(tools.SANDBOX_PATHS):
+            problems.append(f"campaign.json sandbox names {p}, which does not exist")
     # Fail fast if the Globus Compute endpoint is not online -- otherwise every
     # submit fails with ENDPOINT_NOT_ONLINE and the run does nothing. A task with no
     # remote_fn never reaches the endpoint, so there is nothing to probe.
@@ -1787,6 +1817,7 @@ async def main():
         **({"model": AGENT_MODEL} if AGENT_MODEL else {}),
         **({"effort": AGENT_EFFORT} if AGENT_EFFORT else {}),
         **({"settings": _agent_settings_file()} if GATEWAY_URL or FENCE_FILES else {}),
+        **({"cli_path": _sandbox_cli()} if SANDBOX == "bwrap" else {}),
         agents=subagent_defs(),
         hooks={"PreToolUse": [HookMatcher(hooks=[_note_effort])]},
         max_buffer_size=MAX_MESSAGE_BYTES,

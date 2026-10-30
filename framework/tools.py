@@ -66,6 +66,9 @@ _CAMPAIGN_DIR = os.path.join(LAB_DIR, "campaigns", CAMPAIGN)
 _cam = _read_json(os.path.join(_CAMPAIGN_DIR, "campaign.json"),
                   f"campaign '{CAMPAIGN}'", needs=("system",))
 SYSTEM = os.environ.get("SYSTEM") or _cam["system"]
+# What the campaign's agent needs beyond what the framework puts in its sandbox
+# (framework/sandbox.py): {"read": [...], "write": [...]}.
+SANDBOX_PATHS = _cam.get("sandbox") or {}
 
 _sys_cfg = _read_json(os.path.join(LAB_DIR, "systems", f"{SYSTEM}.json"),
                       f"system '{SYSTEM}'")

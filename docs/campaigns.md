@@ -143,6 +143,30 @@ from `methods/`. Compare the two only when something suggests the copy has gone 
 it names a tool that no longer exists, or describes records the framework no longer keeps
 — and then change the parts that are wrong rather than replacing the file.
 
+## Sandbox
+
+With `SANDBOX=bwrap` the agent works in a box built with bubblewrap. The box starts empty
+and holds only what is put in it:
+
+- read-only: the system's own directories (`/usr`, `/etc` and the like), the Python the
+  framework runs in, the Claude Code CLI, the framework, and the campaign directory
+- writable: the workspace, the agent's working directory, and its Claude config
+  (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
+- its own: an empty home and `/tmp`, gone when the agent stops
+
+Nothing else exists inside, so the rest of the home directory and its credentials are
+not there to read. The agent sees only the processes it started. The network is the
+machine's.
+
+A campaign whose agent needs more names it in `campaign.json`:
+
+```json
+"sandbox": {"read": ["/opt/julia-1.12", "~/data/inputs"], "write": ["/scratch/me/out"]}
+```
+
+A path missing from the box fails as "No such file or directory". Preflight checks that
+each path named exists. Remote jobs are not affected; they run on their own system.
+
 ## The workspace
 
 Written by the agent, not by you. What is in it is whatever the campaign asks for —
