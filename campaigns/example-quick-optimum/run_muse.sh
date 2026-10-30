@@ -18,6 +18,9 @@ mkdir -p "$CLAUDE_CONFIG_DIR"
 cp alcf.settings.json "$CLAUDE_CONFIG_DIR/settings.json"
 export AGENT_MODEL=muse-spark-bf16
 
+# Run the agent in a sandbox (Linux, bubblewrap); SANDBOX=none to run without.
+export SANDBOX="${SANDBOX:-bwrap}"
+
 # ALCF access token, fetched per run.
 export ANTHROPIC_AUTH_TOKEN="$(python3 ~/inference_auth_token.py get_access_token)"
 

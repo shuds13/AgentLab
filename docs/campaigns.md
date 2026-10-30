@@ -145,7 +145,7 @@ it names a tool that no longer exists, or describes records the framework no lon
 
 ## Sandbox
 
-With `SANDBOX=bwrap` the agent works in a box built with bubblewrap. The box starts empty
+With `SANDBOX=bwrap` (Linux only) the agent works in a box built with bubblewrap. The box starts empty
 and holds only what is put in it:
 
 - read-only: the system's own directories (`/usr`, `/etc` and the like), the Python the

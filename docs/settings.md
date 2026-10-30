@@ -69,7 +69,7 @@ collects what is in flight, writes up, and exits.
 | `JOB_TIMEOUT` | 43200 | seconds to wait on one remote job |
 | `MAX_MESSAGE_BYTES` | 8388608 | largest single message the agent SDK accepts from the CLI, and so the largest tool result the agent can receive. A result over it ends the run |
 | `LOCAL_JOB_TIMEOUT` | 14400 | seconds to wait on one local job, where a task defines one |
-| `SANDBOX` | `none` | `bwrap` runs the agent's Claude Code, with every tool it uses, in a box of its own: it sees only its own processes and only the files the run needs. See `docs/campaigns.md`, "Sandbox". `bin/sandbox_shell.sh <workspace>` opens a shell in a run's box |
+| `SANDBOX` | `none` | `bwrap` (Linux only) runs the agent's Claude Code, with every tool it uses, in a box of its own: it sees only its own processes and only the files the run needs. See `docs/campaigns.md`, "Sandbox". `bin/sandbox_shell.sh <workspace>` opens a shell in a run's box |
 | `MAX_CONCURRENT` | `max_concurrent` in campaign.json, else the system file, else 1 | remote jobs in flight at once |
 | — | `max_concurrent` on a bucket in campaign.json | that bucket's own limit, under the run-wide one. Use it where one shape is costlier than another |
 | `LOCAL_MAX_CONCURRENT` | `local_max_concurrent` in campaign.json, else the system file, else 1 | local jobs at once; one by default, since a local job is assumed to use the whole machine |
