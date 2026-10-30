@@ -643,7 +643,7 @@ def budgets_view(campaign, run=None):
     started = workers(campaign, meta.get("run_id"))
     out = {"run": meta.get("run_id"), "selected": selected, "status": meta.get("status"),
            "part": meta.get("part") or 1, "workspace": os.path.basename(ws),
-           "rows": budget_rows(campaign, run_dir, meta, counts, _elapsed(meta), started),
+           "rows": budget_rows(campaign, run_dir, meta, counts, _elapsed(meta, run_dir), started),
            "buckets": meta.get("buckets") or {}, "workers": [], "changes": []}
     for w in started:
         wdir = os.path.join(ws, "runs", w["run"])
@@ -651,7 +651,7 @@ def budgets_view(campaign, run=None):
         out["workers"].append({"run": w["run"], "branch": w["branch"], "kind": w["kind"],
                                "status": w["status"],
                                "rows": budget_rows(campaign, wdir, wm, counts,
-                                                   _elapsed(wm), [])})
+                                                   _elapsed(wm, wdir), [])})
     try:
         with open(os.path.join(run_dir, budgets.LOG)) as f:
             for line in f:
@@ -729,14 +729,19 @@ def _phase(run_dir):
         return None, None
 
 
-def _elapsed(meta):
+def _elapsed(meta, run_dir=None):
     """How long the run took, not how long ago it began: once it has ended, the clock
-    stops where it stopped. A continued run's time between parts is left out."""
+    stops where it stopped. A run that stopped without recording its end -- killed,
+    crashed, or a copy of a run that was still going -- stops at its last heartbeat. A
+    continued run's time between parts is left out."""
     started, ended = meta.get("started_at"), meta.get("ended_at")
     if not started:
         return None
     try:
         end = datetime.fromisoformat(ended).timestamp() if ended else time.time()
+        age = _beat_age(run_dir) if run_dir and not ended else None
+        if age is not None and age >= AGENT_ALIVE_WITHIN:
+            end = time.time() - age
         return int(end - datetime.fromisoformat(started).timestamp()
                    - (meta.get("paused_s") or 0))
     except Exception:
@@ -930,7 +935,7 @@ def lab_summary(campaign):
         "effort": meta.get("effort"), "advisor": meta.get("advisor"),
         "system": meta.get("system"), "endpoint": meta.get("endpoint"),
         "started_at": meta.get("started_at"), "ended_at": meta.get("ended_at"),
-        "elapsed_s": _elapsed(meta),
+        "elapsed_s": _elapsed(meta, run_dir),
         "heartbeat_age_s": None if age is None else int(age),
         # Liveness is the heartbeat being recent, not the run saying it is running:
         # a run killed outright never gets to write down that it stopped.
@@ -968,7 +973,7 @@ def status(campaign, run=None):
     own_usd = _usd(meta)
     tree_usd = (sum(w["usd"] or 0 for w in started_runs) + (own_usd or 0)
                 if started_runs else None)
-    elapsed = _elapsed(meta)
+    elapsed = _elapsed(meta, run_dir)
     budget = budget_rows(campaign, run_dir, meta,
                          _submits_by_run(os.path.join(ws, "jobs.jsonl")), elapsed,
                          started_runs)
