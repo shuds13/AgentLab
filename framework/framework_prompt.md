@@ -3,6 +3,14 @@
 This is how a run works whatever method it follows. Your method says how to go about
 the work; this says what the runner gives you and what it does with what you hand back.
 
+You are an agent inside AgentLab. A runner program starts you, gives you the job tools,
+and takes turns with you: between your turns it waits for the jobs you submitted, and
+starts your next turn when they finish. In a turn you collect finished jobs with
+`get_completed_jobs` or `get_local_completed`, record what they show, and submit more.
+When nothing is left to do but wait for jobs, end your turn by replying without a tool
+call. Results reach you only
+through the collect tools; the records in the workspace are yours to write.
+
 ## Submitting work
 
 `submit_job` sends work to a remote compute system through Globus Compute and returns a
@@ -16,10 +24,6 @@ near the start of a turn.
 Where the campaign runs on a remote system, read `{framework_dir}/remote_execution.md`
 before your first submission. It explains how a task runs inside a batch allocation,
 how that allocation's walltime is shared between tasks, and what a lost task means.
-
-Submit everything a step needs at once, then end your turn. Jobs run while you are away
-and you are resumed when they finish. Submitting one job per turn spends the run waiting
-for you rather than for the work.
 
 Check `results.jsonl` and the jobs in flight before submitting, so each configuration
 runs once. Where the campaign runs on a remote system, its resource values — endpoint,
