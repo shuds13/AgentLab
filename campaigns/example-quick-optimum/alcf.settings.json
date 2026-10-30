@@ -5,12 +5,17 @@
   "modelPicker": {
     "options": [
       {
+        "model": "muse-spark-bf16",
+        "label": "Muse Spark",
+        "description": "ALCF inference service, Minerva",
+        "behavesAs": "claude-opus-5"
+      },
+      {
         "model": "nemotron-3-ultra",
         "label": "Nemotron Ultra",
         "description": "ALCF inference service, Minerva",
         "behavesAs": "claude-opus-5"
       }
     ]
-  },
-  "model": "nemotron-3-ultra"
+  }
 }

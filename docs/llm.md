@@ -68,13 +68,14 @@ export ANTHROPIC_AUTH_TOKEN="$(python3 ~/inference_auth_token.py get_access_toke
 A run lasting more than 48 hours outlives its token; there is no in-flight refresh,
 since the mechanism for one sends the wrong header.
 
-The settings file holds the endpoint and the model:
+The settings file holds the endpoint and the models it serves; `AGENT_MODEL` picks one:
 
 ```json
 {
   "env": {"ANTHROPIC_BASE_URL": "https://inference-api.alcf.anl.gov/resource_server/minerva/api"},
-  "modelPicker": {"options": [{"model": "nemotron-3-ultra", "label": "Nemotron Ultra", "behavesAs": "claude-opus-5"}]},
-  "model": "nemotron-3-ultra"
+  "modelPicker": {"options": [
+    {"model": "muse-spark-bf16", "label": "Muse Spark", "behavesAs": "claude-opus-5"},
+    {"model": "nemotron-3-ultra", "label": "Nemotron Ultra", "behavesAs": "claude-opus-5"}]}
 }
 ```
 
@@ -100,11 +101,12 @@ it into the workspace at launch than keeping it beside the task:
 ```
 export CLAUDE_CONFIG_DIR="$WORKSPACE_DIR/claude"
 mkdir -p "$CLAUDE_CONFIG_DIR"
-cp run_nemotron.settings.json "$CLAUDE_CONFIG_DIR/settings.json"
+cp alcf.settings.json "$CLAUDE_CONFIG_DIR/settings.json"
+export AGENT_MODEL=nemotron-3-ultra
 ```
 
-`campaigns/example-quick-optimum/run_nemotron.sh` and `run_nemotron.settings.json` beside it
-are a working example.
+`campaigns/example-quick-optimum/run_nemotron.sh` and `run_muse.sh`, with `alcf.settings.json`
+beside them, are working examples.
 
 A model on Sophia or Metis is the LiteLLM case instead, since those clusters serve
 chat completions only. `litellm/config.yaml.template` has entries for both. The same

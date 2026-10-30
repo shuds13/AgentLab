@@ -28,7 +28,8 @@ Runs on the local machine. Watch it with `bin/watch.sh`; results go to
 | file | what it holds |
 |---|---|
 | `prompt.md` | the goal, what is fixed, what may vary, leads |
-| `user_prompt.md`, `user_prompt_remote.md` | what this run is for |
-| `task.py` | one job: `local_fn` for the local machine, `remote_fn` for a remote system |
+| `user_prompt.md` | what this run is for |
+| `task.py` | one job, `local_fn`, on the local machine |
+| `remote_task.py` | the same job, `remote_fn`, on a remote system; `run_remote.sh` selects it with `TASK_MODULE` |
 | `campaign.json` | the system and how many jobs run at once |
 | `method.md` | how the agent works, copied from `methods/` |
