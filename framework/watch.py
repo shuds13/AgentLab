@@ -95,11 +95,26 @@ def workspace(campaign):
 def tree_roots(campaign):
     """The two places a campaign's files live: the workspace its runs write into, and
     the campaign directory it was started from. A workspace copied without its campaign
-    has only the first, so the page is told which roots exist rather than assuming."""
+    has only the first, so the page is told which roots exist rather than assuming. A
+    workspace named other than its campaign, such as one of several under a group, names
+    its campaign in its runs' meta.json."""
     roots = {"ws": workspace(campaign)}
-    defn = os.path.join(LAB_DIR, "campaigns", campaign)
-    if os.path.isdir(defn):
-        roots["camp"] = defn
+    names = [campaign]
+    for m in glob.glob(os.path.join(workspace(campaign), "runs", "*", "meta.json")):
+        try:
+            with open(m) as f:
+                names.append(json.load(f).get("campaign") or "")
+        except (OSError, ValueError):
+            continue
+        break
+    for name in names:
+        # The meta's name becomes a path: only a campaign directory's own name may.
+        if os.path.normpath(name).startswith((".", "/")):
+            continue
+        defn = os.path.join(LAB_DIR, "campaigns", name)
+        if name and os.path.isdir(defn):
+            roots["camp"] = defn
+            break
     return roots
 
 
@@ -160,11 +175,18 @@ def campaigns():
 
     A campaign workspace is one holding a campaign's own records or its runs. The lab
     keeps its own directories under workspace/ too -- run/, logs/, belonging to the
-    services rather than to any campaign -- and those are not offered.
+    services rather than to any campaign -- and those are not offered. A directory that
+    is not a workspace itself may group several, one level down, as a campaign whose
+    runs each have a workspace of their own does; each is offered as `group/name`.
 
     This is also the set a request is checked against: the name it asks for becomes a
     path, so only a name from here is allowed to."""
     root = os.path.join(LAB_DIR, "workspace")
+
+    def is_workspace(ws):
+        return os.path.isdir(os.path.join(ws, "runs")) or any(
+            os.path.isfile(os.path.join(ws, f)) for f in READABLE)
+
     found = []
     try:
         names = os.listdir(root)
@@ -174,9 +196,15 @@ def campaigns():
         ws = os.path.join(root, name)
         if not os.path.isdir(ws):
             continue
-        if os.path.isdir(os.path.join(ws, "runs")) or any(
-                os.path.isfile(os.path.join(ws, f)) for f in READABLE):
+        if is_workspace(ws):
             found.append(name)
+            continue
+        try:
+            subs = os.listdir(ws)
+        except OSError:
+            continue
+        found += [f"{name}/{sub}" for sub in subs
+                  if os.path.isdir(os.path.join(ws, sub)) and is_workspace(os.path.join(ws, sub))]
     return sorted(found)
 
 
@@ -216,9 +244,22 @@ def recent_campaigns():
 # nodes), so a block is known from the tasks that ran in it, and from tasks it handed
 # back. When a block ended is not reported; its time is counted up to its last task.
 
+def _group_siblings(campaign):
+    """The other workspaces of the group a workspace belongs to (`group/name`), whose
+    runs may share its blocks; none for a workspace of its own."""
+    if "/" not in campaign:
+        return []
+    group = campaign.split("/", 1)[0] + "/"
+    return [c for c in campaigns() if c.startswith(group) and c != campaign]
+
+
 def resources(campaign, run=None, light=False):
     """The run tree's remote work: per system, its buckets and who shares them, the
-    blocks its tasks ran in, and the tasks each block ran or handed back."""
+    blocks its tasks ran in, and the tasks each block ran or handed back.
+
+    A workspace in a group shares its blocks with the group's other runs, so their
+    tasks are read too, each labelled by its workspace, and this run's are the ones
+    marked: a block is then seen whole, and its node-hours counted once."""
     top_dir = run_path(campaign, run)
     if not top_dir:
         return {"systems": []}
@@ -237,29 +278,52 @@ def resources(campaign, run=None, light=False):
         if rid == top_id or d.get("parent_run") == top_id:
             metas[rid] = d
     # A run's own tasks are labelled by its role: a coordinator when it has workers,
-    # else a single researcher.
+    # else a single researcher. In a group, by its workspace's name as well.
     top_label = "coordinator" if len(metas) > 1 else "researcher"
+    siblings = _group_siblings(campaign)
+    if siblings and not selected:
+        selected = top_id
+    own = campaign.split("/", 1)[1] if siblings else None
 
     tasks, by_key = [], {}
-    try:
-        with open(os.path.join(workspace(campaign), "jobs.jsonl")) as f:
+    def own_label(rid):
+        branch = metas[rid].get("branch")
+        if own:
+            return f"{own} {branch}" if branch else own
+        return branch or top_label
+
+    sources = [(campaign, metas, own_label)]
+    for sib in siblings:
+        sib_metas = {os.path.basename(os.path.dirname(m)): _meta(m) for m in
+                     glob.glob(os.path.join(workspace(sib), "runs", "*", "meta.json"))}
+        name = sib.split("/", 1)[1]
+        sources.append((sib, sib_metas, lambda rid, name=name, sm=sib_metas:
+                        f"{name} {sm[rid]['branch']}" if sm[rid].get("branch") else name))
+    for ws_name, ws_metas, label in sources:
+        try:
+            f = open(os.path.join(workspace(ws_name), "jobs.jsonl"))
+        except FileNotFoundError:
+            continue
+        with f:
             for line in f:
                 try:
                     r = json.loads(line)
                 except Exception:
                     continue
-                if r.get("run") not in metas:
+                if r.get("run") not in ws_metas:
                     continue
-                k = (r["run"], r.get("job_id"))
+                k = (ws_name, r["run"], r.get("job_id"))
                 ev = r.get("event")
                 if ev == "submit":
-                    t = {"run": r["run"], "agent": metas[r["run"]].get("branch") or top_label,
-                         "system": r.get("system") or metas[r["run"]].get("system"),
+                    mine = (r["run"] == selected if ws_name == campaign and selected != top_id
+                            else ws_name == campaign)
+                    t = {"run": r["run"], "agent": label(r["run"]),
+                         "system": r.get("system") or ws_metas[r["run"]].get("system"),
                          "job_id": r.get("job_id"), "key": r.get("key"), "bucket": r.get("bucket"),
                          "kind": r.get("kind"), "idle_s": r.get("idle_s"),
                          "submitted": r.get("ts"), "started": None, "ran_s": None,
                          "state": "waiting or running", "retries": 0, "block": None,
-                         "refused": [], "ran_on": None, "mine": r["run"] == selected}
+                         "refused": [], "ran_on": None, "mine": mine}
                     tasks.append(t)
                     by_key[k] = t
                 elif k in by_key and ev == "retry":
@@ -276,8 +340,6 @@ def resources(campaign, run=None, light=False):
                                   else r.get("wall_seconds"))
                     t["state"] = ("abandoned" if ev == "abandoned"
                                   else "error" if r.get("error") else "done")
-    except FileNotFoundError:
-        pass
 
     # Every system the run tree sent work to, from what each run recorded: its systems
     # where it names several, else its one system and endpoint.
@@ -335,7 +397,9 @@ def resources(campaign, run=None, light=False):
                     max_node_hours=(_budget_limits(top_dir, top).get("node_hours")
                                     or {}).get(name))
         out.append(sysd)
-    return {"systems": out, "tasks": tasks, "selected": selected}
+    return {"systems": out, "tasks": tasks, "selected": selected,
+            "group": campaign.split("/", 1)[0] if siblings else None,
+            "group_runs": len(siblings) + 1 if siblings else None}
 
 
 def newest_run(campaign):
@@ -941,6 +1005,8 @@ def lab_summary(campaign):
         # a run killed outright never gets to write down that it stopped.
         "live": age is not None and age <= AGENT_ALIVE_WITHIN,
         "phase": phase, "phase_age_s": phase_age,
+        "usd": _usd(meta),
+        "score": (meta.get("scores") or {}).get(meta.get("primary_score")),
     }
 
 
@@ -1159,6 +1225,9 @@ PAGE = """<!doctype html>
  #lab tr.row { cursor:pointer; }
  #lab tr.row:hover td { background:#1a2430; }
  #lab .name { color:#fff; }
+ /* A group's runs sit under it, indented, once it is opened. */
+ #lab tr.sub td.name { padding-left:22px; }
+ #lab .fold { display:inline-block; width:1.2em; color:#6f8296; }
  #lab .dot { display:inline-block; width:7px; height:7px; border-radius:50%%;
              background:#3d7a3d; margin-right:8px; vertical-align:middle; }
  #lab .dot.off { background:#3a3a3a; }
@@ -1208,6 +1277,10 @@ PAGE = """<!doctype html>
  #tabs .runs { position:relative; display:inline-flex; }
  #tabs .runs span { pointer-events:none; padding:0 6px; border:1px solid #333;
                     background:#222; color:#bbb; font-size:19px; line-height:24px; }
+ /* The group panel's toggle: a chevron, at the clock's size. */
+ #tabs button.groupbtn svg { display:block; height:1.5em; width:1.5em; fill:none;
+                            stroke:currentColor; stroke-width:1.5; }
+ #tabs button.groupbtn .pane.on { fill:currentColor; }
  #tabs .runs.past span { background:#3a3220; color:#fff; border-color:#6a5a30; }
  #tabs .runs select { position:absolute; inset:0; width:100%%; opacity:0; }
  a[data-run], a[data-agent] { color:#7aa8c8; }
@@ -1230,6 +1303,7 @@ PAGE = """<!doctype html>
  .arow .k { color:#6f8296; }
  .arow .sc { margin-left:auto; color:#ddd; }
  .arow .usd { color:#888; min-width:4.5em; text-align:right; }
+ .agrp { color:#6f8296; padding:2px 12px 6px; letter-spacing:.04em; }
  .atotal { padding:6px 12px; margin-top:6px; color:#888; border-top:1px solid #262626; }
  /* The pane scrolls, not the page, so the tabs stay put wherever you are in a file. */
  #main { flex:1; display:flex; min-height:0; }
@@ -1392,6 +1466,9 @@ let tab = "status", offset = 0, logText = "", rawMode = false;
 // log and inputs show. Blank for the run itself. With it, the name the tabs give the
 // agent chosen (blank in a run without workers) and the records it keeps.
 let agentSel = "", agentLabel = "", agentRecords = [], lastFiles = [];
+// Whether a grouped run's panel lists the group's runs. Open unless closed, and kept.
+let groupPanel = (() => { try { return localStorage.getItem("groupPanel") !== "0"; }
+                          catch (e) { return true; } })();
 // Each worker's run by its branch, from the agents panel, so a branch named elsewhere on
 // the page can link to the agent that worked on it.
 let agentByBranch = {};
@@ -1435,11 +1512,33 @@ pane.addEventListener("scroll", () => {
 function setTabs(files) {
   const t = document.getElementById("tabs");
   lastFiles = files;
-  const key = JSON.stringify(files) + tab + rawMode + sideOpen + run + agentLabel
+  const key = JSON.stringify(files) + tab + rawMode + sideOpen + groupPanel + run + agentLabel
     + JSON.stringify(agentRecords) + JSON.stringify(runList);
   if (t.dataset.key === key) return;
   t.dataset.key = key;
   t.innerHTML = "";
+  // A run in a group: the group's runs, in the panel on the left. First, since it is
+  // about the group rather than this run.
+  if (campaign.includes("/")) {
+    const g = document.createElement("button");
+    // A chevron, since "runs" is already this run's history: pointing to where the
+    // panel would open, or back to close it.
+    // A side-panel icon, its left pane filled while the panel is open. Drawn, not a
+    // font glyph: a glyph sits wherever its font puts it in the line.
+    g.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">`
+      + `<rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/>`
+      + `<rect x="1.5" y="2.5" width="4.5" height="11" rx="1.5"`
+      + ` class="${groupPanel ? "pane on" : "pane"}"/></svg>`;
+    g.classList.add("groupbtn");
+    g.title = groupPanel ? "hide group" : "show group";
+    g.classList.toggle("on", groupPanel);
+    g.onclick = () => {
+      groupPanel = !groupPanel;
+      try { localStorage.setItem("groupPanel", groupPanel ? "1" : "0"); } catch (e) {}
+      setTabs(files); refresh();
+    };
+    t.appendChild(g);
+  }
   // The run the next tabs are about: the newest, or one picked from the history. The
   // history is the campaign's runs; the workers a run started are in its agents tab.
   // A worker whose starter is not among them is listed as a run of its own.
@@ -1807,7 +1906,7 @@ async function renderResources() {
       + `</select>` : "";
   const toggle = d.selected
     ? `<label class="resonly"><input type="checkbox" id="resonly"${resOnly ? " checked" : ""}>`
-      + ` only this agent's tasks</label>` : "";
+      + ` only this ${d.group ? "run" : "agent"}'s tasks</label>` : "";
   const views = `<span class="resview">` + ["table", "timeline"].map(v =>
     `<a href="#" data-resview="${v}"${v === resView ? ' class="on"' : ""}>${v}</a>`).join("")
     + `</span>`;
@@ -1820,7 +1919,8 @@ async function renderResources() {
     // The limits, in grey: the whole pool, each bucket's blocks, what one block runs.
     // Then what is happening now, with its values in bold.
     h += `<div class="note">${sy.max_node_hours != null ? `max node-hours ${sy.max_node_hours} · ` : ""}`
-      + `pool shared by all agents</div>`;
+      + (d.group ? `blocks shared by the ${d.group_runs} runs of ${esc(d.group)}, this run's tasks marked`
+                 : `pool shared by all agents`) + `</div>`;
     for (const [k, b] of Object.entries(sy.buckets || {})) {
       const n = b.num_nodes || 1, per = b.nodes_per_job || n, w = b.workers_per_node || 1;
       // Runs that predate jobs_per_block in meta counted one job per node.
@@ -2191,10 +2291,14 @@ async function renderTree() {
 // A coordinated run's agents: the run itself, then each worker under the worker whose
 // branch it built on (or under the run, when it started from anything else). Hidden for
 // a run that started none.
-function renderAgents(top) {
+//
+// A run in a group (several workspaces under one directory) lists the group's runs
+// above it, each a click away; its own agents, if it has any, sit under its row.
+function renderAgents(top, group) {
   const panel = document.getElementById("agents");
   const ws = top.workers || [];
-  if (!ws.length) {
+  const grouped = groupPanel && (group || []).length > 1;
+  if (!ws.length && !grouped) {
     if (!panel.hidden) { panel.hidden = true; panel.innerHTML = ""; }
     return;
   }
@@ -2218,9 +2322,30 @@ function renderAgents(top) {
   const below = (branch, depth) => ws
     .filter(w => (byBranch[w.parent] ? w.parent : null) === branch)
     .map(w => row(w, depth) + below(w.branch, depth + 1)).join("");
-  const html = row(me, 0) + below(null, 1)
+  const tree = (depth) => row(me, depth) + below(null, depth + 1)
     + `<div class="atotal">${ws.length} worker${ws.length === 1 ? "" : "s"} \u00b7 total `
     + (top.tree_usd == null ? "\u2014" : "$" + top.tree_usd.toFixed(2)) + "</div>";
+  let html;
+  if (grouped) {
+    const name = c => c.slice(c.indexOf("/") + 1);
+    const gdot = g => g.live ? '<i class="on">\u25cf</i>'
+      : g.status === "running" ? '<i class="bad">\u25cf</i>' : "<i>\u25cb</i>";
+    const total = group.reduce((t, g) => t + (g.usd || 0), 0);
+    const up = group.filter(g => g.live).length;
+    html = `<div class="agrp">${esc(campaign.slice(0, campaign.indexOf("/")))} \u00b7 `
+      + `${group.length} runs \u00b7 ${up} running</div>`
+      + group.map(g => {
+        const here = g.campaign === campaign;
+        return `<div class="arow${here && !agentSel ? " sel" : ""}" data-camp="${esc(g.campaign)}">`
+          + `${gdot(g)} <b>${esc(name(g.campaign))}</b> <span class="k">${esc(g.model || "")}</span>`
+          + `<span class="sc">${g.score == null ? "" : +g.score.toPrecision(7)}</span>`
+          + `<span class="usd">${g.usd == null ? "\u2014" : "$" + g.usd.toFixed(2)}</span></div>`
+          + (here && ws.length ? tree(1) : "");
+      }).join("")
+      + `<div class="atotal">total $${total.toFixed(2)}</div>`;
+  } else {
+    html = tree(0);
+  }
   if (panel.innerHTML !== html) panel.innerHTML = html;
 }
 
@@ -2244,7 +2369,10 @@ async function refresh() {
     if (agentSel && !(top.workers || []).some(w => w.run === agentSel)) {
       agentSel = ""; openTab(tab); return;
     }
-    renderAgents(top);
+    const group = campaign.includes("/") && groupPanel
+      ? await (await fetch("/group?c=" + encodeURIComponent(campaign))).json() : null;
+    if (!here()) return;
+    renderAgents(top, group);
     const s = agentSel ? await (await fetch(url("/status"))).json() : top;
     if (!here()) return;
     const label = (top.workers || []).length ? (agentSel ? s.branch || agentSel : "coordinator") : "";
@@ -2340,6 +2468,13 @@ async function chat() {
 document.addEventListener("click", e => {
   const tb = e.target.closest("a[data-tab]");
   if (tb) { e.preventDefault(); openTab(tb.dataset.tab); return; }
+  const gc = e.target.closest("[data-camp]");
+  if (gc) {
+    // The same tab in the run switched to, unless it is a file this run was handed.
+    if (gc.dataset.camp !== campaign || agentSel)
+      enterCampaign(gc.dataset.camp, runFiles.includes(tab) ? "" : tab);
+    return;
+  }
   const g = e.target.closest("[data-agent]");
   if (g) {
     agentSel = g.dataset.agent;
@@ -2582,11 +2717,14 @@ function resetPane() {
   document.getElementById("head").textContent = "connecting\u2026";
 }
 
-function enterCampaign(name) {
+// `keep` is a tab to stay on, for a move between runs of one group, which share their
+// campaign's tabs.
+function enterCampaign(name, keep) {
   campaign = name; scope = "campaign"; camp.value = name; run = ""; runList = [];
   agentSel = "";
   history.replaceState(null, "", address());
   resetPane(); showScope();
+  if (keep) tab = keep;
   files(); refresh(); chat();
 }
 
@@ -2658,6 +2796,37 @@ function labOrder(rows) {
     (blank(a) - blank(b)) || by(a, b) || byName(a, b));
 }
 
+// The groups opened on the lab page, by name.
+const labOpen = new Set();
+
+// Workspaces under one directory -- the runs of a campaign that gives each its own, such
+// as a comparison or a set of variants -- are one row, `group`, standing for them all;
+// opened, its runs are listed beneath it. The group's row is running if any of them is,
+// and was last active when the latest of them was.
+function labGroups(rows) {
+  const top = [], groups = {};
+  for (const r of rows) {
+    const i = r.campaign.indexOf("/");
+    if (i < 0) { top.push(r); continue; }
+    const g = r.campaign.slice(0, i);
+    if (!groups[g]) {
+      groups[g] = {campaign: g, group: true, members: []};
+      top.push(groups[g]);
+    }
+    groups[g].members.push(r);
+  }
+  for (const g of Object.values(groups)) {
+    const m = g.members, ran = m.filter(r => r.run);
+    g.live = m.some(r => r.live);
+    g.run = ran.length ? ran[0].run : null;
+    g.started_at = ran.map(r => r.started_at || "").sort().pop() || null;
+    g.ended_at = m.some(r => r.live) ? null
+               : ran.map(r => r.ended_at || "").sort().pop() || null;
+    g.elapsed_s = ran.length ? Math.max(...ran.map(r => r.elapsed_s || 0)) : null;
+  }
+  return top;
+}
+
 function renderLab(rows) {
   if (!rows.length) {
     labPane.innerHTML = `<div class="none">no campaigns have run yet</div>`;
@@ -2668,9 +2837,12 @@ function renderLab(rows) {
   // What is running is listed first whatever the sort, so it cannot be ordered or
   // scrolled out of sight: a run nobody knows is going is the one thing this page
   // exists to prevent. A lab with nothing running is just the list, with nothing to
-  // mark off.
-  const live = labOrder(rows.filter(r => r.live));
-  const rest = labOrder(rows.filter(r => !r.live));
+  // mark off. An opened group's runs follow it, in the same order.
+  const top = labGroups(rows);
+  const unfold = list => list.flatMap(r => r.group && labOpen.has(r.campaign)
+    ? [r].concat(labOrder(r.members).map(m => Object.assign({sub: true}, m))) : [r]);
+  const live = unfold(labOrder(top.filter(r => r.live)));
+  const rest = unfold(labOrder(top.filter(r => !r.live)));
   rows = live.concat(rest);
   // Same reason the status table is built once and its cells rewritten: a table
   // rebuilt every second cannot hold a selection, and these rows tick. The sort and
@@ -2678,15 +2850,17 @@ function renderLab(rows) {
   // happens to leave the rows where they are still moves the arrow, and a run starting
   // still lifts it above the rule.
   const key = labSort + labDesc + "|" +
-    rows.map(r => r.campaign + (r.live ? "*" : "")).join("|");
+    rows.map(r => r.campaign + (r.live ? "*" : "") + (r.group && labOpen.has(r.campaign)
+                                                      ? "+" : "")).join("|");
   if (labPane.dataset.key !== key) {
     labPane.dataset.key = key;
     // The last of the running campaigns carries the line that marks them off. They are
     // already the ones with the lit dot, so a heading saying so would only repeat the
     // rows above it.
     const cut = live.length && rest.length ? live.length - 1 : -1;
-    const row = (r, i) => `<tr class="row${i === cut ? " edge" : ""}"` +
-      ` data-c="${esc(r.campaign)}">` +
+    const row = (r, i) => `<tr class="row${i === cut ? " edge" : ""}` +
+      `${r.sub ? " sub" : ""}" data-c="${esc(r.campaign)}"` +
+      `${r.group ? ' data-g="1"' : ""}>` +
       `<td class="name"></td><td class="state"></td><td class="doing"></td>` +
       `<td class="run"></td><td class="took"></td><td class="last"></td></tr>`;
     labPane.innerHTML = "<table><tr>" +
@@ -2694,7 +2868,12 @@ function renderLab(rows) {
         (labSort === v ? (labDesc ? " ▾" : " ▴") : "") + `</th>`).join("") +
       "</tr>" + rows.map(row).join("") + "</table>";
     for (const tr of labPane.querySelectorAll("tr.row"))
-      tr.onclick = () => enterCampaign(tr.dataset.c);
+      tr.onclick = () => {
+        if (!tr.dataset.g) return enterCampaign(tr.dataset.c);
+        const g = tr.dataset.c;
+        labOpen.has(g) ? labOpen.delete(g) : labOpen.add(g);
+        renderLab(labRows);
+      };
     // A second click on the column already sorted turns it round, as the file tree's
     // headings do.
     for (const th of labPane.querySelectorAll("th[data-s]"))
@@ -2711,7 +2890,24 @@ function renderLab(rows) {
       const td = trs[i].querySelector(sel);
       if (td && td.innerHTML !== h) td.innerHTML = h;
     };
-    set(".name", `<span class="dot${r.live ? "" : " off"}"></span>${esc(r.campaign)}`);
+    if (r.group) {
+      const n = r.members.length, up = r.members.filter(m => m.live).length;
+      set(".name", `<span class="dot${r.live ? "" : " off"}"></span>` +
+          `<span class="fold">${labOpen.has(r.campaign) ? "\u25be" : "\u25b8"}</span>` +
+          `${esc(r.campaign)} <span class="quiet">\u00b7 ${n} runs</span>`);
+      set(".state", up ? `<span class="on">${up} running</span>` +
+          (n - up ? ` <span class="quiet">\u00b7 ${n - up} stopped</span>` : "")
+          : `<span class="quiet">none running</span>`);
+      set(".doing", "\u2014");
+      set(".run", "\u2014");
+      set(".took", r.elapsed_s == null ? "\u2014" : hms(r.elapsed_s));
+      set(".last", r.live ? `<span class="on">now</span>` : when(r.ended_at));
+      return;
+    }
+    // A group's run is named by its own part; its model says what sets it apart.
+    const name = r.sub ? r.campaign.slice(r.campaign.indexOf("/") + 1) : r.campaign;
+    set(".name", `<span class="dot${r.live ? "" : " off"}"></span>${esc(name)}` +
+        (r.sub && r.model ? ` <span class="quiet">\u00b7 ${esc(r.model)}</span>` : ""));
     set(".state", !r.run ? `<span class="quiet">never run</span>`
         : r.live ? `<span class="on">running</span>`
         : `<span class="quiet">${esc(r.status || "stopped")}` +
@@ -2818,9 +3014,10 @@ async function labRefresh() {
   if (scope !== "lab") return;
   usersRefresh();
   servicesRefresh();
-  const live = rows.filter(r => r.live).length;
+  const top = labGroups(rows);
+  const live = top.filter(r => r.live).length;
   document.getElementById("head").textContent =
-    `${rows.length} campaign${rows.length === 1 ? "" : "s"} \u00b7 ` +
+    `${top.length} campaign${top.length === 1 ? "" : "s"} \u00b7 ` +
     (live ? `${live} running` : "none running");
   renderLab(rows);
 }
@@ -3161,6 +3358,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(json.dumps(lab_services()), "application/json")
         elif url.path == "/users":
             self._send(json.dumps(lab_users()), "application/json")
+        elif url.path == "/group":
+            # The runs of the group this workspace belongs to, itself among them.
+            names = sorted([campaign] + _group_siblings(campaign)) if "/" in campaign else []
+            self._send(json.dumps([lab_summary(c) for c in names]), "application/json")
         elif url.path == "/lab":
             # By name: the page orders it, so which column it is sorted on survives a
             # poll rather than being undone by one.
