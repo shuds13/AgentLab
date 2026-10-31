@@ -88,5 +88,8 @@ def write_box(run_dir, read, write, cwd):
 
 
 def python_dirs():
-    """The Python this framework runs in, and the one it was made from if a venv."""
-    return list(dict.fromkeys([sys.prefix, sys.base_prefix]))
+    """The Python this framework runs in, the one it was made from if a venv, and its
+    user site-packages where it reads them."""
+    import site
+    user = [site.getusersitepackages()] if site.ENABLE_USER_SITE else []
+    return list(dict.fromkeys([sys.prefix, sys.base_prefix] + user))
