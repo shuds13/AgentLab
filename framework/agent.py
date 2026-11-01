@@ -1265,7 +1265,11 @@ def _gateway_settings_file():
 
 def _agent_settings_file():
     """The settings file for the agent's session: the gateway's, the advisor, and the file
-    fence when FENCE_FILES is set. None when there is none of them."""
+    fence when FENCE_FILES is set. None when there is none of them.
+
+    The fence keeps file writes in the agent's working directory and, outside a sandbox,
+    reads too. In a sandbox the box already decides what can be read, and Claude Code's
+    read block would only refuse shell commands it cannot analyse, such as inline code."""
     settings = {}
     if GATEWAY_URL:
         settings["env"] = {"ANTHROPIC_BASE_URL": GATEWAY_URL}
@@ -1273,7 +1277,8 @@ def _agent_settings_file():
         settings["advisorModel"] = AGENT_ADVISOR
     if FENCE_FILES:
         fence = f"{sys.executable} {os.path.join(SCRIPT_DIR, 'fence_writes.py')} {AGENT_CWD}"
-        settings["permissions"] = {"blockReadsOutsideWorkingDirectories": True}
+        if SANDBOX != "bwrap":
+            settings["permissions"] = {"blockReadsOutsideWorkingDirectories": True}
         settings["hooks"] = {"PreToolUse": [{
             "matcher": "Write|Edit|NotebookEdit",
             "hooks": [{"type": "command", "command": fence}]}]}
