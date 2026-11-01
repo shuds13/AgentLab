@@ -1571,7 +1571,9 @@ def _note_session(sid):
     global _session_id
     if sid and sid != _session_id:
         _session_id = sid
-        _write_meta(session_id=sid, session_cwd=AGENT_CWD)
+        # Where the session is kept, so it can be found again to talk about the run.
+        config = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+        _write_meta(session_id=sid, session_cwd=AGENT_CWD, claude_config_dir=config)
 
 
 _prov = None                # this run's provenance tracer, when flowcept is installed

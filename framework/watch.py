@@ -521,6 +521,30 @@ def run_path(campaign, run=None):
     return None
 
 
+def _ended_with_session(run_dir):
+    """A run whose agent has stopped and left a session that can be reopened."""
+    age = _beat_age(run_dir)
+    return ((age is None or age >= AGENT_ALIVE_WITHIN)
+            and bool(_meta(os.path.join(run_dir, "meta.json")).get("session_id")))
+
+
+def talk_to_run(run_dir, ws, text, stamp):
+    """Put the message in the conversation and ask the run's agent about it. The reply
+    takes as long as a turn does, so talk.py adds it to the conversation itself."""
+    messages = os.path.join(ws, "MESSAGES.md")
+    try:
+        with open(messages, "a") as f:
+            f.write(f"`{stamp}` **you** {text}\n\n")
+        with open(os.path.join(run_dir, "talk.log"), "a") as log:
+            subprocess.Popen([sys.executable, os.path.join(SCRIPT_DIR, "talk.py"), run_dir,
+                              "-m", text, "--record", messages],
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                             start_new_session=True)
+    except OSError as e:
+        return {"sent": False, "error": str(e)}
+    return {"sent": True, "talk": True}
+
+
 def runs(campaign):
     """Every run of the campaign, newest first: enough to choose one by."""
     out = []
@@ -2375,6 +2399,8 @@ async function refresh() {
     renderAgents(top, group);
     const s = agentSel ? await (await fetch(url("/status"))).json() : top;
     if (!here()) return;
+    const ended = !!s.run && s.status !== "running";
+    if (ended !== runEnded) { runEnded = ended; setChatBar(); }
     const label = (top.workers || []).length ? (agentSel ? s.branch || agentSel : "coordinator") : "";
     const recs = s.records || [];
     if (label !== agentLabel || JSON.stringify(recs) !== JSON.stringify(agentRecords)) {
@@ -2682,11 +2708,15 @@ function showScope() {
 // and whether Slack is attached -- and the rest follows from the scope, so the two
 // cannot overwrite each other's title as they poll.
 let labState = {secretary: false, slack: false};
+// Whether the run on show has ended, when a message reopens its session to answer.
+let runEnded = false;
 function setChatBar() {
   const head = document.getElementById("chattitle"), box = document.getElementById("msg");
   if (scope !== "lab") {
-    head.textContent = "CHAT \u00b7 " + campaign;
-    box.placeholder = "message the agent \u2014 it reads between turns";
+    head.textContent = "CHAT \u00b7 " + campaign + (runEnded ? " \u00b7 run ended" : "");
+    box.placeholder = runEnded
+      ? "ask the agent about its run \u2014 it answers from its session"
+      : "message the agent \u2014 it reads between turns";
     return;
   }
   head.textContent = "SECRETARY"
@@ -3285,6 +3315,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         ws = workspace(campaign)
         stamp = datetime.now().strftime("%H:%M")
+        # A run that has ended reads no board, so a message to it reopens its session
+        # instead, and the agent's reply joins the same conversation (talk.py).
+        run_dir = run_path(campaign, (q.get("run") or [""])[0] or None)
+        if run_dir and _ended_with_session(run_dir):
+            self._send(json.dumps(talk_to_run(run_dir, ws, text, stamp)), "application/json")
+            return
         try:
             os.makedirs(ws, exist_ok=True)
             with open(os.path.join(ws, "ANNOUNCEMENTS.md"), "a") as f:

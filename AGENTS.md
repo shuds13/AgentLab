@@ -83,8 +83,8 @@ cd campaigns/example-quick-optimum && WATCH=true AGENT_MODEL=haiku ./run.sh
 `workspace/example-quick-optimum/` — `results.jsonl`, `LOGBOOK.md`, and the run
 directory with its logs. This is where they will read their own campaign.
 
-`bin/list_agents.sh --all` lists the run and the Claude session it ran in, which
-`claude -r <session>` reads back.
+`bin/talk.sh <run dir>` reopens the session a run ended in, so they can ask the agent
+about what it did.
 
 ### 4. Slack (optional)
 
@@ -446,11 +446,14 @@ cd campaigns/<name> && ./run.sh
 bin/list_agents.sh --all          every run and its outcome
 bin/list_agents.sh -n 5           the last five runs
 bin/kill_agent.sh --drain <run>   stop cleanly, finishing jobs in flight
+bin/talk.sh <run dir>             talk with the agent of a run that has ended
 ```
 
 A running agent has a short handle — `local1` — which is what it posts under in Slack
-and what a person calls it. A finished run keeps the Claude session it ran in, shown by
-`list_agents.sh`, so `claude -r <session>` reads back what the agent was thinking.
+and what a person calls it. A finished run keeps the Claude session it ran in, and
+`talk.sh` reopens it as it ran: same instructions, settings and sandbox, its file tools
+and none of its job tools, forked so the run's record is unchanged. `-m "message"` sends
+one message and prints the reply.
 
 Stopping conditions, Slack and the rest live in the campaign's `run.sh`. Every setting,
 with its default, is in `docs/settings.md`.

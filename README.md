@@ -109,6 +109,7 @@ it with jobs in flight.
 ```
 bin/list_agents.sh --all          every run and its outcome
 bin/kill_agent.sh --drain <run>   stop cleanly, finishing jobs in flight
+bin/talk.sh <run dir>             talk with the agent of a run that has ended
 bin/lab.sh status                 the lab's own processes, and their logs
 ```
 
