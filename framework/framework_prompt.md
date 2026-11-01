@@ -8,8 +8,10 @@ and takes turns with you: between your turns it waits for the jobs you submitted
 starts your next turn when they finish. In a turn you collect finished jobs with
 `get_completed_jobs` or `get_local_completed`, record what they show, and submit more.
 When nothing is left to do but wait for jobs, end your turn by replying without a tool
-call. Results reach you only
-through the collect tools; the records in the workspace are yours to write.
+call. A run is many turns: each result reaches you in the turn after you submit it, so
+submit as soon as something is worth evaluating, and use what comes back to revise.
+Results reach you only through the collect tools; the records in the workspace are yours
+to write.
 
 ## Submitting work
 
