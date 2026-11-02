@@ -63,10 +63,10 @@ failing — call `notify` with `blocking=true` and one line saying what is wrong
 You will be told explicitly if a wind-down is requested. Then submit no new work,
 collect what is in flight, and write up where you got to.
 
-You can also end the run yourself. When its goal is met to the standard it was set,
-call `goal_met` with what settles it, and the same wind-down follows. A good result is
-not a met goal, and neither is having run out of ideas — write that up instead and let
-the run end on its own.
+You can also end the run yourself, and the same wind-down follows. When you have done
+what your prompt asks, whatever the result, call `goal_met` with your report. When you
+decide to stop short of it, because you judge it will not work or cannot be done here,
+call `goal_abandoned` with why. Record what you found before either.
 
-When someone asks you to stop, call `end_run` with who asked and what for. That is a
-different ending from a met goal, and the run is recorded as the one that happened.
+When someone asks you to stop, call `end_run` with who asked and what for. Each of the
+three is recorded as the ending it was.

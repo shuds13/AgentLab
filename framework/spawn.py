@@ -440,7 +440,7 @@ def run_worker(args, *, repo, roles, timeout=None):
         "args": args,
         "run_id": meta.get("run_id"),
         "session_id": meta.get("session_id"),
-        "summary": meta.get("goal_met") or meta.get("end_requested"),
+        "summary": meta.get("goal_met") or meta.get("goal_abandoned") or meta.get("end_requested"),
         "stop_reason": meta.get("stop_reason"),
         "commit": commit,
         "commit_subject": subject,

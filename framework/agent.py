@@ -265,7 +265,8 @@ def _bool_env(name, default=False):
 # Tokens always; dollars only where the price is the serving model's own, see _note_cost.
 SHOW_COST = _bool_env("SHOW_COST", True)
 # A run whose method has it write up before calling goal_met, as a worker's does, ends
-# when goal_met leaves nothing in flight: there is nothing left to wind down or write.
+# when goal_met (or goal_abandoned) leaves nothing in flight: there is nothing left to wind
+# down or write.
 # Its conversation then ends with its own summary, which matters when another run is
 # started from it.
 END_ON_GOAL_MET = _bool_env("END_ON_GOAL_MET", False)
@@ -1043,7 +1044,7 @@ def _start_part():
                    "workers": workers}, f, indent=2)
     meta = dict(PREV_META)
     meta["paused_s"] = int(paused + (time.time() - end if end else 0))
-    for k in ("stop_reason", "ended_at", "goal_met", "end_requested", "uptime_s",
+    for k in ("stop_reason", "ended_at", "goal_met", "goal_abandoned", "end_requested", "uptime_s",
               "remote_submitted", "remote_submitted_buckets", "local_submitted"):
         meta.pop(k, None)
     meta["part"] = n + 1
@@ -1989,6 +1990,19 @@ async def main():
                         stop_reason = stopping
                         break
                     print(f"Goal met -- winding down: {tools.goal_is_met()}", flush=True)
+                    prompt = WINDDOWN_PROMPT
+                # The agent stopped short of its task. The same wind-down as a met goal,
+                # recorded as abandoned.
+                if stopping is None and tools.goal_abandoned_reason():
+                    stopping = "goal abandoned"
+                    tools.request_stop()
+                    _drain_workers(stopping)
+                    _write_meta(goal_abandoned=tools.goal_abandoned_reason())
+                    if END_ON_GOAL_MET and tools.jobs_in_flight() == 0:
+                        print(f"Goal abandoned: {tools.goal_abandoned_reason()}", flush=True)
+                        stop_reason = stopping
+                        break
+                    print(f"Goal abandoned -- winding down: {tools.goal_abandoned_reason()}", flush=True)
                     prompt = WINDDOWN_PROMPT
                 # The agent was asked to stop. The same wind-down, recorded as what it
                 # was: a run ended on request, with the goal wherever it had reached.

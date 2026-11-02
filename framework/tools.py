@@ -1476,10 +1476,10 @@ async def cycle_done(args):
 
 
 GOAL_MET_DESC = (
-    "Call this when the campaign's goal, as its own prompt states it, is met: the "
-    "question is answered to the standard that prompt sets. A good result is not a met "
-    "goal, and neither is a result you have not yet recorded -- write the evidence "
-    "first, then call this. Pass what settles it, in one or two lines. The run stops "
+    "Call this when you have done what your prompt asks of you, whatever the result: the "
+    "question is answered, or the task carried out, to the standard the prompt sets. "
+    "Record the evidence first, then call this with your report in one or two lines. If "
+    "you are stopping short of what was asked, call goal_abandoned instead. The run stops "
     "taking new work, finishes what is in flight, and gives you a turn to write up. A "
     "job that will not return holds the run open: abandon it with abandon_job."
 )
@@ -1500,6 +1500,32 @@ async def goal_met(args):
     return {"content": [{"type": "text", "text":
                          "goal recorded; this run is winding down -- collect what is in "
                          "flight and write the cycle up"}]}
+
+
+GOAL_ABANDONED_DESC = (
+    "Call this when you have decided to stop short of what your prompt asks, because you "
+    "judge it will not work or cannot be done here. Record what you found first, then "
+    "call this with why, in one or two lines. The run stops taking new work, finishes "
+    "what is in flight, and gives you a turn to write up. A job that will not return "
+    "holds the run open: abandon it with abandon_job."
+)
+
+_goal_abandoned = None  # why the agent stopped short of its task, or None
+
+
+def goal_abandoned_reason():
+    """Why the agent said it stopped short of its task, or None."""
+    return _goal_abandoned
+
+
+@tool("goal_abandoned", GOAL_ABANDONED_DESC, {"reason": str})
+async def goal_abandoned(args):
+    global _goal_abandoned
+    _goal_abandoned = (args.get("reason") or "").strip() or "(no reason given)"
+    request_stop()
+    return {"content": [{"type": "text", "text":
+                         "recorded as abandoned; this run is winding down -- collect what "
+                         "is in flight and write the cycle up"}]}
 
 
 END_RUN_DESC = (
@@ -1578,6 +1604,7 @@ def create_server():
     tools.append(notify)
     tools.append(cycle_done)
     tools.append(goal_met)
+    tools.append(goal_abandoned)
     tools.append(end_run)
     if HAS_REMOTE:
         tools.append(check_backend)
@@ -1599,6 +1626,7 @@ def tool_names():
     names.append("notify")
     names.append("cycle_done")
     names.append("goal_met")
+    names.append("goal_abandoned")
     names.append("end_run")
     if HAS_REMOTE:
         names.append("check_backend")
