@@ -1444,10 +1444,12 @@ PAGE = """<!doctype html>
  #chatlog { flex:1; overflow:auto; padding:8px 12px; }
  #chathead button { float:right; background:none; border:none; padding:0; color:#8ab4d8;
                     font:inherit; letter-spacing:normal; cursor:pointer; }
- /* Hidden: the bar alone, which opens it again. */
+ /* Hidden: the bar alone, holding only the control that opens it again. */
  html.chatoff #chat { height:auto; min-height:0; }
- html.chatoff #chatlog, html.chatoff #say { display:none; }
- html.chatoff #chathead { cursor:pointer; border-bottom:none; }
+ html.chatoff #chatlog, html.chatoff #say, html.chatoff #chattitle { display:none; }
+ html.chatoff #chathead { cursor:pointer; border-bottom:none; text-align:right; }
+ /* With the title gone a floated control would leave the bar no height of its own. */
+ html.chatoff #chathead button { float:none; }
  html.chatoff #newest { bottom:44px; }
  #chatlog .m { margin:0 0 7px; }
  #chatlog .t { color:#666; margin-right:8px; }
@@ -2626,7 +2628,7 @@ async function say() {
   const root = document.documentElement, btn = document.getElementById("chattoggle");
   const set = off => {
     root.classList.toggle("chatoff", off);
-    btn.textContent = off ? "show" : "hide";
+    btn.textContent = off ? "show chat" : "hide";
     try { localStorage.setItem("watch.chatOff", off ? "1" : ""); } catch (e) {}
   };
   try { set(!!localStorage.getItem("watch.chatOff")); } catch (e) {}
