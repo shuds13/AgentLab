@@ -23,7 +23,7 @@ Examples:
 - **Basic:** [`campaigns/example-quick-optimum/`](campaigns/example-quick-optimum/) — one
   agent finds the lowest point of a noisy response, in minutes, on the local machine.
   `run_remote.sh` runs the same campaign with its jobs on a remote system through Globus
-  Compute.
+  Compute. `compare.sh` runs it on several models at once, as a group.
 - **Multi-agent:** [`campaigns/example-multi-agent-ale-ahc016/`](campaigns/example-multi-agent-ale-ahc016/)
   — a coordinator launches explorer and refiner agents on an AtCoder heuristic contest
   problem, each on its own git branch, on the local machine.
@@ -65,7 +65,7 @@ campaigns/<name>/
                campaign.json    which system, and what to run on it
                method.md        how the agent works, copied from methods/
 
-workspace/<name>/
+workspace/<name>/   or   workspace/<group>/<name>/
                everything the agent produces. Not tracked by git.
 ```
 
@@ -112,6 +112,37 @@ bin/kill_agent.sh --drain <run>   stop cleanly, finishing jobs in flight
 bin/talk.sh <run dir>             talk with the agent of a run that has ended
 bin/lab.sh status                 the lab's own processes, and their logs
 ```
+
+## Sandbox
+
+On Linux, `SANDBOX=bwrap` runs the agent in a box built with bubblewrap. It sees only the
+files the run needs (its workspace, the campaign, the framework and the system's own
+directories) and only the processes it started. A campaign names any other paths its
+agent needs in `campaign.json`. See [docs/campaigns.md](docs/campaigns.md#sandbox).
+
+```
+SANDBOX=bwrap ./run.sh
+```
+
+## Workspaces and groups
+
+A run writes to `workspace/<campaign>/` unless its `run.sh` sets `WORKSPACE_DIR`, so one
+campaign directory can feed many workspaces. A workspace one level down,
+`workspace/<group>/<name>/`, belongs to a group, and the watch shows the group's runs
+together, each with its model, score and cost.
+
+A group can keep one campaign's runs in order (trials, variants, different settings)
+without a campaign directory for each. It also holds runs started side by side to be
+compared: the quick-optimum example's `compare.sh` runs one workspace per model, Opus,
+Sonnet and Haiku unless `MODELS` names others.
+
+```
+cd campaigns/example-quick-optimum && ./compare.sh
+```
+
+Compute resources can be shared by a running campaign group. Runs that use the same
+resource bucket on a system (see [Resources](#resources)) run their jobs in the same
+blocks. The Resources tab shows the tasks of all those runs in each block.
 
 ## Budgets
 
