@@ -123,15 +123,16 @@ bin/watch.sh                      the lab
 bin/watch.sh <campaign>           open on one campaign
 ```
 
-From your own computer, when the lab is on a machine you reach by ssh:
+From your own computer, when the lab is on a machine you reach by ssh: copy
+`bin/watch_remote.sh` to your computer (it needs nothing else from the repository), set
+`HOST`, `REPO` and `ACTIVATE` at the top of it, and run:
 
 ```
-bin/watch_remote.sh <host> <path-to-AgentLab-there>
+./watch_remote.sh
 ```
 
 It logs in once, starts the watcher over there, forwards the port it took, and opens
-your browser. Set `HOST`, `REPO` and `ACTIVATE` at the top of the script and it needs no
-arguments. Ctrl-C stops both ends.
+your browser. Ctrl-C stops both ends.
 
 ## Sandbox
 
@@ -214,5 +215,3 @@ needs must be imported inside it or passed in through its arguments. A result wi
 `LOCAL_SCHEMA`, `local_fn`. A task may define both, and the agent is given tools for
 whichever it defines. A task with only
 `local_fn` needs no Globus Compute endpoint.
-
-Nothing in `framework/` changes.
