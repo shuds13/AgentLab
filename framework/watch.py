@@ -35,6 +35,7 @@ import time
 
 import budgets
 import node_hours
+import resource_session
 import sys
 import urllib.parse
 import webbrowser
@@ -681,9 +682,16 @@ def budget_rows(campaign, run_dir, meta, counts, elapsed, started):
     for b, n in (lim.get("submits_buckets") or {}).items():
         row("submits_buckets", b, f"jobs submitted, {b}", mine["buckets"].get(b, 0), n)
     row("runtime_s", None, "run time", elapsed, lim.get("runtime_s"), "s")
-    # Node-hours are the launch's, held by the run that started it.
+    # Node-hours are the launch's, held by the run that started it. In a group with an
+    # open resource session, the session's budget is the one that holds on its systems:
+    # the group's runs share their blocks, so a launch's own count means nothing there.
     if not meta.get("parent_run"):
-        caps = lim.get("node_hours") or {}
+        ses = group_session(campaign)
+        shared = ses["node_hours"] if ses and not ses.get("stopped") else {}
+        for sy, cap in shared.items():
+            row("group_node_hours", sy, f"node-hours, {sy}, the group's {ses['runs']} runs",
+                ses["used"].get(sy, 0), cap, "h")
+        caps = {sy: c for sy, c in (lim.get("node_hours") or {}).items() if sy not in shared}
         if caps:
             used = node_hours.used(ws, node_hours.launch_runs(ws, meta.get("run_id")))
             for sy, cap in caps.items():
@@ -714,6 +722,23 @@ def owns(run_dir):
         return os.stat(run_dir).st_uid == os.getuid()
     except (OSError, TypeError):
         return False
+
+
+def group_session(campaign):
+    """The resource session of the group this workspace is in, open or the last one
+    stopped, with the node-hours the group has used in it; None outside a group or
+    without one."""
+    if "/" not in campaign:
+        return None
+    group = os.path.dirname(workspace(campaign))
+    s = _meta(os.path.join(group, resource_session.FILE))
+    if not s or not s.get("started"):
+        return None
+    used = resource_session.used(group, s)
+    return {"group": os.path.basename(group), "started": s["started"],
+            "stopped": s.get("stopped"), "node_hours": s.get("node_hours") or {},
+            "used": {k: round(v, 2) for k, v in used.items()},
+            "runs": len(resource_session.workspaces(group))}
 
 
 def budgets_view(campaign, run=None):
@@ -1807,8 +1832,9 @@ async function renderBudgets() {
   if (budgetEditing()) return;
   view.className = "";
   if (!d.run) { view.innerHTML = '<div id="res"><div class="note">no run yet</div></div>'; return; }
-  const ofRun = d.rows.filter(r => r.name !== "node_hours");
-  const ofSys = d.rows.filter(r => r.name === "node_hours");
+  const nh = r => r.name === "node_hours" || r.name === "group_node_hours";
+  const ofRun = d.rows.filter(r => !nh(r));
+  const ofSys = d.rows.filter(nh);
   let h = '<div id="res">';
   h += `<h3>${esc(d.run)}</h3><div class="note">totals for the whole run`
     + (d.part > 1 ? `, over its ${d.part} parts` : "") + `</div>`;
@@ -1820,9 +1846,10 @@ async function renderBudgets() {
   const shapes = Object.entries(d.buckets || {});
   if (ofSys.length || shapes.length) {
     h += `<h3>resources</h3>`;
+    // A group's node-hours are changed with bin/resource_session.sh, not from here.
     h += '<table class="grid">' + ofSys.map(r =>
-      `<tr><td>${esc(r.label)}</td><td>${budgetCell(r)}</td>${budgetInput(d, r)}</tr>`)
-      .join("");
+      `<tr><td>${esc(r.label)}</td><td>${budgetCell(r)}</td>`
+      + `${r.name === "node_hours" ? budgetInput(d, r) : ""}</tr>`).join("");
     for (const [k, b] of shapes) {
       const wall = (b.walltime || "").replace(/^0?(\\d+):00:00$/, "$1h");
       h += `<tr><td>bucket ${esc(k)}</td><td>` + [b.system, b.queue,
@@ -2329,7 +2356,7 @@ async function renderTree() {
 //
 // A run in a group (several workspaces under one directory) lists the group's runs
 // above it, each a click away; its own agents, if it has any, sit under its row.
-function renderAgents(top, group) {
+function renderAgents(top, group, session) {
   const panel = document.getElementById("agents");
   const ws = top.workers || [];
   const grouped = groupPanel && (group || []).length > 1;
@@ -2369,7 +2396,11 @@ function renderAgents(top, group) {
     const total = group.reduce((t, g) => t + (g.usd || 0), 0);
     const up = group.filter(g => g.live).length;
     html = `<div class="agrp">${esc(campaign.slice(0, campaign.indexOf("/")))} \u00b7 `
-      + `${group.length} runs \u00b7 ${up} running</div>`
+      + `${group.length} runs \u00b7 ${up} running`
+      + (session ? Object.entries(session.node_hours).map(([sy, cap]) =>
+          ` \u00b7 ${esc(sy)} ${(session.used[sy] || 0).toFixed(1)} / ${cap} node-hours`
+          + (session.stopped ? " (session stopped)" : "")).join("") : "")
+      + `</div>`
       + group.map(g => {
         const here = g.campaign === campaign;
         return `<div class="arow grun${here && !agentSel ? " sel" : ""}" data-camp="${esc(g.campaign)}">`
@@ -2405,10 +2436,10 @@ async function refresh() {
     if (agentSel && !(top.workers || []).some(w => w.run === agentSel)) {
       agentSel = ""; openTab(tab); return;
     }
-    const group = campaign.includes("/") && groupPanel
+    const g = campaign.includes("/") && groupPanel
       ? await (await fetch("/group?c=" + encodeURIComponent(campaign))).json() : null;
     if (!here()) return;
-    renderAgents(top, group);
+    renderAgents(top, g && g.runs, g && g.session);
     const s = agentSel ? await (await fetch(url("/status"))).json() : top;
     if (!here()) return;
     const ended = !!s.run && s.status !== "running";
@@ -3409,7 +3440,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif url.path == "/group":
             # The runs of the group this workspace belongs to, itself among them.
             names = sorted([campaign] + _group_siblings(campaign)) if "/" in campaign else []
-            self._send(json.dumps([lab_summary(c) for c in names]), "application/json")
+            self._send(json.dumps({"runs": [lab_summary(c) for c in names],
+                                   "session": group_session(campaign)}),
+                       "application/json")
         elif url.path == "/lab":
             # By name: the page orders it, so which column it is sorted on survives a
             # poll rather than being undone by one.

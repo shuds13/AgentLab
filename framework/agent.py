@@ -1724,12 +1724,9 @@ def _budget_lines():
     cap = _runtime_limit()
     if cap is not None:
         out.append(f"run time: {_run_seconds() / 60:.0f} of {cap / 60:.0f} min used")
-    caps = {sy: tools.node_hours_cap(sy) for sy in tools.SYSTEMS}
-    caps = {sy: c for sy, c in caps.items() if c is not None}
-    if caps:
-        used = tools.node_hours_used()
-        out += [f"node-hours on {sy}: {used.get(sy, 0):.1f} of {c:g} used"
-                for sy, c in caps.items()]
+    out += [f"node-hours on {sy}: {u:.1f} of {c:g} used"
+            + (", shared by the runs of this group" if scope == "group" else "")
+            for sy, (u, c, scope) in tools.node_hours_budgets().items()]
     spawn = sys.modules.get("spawn")
     if spawn is not None:
         pool = spawn._pool_limit()

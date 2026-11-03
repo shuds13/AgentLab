@@ -94,8 +94,8 @@ See [docs/setup.md](docs/setup.md) for more info.
 
 ## Running
 
-Each campaign has its own `run.sh` holding its settings — job budget, wallclock cap,
-Slack. Edit it, then from the campaign directory:
+Each campaign has its own `run.sh` holding its settings. Edit it, then from the campaign
+directory:
 
 ```
 cd campaigns/<name> && ./run.sh
@@ -163,7 +163,10 @@ cd campaigns/example-quick-optimum && ./compare.sh
 
 Compute resources can be shared by a running campaign group. Runs that use the same
 resource bucket on a system (see [Resources](#resources)) run their jobs in the same
-blocks. The Resources tab shows the tasks of all those runs in each block.
+blocks. The Resources tab shows the tasks of all those runs in each block. A resource
+session gives the group one node-hour budget for those blocks, from when it is started:
+`bin/resource_session.sh <group> start swing=4`. See
+[docs/campaigns.md](docs/campaigns.md#resources).
 
 ## Budgets
 

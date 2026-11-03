@@ -28,6 +28,7 @@ from claude_agent_sdk import tool, create_sdk_mcp_server
 
 import budgets
 import node_hours as _node_hours
+import resource_session as _resource_session
 import transfer as _transfer
 from globus_compute_sdk import Executor
 from globus_compute_sdk.serialize import ComputeSerializer, AllCodeStrategies
@@ -744,6 +745,23 @@ def bucket_submits():
     return out
 
 
+def node_hours_budgets():
+    """The node-hour budget in force on each system that has one: {system: (used, cap,
+    scope)}. The scope is "group" where the group's open resource session budgets the
+    system (resource_session.py), whose runs share their blocks, else "launch"."""
+    out, launch = {}, None
+    for system in SYSTEMS:
+        group = _resource_session.budget(WORKSPACE_DIR, system)
+        if group:
+            out[system] = (*group, "group")
+            continue
+        cap = node_hours_cap(system)
+        if cap is not None:
+            launch = node_hours_used() if launch is None else launch
+            out[system] = (launch.get(system, 0), cap, "launch")
+    return out
+
+
 def node_hours_cap(system):
     """Node-hours the launch may use on `system`, or None. The budget is the top run's,
     which its workers share."""
@@ -772,6 +790,12 @@ def budget_spent():
     a budget and each is spent."""
     if _reached(submit_count(), max_submits()):
         return True
+    # Every system its buckets send to has spent its node-hours.
+    if HAS_REMOTE and not HAS_LOCAL:
+        nh = node_hours_budgets()
+        systems = {b["system"] for b in _SYS["buckets"].values()}
+        if systems and all(sy in nh and nh[sy][0] >= nh[sy][1] for sy in systems):
+            return True
     caps = bucket_submits()
     return bool(HAS_REMOTE and caps and not HAS_LOCAL
                 and all(b in caps for b in _SYS["buckets"])
@@ -1066,13 +1090,15 @@ def _fire_remote(args, kind="job"):
         return {"error": f"bucket {bucket!r} is not one of "
                          f"{sorted(_SYS['buckets'])} -- check the bucket in task.py."}
     _b = _SYS["buckets"][bucket]
-    _nh_cap = node_hours_cap(_b["system"])
-    if _nh_cap is not None:
-        _nh_used = node_hours_used().get(_b["system"], 0)
-        if _nh_used >= _nh_cap:
-            _release_claim(key)
-            return {"error": f"submit refused: {_b['system']} node-hours for this launch "
-                             f"are used ({_nh_used:.1f} of {_nh_cap:g})."}
+    _nh = node_hours_budgets().get(_b["system"])
+    if _nh and _nh[0] >= _nh[1]:
+        _release_claim(key)
+        whose = ("the group's, shared with the other runs in "
+                 + os.path.basename(os.path.dirname(os.path.abspath(WORKSPACE_DIR)))
+                 if _nh[2] == "group" else "this launch's")
+        return {"error": f"submit refused: the {_b['system']} node-hour budget is spent "
+                         f"({_nh[0]:.1f} of {_nh[1]:g}; {whose}). No more {_b['system']} "
+                         f"jobs can run unless the budget is raised."}
     target = dict(SYSTEMS[_b["system"]]["target"])
     target["nranks"] = _b.get("nodes_per_job", 1) * target["ppn"]
     # The shape the job actually got, so it can size itself to the allocation it is in.

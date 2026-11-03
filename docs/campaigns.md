@@ -82,8 +82,27 @@ Five decide how much runs at once:
 `node_hours` (experimental), beside `buckets`, gives node-hours per system for a whole
 launch, the top run and its workers together, e.g. `{"polaris": 48}`; `MAX_NODE_HOURS`
 overrides it for one launch. Each block counts its nodes from its start to its last
-task's end, so the time a block is held idle afterwards is not counted. Once a system's
-budget is used, submits to it are refused; tasks already sent still run.
+task's end, plus the time the endpoint holds it idle afterwards (`max_idletime`), or to
+its walltime if that comes first. Once a system's budget is used, submits to it are
+refused; tasks already sent still run.
+
+Runs in a workspace group that use the same bucket share its blocks, so a launch's own
+count would charge a shared block in full to each of them. A resource session gives the
+group one budget instead:
+
+```
+bin/resource_session.sh <group> start swing=4      # node-hours per system
+bin/resource_session.sh <group>                    # what the group has used
+bin/resource_session.sh <group> stop
+```
+
+It counts every block any run in the group used, each block once, from the session's
+start until it is stopped or the next session starts. On a system it budgets it replaces
+each launch's `node_hours`: the group's runs are refused new jobs there once it is used,
+and the agents and the watch show the group's figure. A script that starts a group's runs
+can start a session as it does and leave it open, since the next session closes it. It is
+kept in `<group>/resource_session.json`. A block that a run outside the group also used
+is counted in full to the group.
 
 Machine-specific keys belong in `systems/<system>.json` rather than here, or the
 campaign will not run anywhere else.

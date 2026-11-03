@@ -74,9 +74,10 @@ def hours(block):
     return (block.get("nodes") or 1) * (e - block["start"]) / 3600
 
 
-def used(workspace, runs):
-    """Node-hours per system over the given runs ({run_id: system}), from jobs.jsonl."""
-    systems, idle, blocks = {}, {}, {}
+def blocks(workspace, runs):
+    """The blocks the tasks of the given runs ({run_id: system}) ran in, from the
+    workspace's jobs.jsonl: {(system, block id): record}."""
+    systems, idle, out = {}, {}, {}
     try:
         with open(os.path.join(workspace, "jobs.jsonl")) as f:
             for line in f:
@@ -95,10 +96,53 @@ def used(workspace, runs):
                     bid = block_key(r["ran_on"])
                     if bid:
                         sy = systems.get(k) or runs[r["run"]]
-                        add(blocks.setdefault((sy, bid), {}), r["ran_on"], idle.get(k))
+                        add(out.setdefault((sy, bid), {}), r["ran_on"], idle.get(k))
     except FileNotFoundError:
         pass
+    return out
+
+
+def used(workspace, runs):
+    """Node-hours per system over the given runs ({run_id: system}), from jobs.jsonl."""
     out = {}
-    for (sy, _), b in blocks.items():
+    for (sy, _), b in blocks(workspace, runs).items():
         out[sy] = out.get(sy, 0) + (hours(b) or 0)
+    return out
+
+
+def all_runs(workspace):
+    """Every run in a workspace, each with its own system."""
+    return {os.path.basename(os.path.dirname(m)): _read_json(m).get("system")
+            for m in glob.glob(os.path.join(workspace, "runs", "*", "meta.json"))}
+
+
+def _merge(into, block):
+    """Fold one workspace's record of a block into another's record of the same block."""
+    for field in ("queue", "nodes", "start", "queued_at", "walltime_s"):
+        if into.get(field) is None and block.get(field) is not None:
+            into[field] = block[field]
+    for field in ("idle_s", "last"):
+        if block.get(field) is not None:
+            into[field] = max(into.get(field) or block[field], block[field])
+
+
+def window_hours(block, start, stop=None):
+    """A block's node-hours between `start` and `stop` (None: up to its end)."""
+    e = end(block)
+    if e is None:
+        return 0.0
+    hi = min(e, stop) if stop else e
+    return (block.get("nodes") or 1) * max(0.0, hi - max(block["start"], start)) / 3600
+
+
+def workspaces_used(workspaces, start, stop=None):
+    """Node-hours per system over the blocks any run in the given workspaces ran in,
+    between `start` and `stop`. A block several of them used is counted once."""
+    merged = {}
+    for ws in workspaces:
+        for key, b in blocks(ws, all_runs(ws)).items():
+            _merge(merged.setdefault(key, {}), b)
+    out = {}
+    for (sy, _), b in merged.items():
+        out[sy] = out.get(sy, 0) + window_hours(b, start, stop)
     return out
