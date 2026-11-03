@@ -38,7 +38,7 @@ decides how a campaign reaches it:
 
 Minerva is the one that needs no translation layer, so a model there is the simplest
 case in this document. `nemotron-3-ultra` is on Minerva, and
-`campaigns/example-quick-optimum/run_nemotron.sh` runs against it.
+`MODEL=nemotron campaigns/example-quick-optimum/run_open_model.sh` runs against it.
 
 ### Authenticating
 
@@ -105,8 +105,8 @@ cp alcf.settings.json "$CLAUDE_CONFIG_DIR/settings.json"
 export AGENT_MODEL=nemotron-3-ultra
 ```
 
-`campaigns/example-quick-optimum/run_nemotron.sh` and `run_muse.sh`, with `alcf.settings.json`
-beside them, are working examples.
+`campaigns/example-quick-optimum/run_open_model.sh`, with `alcf.settings.json` beside it, is a
+working example.
 
 A model on Sophia or Metis is the LiteLLM case instead, since those clusters serve
 chat completions only. `litellm/config.yaml.template` has entries for both. The same

@@ -15,6 +15,12 @@
         "label": "Nemotron Ultra",
         "description": "ALCF inference service, Minerva",
         "behavesAs": "claude-opus-5"
+      },
+      {
+        "model": "mistral-large-4-nvfp4",
+        "label": "Mistral Large 4",
+        "description": "ALCF inference service, Minerva",
+        "behavesAs": "claude-opus-5"
       }
     ]
   }

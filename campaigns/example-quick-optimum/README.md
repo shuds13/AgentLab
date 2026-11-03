@@ -21,7 +21,8 @@ Runs on the local machine. Watch it with `bin/watch.sh`; results go to
 | `run.sh` | the jobs run on the local machine |
 | `run_remote.sh` | the jobs run on a remote system through Globus Compute (`SYSTEM`, default `gce`); its endpoint and work directory are in `users/<you>/<system>.json` |
 | `run_with_critic.sh` | a critic model reviews each cycle |
-| `run_nemotron.sh` | the agent runs on Nemotron Ultra through the ALCF inference service (`run_nemotron.settings.json`) |
+| `run_open_model.sh` | the agent runs on an open model through the ALCF inference service: `MODEL=muse` (default), `mistral` or `nemotron` (`alcf.settings.json`, docs/llm.md) |
+| `compare.sh` | one run per model, all at once, as a group: Opus, Sonnet and Haiku, or the models in `MODELS` (`MODELS="sonnet muse mistral" TAG=1 ./compare.sh`) |
 
 ## Files
 
@@ -33,3 +34,4 @@ Runs on the local machine. Watch it with `bin/watch.sh`; results go to
 | `remote_task.py` | the same job, `remote_fn`, on a remote system; `run_remote.sh` selects it with `TASK_MODULE` |
 | `campaign.json` | the system and how many jobs run at once |
 | `method.md` | how the agent works, copied from `methods/` |
+| `alcf.settings.json` | Claude Code settings for the ALCF inference service's models |
