@@ -34,6 +34,25 @@ Examples:
 
 ## Structure
 
+Your directories:
+
+```
+users/<you>/   your endpoint UUID, account, and working directory, per system.
+               Applies to every campaign you run there. Not tracked by git.
+
+campaigns/<name>/
+               prompt.md        the goal
+               user_prompt.md   this run's kick-off
+               task.py          what a job does
+               campaign.json    which system, and what to run on it
+               method.md        how the agent works, copied from methods/
+
+workspace/<name>/   or   workspace/<group>/<name>/
+               everything the agent produces. Not tracked by git.
+```
+
+The lab's:
+
 ```
 lab.yaml       what this lab runs, and where its own things are. Copied from
                lab.yaml.template. Not tracked by git.
@@ -54,19 +73,6 @@ methods/       how the agent goes about the work, and what it records — such a
 systems/       one file per machine: module line, proxy, cache paths, queue
                defaults — whatever is true for everyone there.
                endpoints/ — Globus Compute endpoint templates.
-
-users/<you>/   your endpoint UUID, account, and working directory, per system.
-               Applies to every campaign you run there. Not tracked by git.
-
-campaigns/<name>/
-               prompt.md        the goal
-               user_prompt.md   this run's kick-off
-               task.py          what a job does
-               campaign.json    which system, and what to run on it
-               method.md        how the agent works, copied from methods/
-
-workspace/<name>/   or   workspace/<group>/<name>/
-               everything the agent produces. Not tracked by git.
 ```
 
 ## Getting started
@@ -77,10 +83,9 @@ Clone this repository, start your agent in it, and say:
 
 It asks which of two you want.
 
-**Set up the lab and run the example** — the one to take if you are new. It runs on the
-machine you are already on: no account, no endpoint. It checks the install, gives you
-the command for the example campaign, and reads the results back with you. Slack for the
-lab is offered along the way.
+**Set up the lab and run the example** — the one to take if you are new. It runs on your
+local machine. It checks the install, gives you the command for the example campaign, and
+reads the results back with you.
 
 **Set up a campaign of your own** — it asks what you are trying to find out, which
 machine you will run on, and what files you already have. From that it creates
@@ -171,9 +176,10 @@ session gives the group one node-hour budget for those blocks, from when it is s
 ## Budgets
 
 Every limit a run stops at is a budget for the whole run: jobs it may submit, workers it
-may start, run time, and node-hours on each system. They can be raised or cut while the
-run goes, from the watch's Budgets tab or with `bin/budget.sh`, and the agent is told of
-the change at its next turn.
+may start, run time, and node-hours on each system. The framework enforces them: a submit
+or a worker beyond its budget is refused, and a run out of time winds down. They can be
+raised or cut while the run goes, from the watch's Budgets tab or with `bin/budget.sh`.
+The new limit holds at once, and the agent is also told of it at its next turn.
 
 ```
 bin/budget.sh <campaign>                            the newest run's budgets
