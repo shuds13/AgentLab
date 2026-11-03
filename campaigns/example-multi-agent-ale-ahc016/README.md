@@ -41,8 +41,14 @@ the best solution is the highest-scoring commit in its `repo/`, also named in `L
 | `MAX_RUNTIME` | `7200` | the coordinator's wallclock limit, in seconds |
 | `TRIAL` | `1` | a new number gives a fresh workspace |
 | `WORKER_CPUS`, `EVAL_CPUS` | `0-7`, `8-15` | cores for the agents and for evaluations |
+| `WORKSPACE_DIR` | `workspace/<campaign>-<MODE>-<MODEL>-<TRIAL>` | the run's workspace |
 
 For example: `MODE=undirected MODEL=opus TRIAL=2 ./run.sh`
+
+`compare.sh` runs one swarm per model at once, each on one model throughout and on cores of
+its own, as a group: Opus, Sonnet and Haiku by default, or the models in `MODELS`
+(`MODELS="sonnet muse mistral" TAG=1 ./compare.sh`; `REPEATS` for more than one each).
+Muse and Mistral go through the ALCF inference service (`alcf.settings.json`, docs/llm.md).
 
 ## Scoring
 

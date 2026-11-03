@@ -27,7 +27,7 @@ esac
 export AGENT_MODEL="${MODEL:-sonnet}"
 export EXPLORER_MODEL="${EXPLORER_MODEL:-opus}"
 export REFINER_MODEL="${REFINER_MODEL:-sonnet}"
-export WORKSPACE_DIR="$(cd ../.. && pwd)/workspace/$CAMPAIGN-$MODE-$AGENT_MODEL-$TRIAL"
+export WORKSPACE_DIR="${WORKSPACE_DIR:-$(cd ../.. && pwd)/workspace/$CAMPAIGN-$MODE-$AGENT_MODEL-$TRIAL}"
 export EVAL_DIR="$(cd ../.. && pwd)/workspace/.$CAMPAIGN-eval"
 # Evaluations run one at a time on cores of their own, one test case per core.
 export EVAL_CPUS="${EVAL_CPUS:-8-15}"

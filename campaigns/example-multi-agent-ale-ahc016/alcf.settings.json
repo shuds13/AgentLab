@@ -1,0 +1,27 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://inference-api.alcf.anl.gov/resource_server/minerva/api"
+  },
+  "modelPicker": {
+    "options": [
+      {
+        "model": "muse-spark-bf16",
+        "label": "Muse Spark",
+        "description": "ALCF inference service, Minerva",
+        "behavesAs": "claude-opus-5"
+      },
+      {
+        "model": "nemotron-3-ultra",
+        "label": "Nemotron Ultra",
+        "description": "ALCF inference service, Minerva",
+        "behavesAs": "claude-opus-5"
+      },
+      {
+        "model": "mistral-large-4-nvfp4",
+        "label": "Mistral Large 4",
+        "description": "ALCF inference service, Minerva",
+        "behavesAs": "claude-opus-5"
+      }
+    ]
+  }
+}
