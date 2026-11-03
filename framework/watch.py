@@ -1652,7 +1652,6 @@ function setTabs(files) {
   t.appendChild(d);
   group("campaign");
   for (const n of files) button(n);
-  button("resources");
   // Everything else the campaign holds. Another view of the pane, so it sits with
   // the tabs that choose one rather than with the panel toggle on the right.
   const w = document.createElement("button");
@@ -1660,15 +1659,23 @@ function setTabs(files) {
   w.className = (tab === "tree" || tab.startsWith("f:")) ? "on" : "";
   t.appendChild(w);
   w.onclick = () => { openTab("tree"); setTabs(files); };
-  // Every budget of the run tree in one place.
+  // What the run uses, on the right: the blocks its jobs ran in, and every budget of the
+  // run tree in one place.
+  const rs = document.createElement("span");
+  rs.style.marginLeft = "auto";
+  t.appendChild(rs);
+  button("resources");
   const bg = document.createElement("button");
   bg.textContent = "budgets";
   bg.className = tab === "budgets" ? "on" : "";
-  bg.style.marginLeft = "auto";
   bg.onclick = () => { openTab("budgets"); setTabs(files); };
   t.appendChild(bg);
-  // The files the run was handed open in a panel: several of them, each read once and
-  // referred back to while the log moves.
+  // The files the run was handed open in a panel beside the view, rather than in it: set
+  // apart from the tabs. Several of them, each read once and referred back to while the
+  // log moves.
+  const d2 = document.createElement("span");
+  d2.className = "div";
+  t.appendChild(d2);
   const f = document.createElement("button");
   f.textContent = "inputs";
   f.className = sideOpen ? "on" : "";
