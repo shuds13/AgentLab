@@ -196,16 +196,19 @@ def _prompt(name, default):
     return v if v else default
 
 
+# Said with each prompt that asks for work, since that is the message the agent acts on.
+_WAIT_NOTE = ("When nothing is left to do but wait for jobs you submitted, end your turn "
+              "by replying without a tool call: their results come only in your next turn.")
 CONTINUE_PROMPT = _prompt("CONTINUE_PROMPT",
     f"One or more jobs have finished. Collect them with {_COMPLETED_TOOL}, "
-    "fit and log each, then continue: submit new jobs as needed."
+    "fit and log each, then continue: submit new jobs as needed. " + _WAIT_NOTE
 )
 # What "more work" means belongs to the method, so this says only that the run has
 # capacity and asks for the next step from the records the method already keeps.
 EXPLORE_PROMPT = _prompt("EXPLORE_PROMPT",
     "No jobs are running and there is budget left. From your own records, decide what "
     "the next step is and submit it. If the goal is met, or nothing further is worth "
-    "running, say so and stop rather than filling the budget."
+    "running, say so and stop rather than filling the budget. " + _WAIT_NOTE
 )
 WINDDOWN_PROMPT = _prompt("WINDDOWN_PROMPT",
     "Wind-down requested: this run is ending. Submit no new work -- the submit tools "
