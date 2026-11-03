@@ -54,6 +54,8 @@ LAB_DIR = os.path.abspath(os.environ.get("LAB_DIR", _default_lab))
 # listed but not offered as a tab: run directories, caches, figures.
 READABLE = ("LOGBOOK.md", "findings.md", "JOURNAL.md", "REVIEWS.md", "results.jsonl",
             "ANNOUNCEMENTS.md", "jobs.jsonl")
+# What a record that does not exist yet means.
+NOT_YET = {"jobs.jsonl": "no jobs submitted yet", "results.jsonl": "no results yet"}
 TAIL_BYTES = 400_000        # of a file view; the log is followed from an offset instead
 # Browsing the whole workspace, as against the records above. Caches are listed by the
 # filesystem but are never what was being looked for.
@@ -1328,6 +1330,13 @@ PAGE = """<!doctype html>
  .arow .sc { margin-left:auto; color:#ddd; }
  .arow .usd { color:#888; min-width:4.5em; text-align:right; }
  .agrp { color:#6f8296; padding:2px 12px 6px; letter-spacing:.04em; }
+ /* A group of separate runs, as against one run's swarm of workers: its own tint, and a
+    rule between runs, so the runs read as separate. A run's workers, if it has any,
+    still show as a tree under it. */
+ #agents.grouped { background:#101820; }
+ #agents.grouped .arow.grun { border-top:1px solid #22313f; padding-top:4px; padding-bottom:4px; }
+ #agents.grouped .arow.grun:hover { background:#17222d; }
+ #agents.grouped .arow.grun.sel { background:#2d4a2d; }
  .atotal { padding:6px 12px; margin-top:6px; color:#888; border-top:1px solid #262626; }
  /* The pane scrolls, not the page, so the tabs stay put wherever you are in a file. */
  #main { flex:1; display:flex; min-height:0; }
@@ -2329,6 +2338,7 @@ function renderAgents(top, group) {
     return;
   }
   panel.hidden = false;
+  panel.classList.toggle("grouped", grouped);
   const usd = models => (models || []).reduce((t, m) => t + (m.usd || 0), 0);
   // Each row names how that agent works: its method (director, explorer, ...), or for a
   // run from before methods were recorded, a worker's kind.
@@ -2362,7 +2372,7 @@ function renderAgents(top, group) {
       + `${group.length} runs \u00b7 ${up} running</div>`
       + group.map(g => {
         const here = g.campaign === campaign;
-        return `<div class="arow${here && !agentSel ? " sel" : ""}" data-camp="${esc(g.campaign)}">`
+        return `<div class="arow grun${here && !agentSel ? " sel" : ""}" data-camp="${esc(g.campaign)}">`
           + `${gdot(g)} <b>${esc(name(g.campaign))}</b> <span class="k">${esc(g.model || "")}</span>`
           + `<span class="sc">${g.score == null ? "" : +g.score.toPrecision(7)}</span>`
           + `<span class="usd">${g.usd == null ? "\u2014" : "$" + g.usd.toFixed(2)}</span></div>`
@@ -3546,7 +3556,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def _file(self, campaign, name):
         if name not in READABLE:
             return "not a file this watcher serves"
-        return self._read(os.path.join(workspace(campaign), name), name)
+        path = os.path.join(workspace(campaign), name)
+        # A record is written when there is first something in it, so a missing one is
+        # empty so far, not an error.
+        if not os.path.exists(path):
+            return NOT_YET.get(name, f"{name} has not been written yet")
+        return self._read(path, name)
 
     def _read(self, path, name):
         try:
