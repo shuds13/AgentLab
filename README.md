@@ -87,12 +87,10 @@ machine you will run on, and what files you already have. From that it creates
 `campaigns/<your-name>/`, writes the files a campaign needs, records your access in
 `users/<you>/`, and walks you through the Globus Compute endpoint.
 
-The agent uses whichever LLM your Claude Code settings point at. `docs/llm.md` covers
+The agent uses whichever LLM your Claude Code settings point at. [docs/llm.md](docs/llm.md) covers
 running against a facility gateway, or against a non-Claude model through LiteLLM.
 
-If you would rather set it up by hand, `docs/setup.md` covers the same ground and
-`campaigns/example-vllm-inference-opt/README.md` describes what a campaign directory
-holds.
+See [docs/setup.md](docs/setup.md) for more info.
 
 ## Running
 
@@ -112,6 +110,28 @@ bin/kill_agent.sh --drain <run>   stop cleanly, finishing jobs in flight
 bin/talk.sh <run dir>             talk with the agent of a run that has ended
 bin/lab.sh status                 the lab's own processes, and their logs
 ```
+
+## Watching
+
+A browser view of the lab: every campaign, which are running, and the files each one is
+writing.
+
+On the machine the lab is on:
+
+```
+bin/watch.sh                      the lab
+bin/watch.sh <campaign>           open on one campaign
+```
+
+From your own computer, when the lab is on a machine you reach by ssh:
+
+```
+bin/watch_remote.sh <host> <path-to-AgentLab-there>
+```
+
+It logs in once, starts the watcher over there, forwards the port it took, and opens
+your browser. Set `HOST`, `REPO` and `ACTIVATE` at the top of the script and it needs no
+arguments. Ctrl-C stops both ends.
 
 ## Sandbox
 
@@ -173,28 +193,6 @@ several systems. See [docs/campaigns.md](docs/campaigns.md#resources).
 
 Setting `max_blocks` above 1 lets a bucket's resources grow and shrink with demand: more
 blocks start while tasks are waiting, and a block is released once it has sat idle.
-
-## Watching
-
-A browser view of the lab: every campaign, which are running, and the files each one is
-writing.
-
-On the machine the lab is on:
-
-```
-bin/watch.sh                      the lab
-bin/watch.sh <campaign>           open on one campaign
-```
-
-From your own computer, when the lab is on a machine you reach by ssh:
-
-```
-bin/watch_remote.sh <host> <path-to-AgentLab-there>
-```
-
-It logs in once, starts the watcher over there, forwards the port it took, and opens
-your browser. Set `HOST`, `REPO` and `ACTIVATE` at the top of the script and it needs no
-arguments. Ctrl-C stops both ends.
 
 ## Writing a campaign
 
