@@ -27,6 +27,10 @@ Examples:
 - **Multi-agent:** [`campaigns/example-multi-agent-ale-ahc016/`](campaigns/example-multi-agent-ale-ahc016/)
   — a coordinator launches explorer and refiner agents on an AtCoder heuristic contest
   problem, each on its own git branch, on the local machine.
+- **GPU:** [`campaigns/example-wind-tunnel/`](campaigns/example-wind-tunnel/) — an agent
+  looks for the lowest-drag shape in a wind tunnel simulated on Polaris GPUs, and each
+  job returns a picture of the airflow. `run_resources.sh` adds a resource agent that
+  picks the queue from what the IRI API reports.
 
 ![AgentLab view of a multi-agent run: a tree of the coordinator and its explorer and refiner agents with scores and costs, and the status of the selected refiner](docs/images/multi-agent-undirected.png)
 

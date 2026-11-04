@@ -1,0 +1,42 @@
+{
+  "_comment": "Polaris: one GPU per job, four jobs at once on a node, in 1-node blocks of the debug queue. gpu_scaling is the same shape in debug-scaling, for the resource agent (run_resources.sh) to route to. `target` is handed to every job.",
+  "system": "polaris",
+  "local_max_concurrent": 4,
+  "max_concurrent": 4,
+  "batch_mode": false,
+  "buckets": {
+    "gpu": {
+      "queue": "debug",
+      "num_nodes": 1,
+      "max_workers_per_node": 4,
+      "walltime": "01:00:00",
+      "max_idletime": 300,
+      "max_blocks": 1
+    },
+    "gpu_scaling": {
+      "queue": "debug-scaling",
+      "num_nodes": 1,
+      "max_workers_per_node": 4,
+      "walltime": "01:00:00",
+      "max_idletime": 300,
+      "max_blocks": 1
+    }
+  },
+  "node_hours": {
+    "polaris": 3
+  },
+  "target": {
+    "reynolds": 100,
+    "gpus_per_node": 4,
+    "timeout": 3000
+  },
+  "watch": {
+    "tabs": [
+      "pictures",
+      "JOURNAL.md",
+      "LOGBOOK.md",
+      "results.jsonl",
+      "jobs.jsonl"
+    ]
+  }
+}
