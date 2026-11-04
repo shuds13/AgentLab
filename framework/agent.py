@@ -216,6 +216,7 @@ EXPLORE_PROMPT = _prompt("EXPLORE_PROMPT",
 RESOURCE_INTERVAL = int(os.environ.get("RESOURCE_INTERVAL", "300"))
 RESOURCE_IDLE_END = int(os.environ.get("RESOURCE_IDLE_END", "600"))
 RESOURCE_POLL = 15
+RESOURCE_FIRST_WAIT = int(os.environ.get("RESOURCE_FIRST_WAIT", "300"))
 RESOURCE_PROMPT = _prompt("RESOURCE_PROMPT",
     "Time to check where work goes. The work in flight in this workspace now, as tasks "
     "per bucket, and the runs alive: {demand}. Check the systems, change any route your "
@@ -2023,6 +2024,31 @@ async def main():
         import spawn as _spawn
         resource_proc = _spawn.start_resource_agent()
         print(f"[resources] resource agent started (pid {resource_proc.pid})", flush=True)
+        # This run's first turn waits for the resource agent's first check, so a route it
+        # sets applies from the first job; at most RESOURCE_FIRST_WAIT seconds, so one
+        # that cannot start does not hold the run.
+        _set_phase("waiting for the resource agent's first check")
+        waited = 0
+        while waited < RESOURCE_FIRST_WAIT and resource_proc.poll() is None:
+            done = False
+            for m in glob.glob(os.path.join(WORKSPACE_DIR, "runs", "*", "meta.json")):
+                try:
+                    with open(m) as fh:
+                        rm = json.load(fh)
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if (rm.get("parent_run") == RUN_ID and rm.get("kind") == "resources"
+                        and (rm.get("turns") or 0) >= 1):
+                    done = True
+            if done:
+                print(f"[resources] first check done after {waited}s", flush=True)
+                break
+            await asyncio.sleep(5)
+            waited += 5
+        else:
+            print(f"[resources] going on without the resource agent's first check "
+                  f"({'it exited' if resource_proc.poll() is not None else f'{waited}s'})",
+                  flush=True)
 
     try:
         async with ClaudeSDKClient(options=options) as client:
