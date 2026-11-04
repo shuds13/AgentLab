@@ -127,6 +127,20 @@ for _k in KINDS.values():
         _k["estimate_name"] = _k["estimate"].__name__
 
 
+# Files beside the task that its remote function needs on the compute system (a script
+# it runs, say): REMOTE_FILES in the task, names relative to the task's directory. Read
+# once, as the remote function is, and sent with every job as target["files"], a name to
+# its text, for the function to write where it wants them.
+REMOTE_FILES = {}
+for _name in getattr(task, "REMOTE_FILES", ()) or ():
+    _path = os.path.join(os.path.dirname(os.path.abspath(task.__file__)), _name)
+    try:
+        with open(_path) as _f:
+            REMOTE_FILES[_name] = _f.read()
+    except OSError as _e:
+        raise SystemExit(f"the task's REMOTE_FILES names {_name}, which cannot be read: {_e}")
+
+
 def _run_remote(source, name, args, target):
     """Runs on the compute system in place of the task's remote function. It first reads
     the batch job (block) it landed in from the scheduler on the node -- PBS or Slurm --
@@ -543,7 +557,13 @@ _local_submit_count = 0
 # drain and the run can end cleanly. Collecting finished work is unaffected.
 _stop_requested = False
 
-JOBS_LOG = os.path.join(WORKSPACE_DIR, "jobs.jsonl")          # durable record of every job fired
+JOBS_LOG = os.path.join(WORKSPACE_DIR, "jobs.jsonl")
+# Small files a job returns (a figure, a short table): `files` in its result, a name to
+# its content in base64. They are written under <workspace>/outputs/ and the agent is
+# given their paths instead, so the bytes never pass through its context. Larger outputs
+# stay on the compute system, for Globus Transfer.
+OUTPUTS_DIR = os.path.join(WORKSPACE_DIR, "outputs")
+MAX_RETURNED_FILES_BYTES = 20_000_000          # durable record of every job fired
 
 # --- Shared announcements board -------------------------------------------------
 # One plain text file. Anyone (an operator, a Slack bridge) appends lines; every
@@ -1158,6 +1178,8 @@ def _fire_remote(args, kind="job"):
     target["bucket"] = bucket
     target["num_nodes"] = _b.get("nodes_per_job", 1)
     target["walltime"] = _b.get("user_config", {}).get("walltime", "")
+    if REMOTE_FILES:
+        target["files"] = REMOTE_FILES
     if KINDS[kind].get("estimate_source"):
         target["estimate"] = {"source": KINDS[kind]["estimate_source"],
                               "name": KINDS[kind]["estimate_name"]}
@@ -1312,6 +1334,38 @@ SCORES_HOOK = None
 _scores = {}
 
 
+def _save_files(res, job_id):
+    """Write the files a result carries (`files`, name -> base64) to
+    <workspace>/outputs/<run>/job_<id>/ and put their paths in their place."""
+    import base64
+    files = res.get("files")
+    if not isinstance(files, dict) or not files:
+        return
+    where = os.path.join(OUTPUTS_DIR, os.environ.get("RUN_ID", "run"), f"job_{job_id}")
+    saved, total = {}, 0
+    for name, data in files.items():
+        name = os.path.basename(str(name)) or "file"
+        try:
+            raw = base64.b64decode(data)
+        except Exception as e:
+            saved[name] = f"not saved: not base64 ({e})"
+            continue
+        total += len(raw)
+        if total > MAX_RETURNED_FILES_BYTES:
+            saved[name] = (f"not saved: a job's returned files are limited to "
+                           f"{MAX_RETURNED_FILES_BYTES // 1_000_000} MB; leave larger "
+                           f"outputs on the compute system")
+            continue
+        try:
+            os.makedirs(where, exist_ok=True)
+            with open(os.path.join(where, name), "wb") as f:
+                f.write(raw)
+            saved[name] = os.path.join(where, name)
+        except OSError as e:
+            saved[name] = f"not saved: {e}"
+    res["files"] = saved
+
+
 def _record_scores(res):
     named = res.get("scores") if isinstance(res, dict) else None
     if not isinstance(named, dict):
@@ -1343,6 +1397,7 @@ async def get_completed_jobs(args):
             res = {"error": f"{type(e).__name__}: {e}", "args": info["args"]}
         if not isinstance(res, dict):
             res = {"result": res}
+        _save_files(res, job_id)
         _record_scores(res)
         res["job_id"] = job_id
         res.setdefault("key", info["key"])
@@ -1464,6 +1519,8 @@ async def get_local_completed(args):
             traceback.print_exc(file=sys.stderr)
             res = {"error": f"{type(e).__name__}: {e}", "args": info["args"]}
         refused = isinstance(res, dict) and bool(res.get("refused"))
+        if isinstance(res, dict):
+            _save_files(res, f"local_{job_id}")
         if refused:
             _local_submit_count -= 1
         _record_scores(res)

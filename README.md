@@ -227,7 +227,10 @@ Copy `campaigns/example-vllm-inference-opt/` and replace these files:
 `job_key`, `remote_fn` — `remote_fn` is sent to the worker by source, so everything it
 needs must be imported inside it or passed in through its arguments. A result with
 `"refused": true` is a job the task declined to run, and it does not count against
-`MAX_SUBMITS`. For work that runs on the machine the agent is on: `LOCAL_DESC`,
+`MAX_SUBMITS`. Files beside the task that `remote_fn` needs on the system (a script it
+runs) are named in `REMOTE_FILES` and reach it as `target["files"]`. A result may carry
+small files back as `"files": {name: base64}`: they are saved under the workspace's
+`outputs/` and the agent is given their paths. For work that runs on the machine the agent is on: `LOCAL_DESC`,
 `LOCAL_SCHEMA`, `local_fn`. A task may define both, and the agent is given tools for
 whichever it defines. A task with only
 `local_fn` needs no Globus Compute endpoint.
