@@ -252,8 +252,11 @@ def start_resource_agent():
         "AGENT_CWD": home,
         "USER_PROMPT_FILE": user_prompt,
         "NOTIFY_START": "false", "NOTIFY_DAILY": "false", "NOTIFY_FINISH": "false",
+        # Linked to the run it serves, so it stops with it and is found beside it, but
+        # started by the framework, not by that run's agent.
         "RUN_META": json.dumps({"parent_run": run_id, "kind": "resources",
-                                "branch": "resources", "records": ["RESOURCES.md"]}),
+                                "branch": "resources", "started_by": "framework",
+                                "records": ["RESOURCES.md"]}),
     })
     if os.environ.get("RESOURCE_MODEL"):
         env["AGENT_MODEL"] = os.environ["RESOURCE_MODEL"]

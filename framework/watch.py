@@ -380,9 +380,11 @@ def resources(campaign, run=None, light=False):
         rid = os.path.basename(os.path.dirname(m))
         if rid == top_id or d.get("parent_run") == top_id:
             metas[rid] = d
-    # A run's own tasks are labelled by its role: a coordinator when it has workers,
-    # else a single researcher. In a group, by its workspace's name as well.
-    top_label = "coordinator" if len(metas) > 1 else "researcher"
+    # A run's own tasks are labelled by its role: a coordinator when it has workers that
+    # do the work (a resource agent does none), else a single researcher. In a group, by
+    # its workspace's name as well.
+    top_label = ("coordinator" if any(d.get("kind") != "resources" for rid, d in metas.items()
+                                      if rid != top_id) else "researcher")
     siblings = _group_siblings(campaign)
     if siblings and not selected:
         selected = top_id
@@ -603,7 +605,7 @@ def workers(campaign, run_id):
             state = "not responding"
         cwd = run_cwd(campaign, meta)
         out.append({"run": os.path.basename(d), "kind": meta.get("kind"),
-                    "method": meta.get("method"),
+                    "method": meta.get("method"), "started_by": meta.get("started_by"),
                     "branch": meta.get("branch"), "parent": meta.get("parent"),
                     "parents": meta.get("parents") or [],
                     "status": state, "usd": _usd(meta),
@@ -2583,7 +2585,14 @@ function renderAgents(top, group, session) {
   const usd = models => (models || []).reduce((t, m) => t + (m.usd || 0), 0);
   // Each row names how that agent works: its method (director, explorer, ...), or for a
   // run from before methods were recorded, a worker's kind.
-  const me = {run: "", branch: top.kind ? top.branch : "coordinator", method: top.method,
+  // The top run coordinates only if it started workers that do the work; beside a
+  // resource agent alone it is the one researcher.
+  // Agents the framework started (a resource agent) sit beside the top run, not under
+  // it: its agent did not start them.
+  const fw = ws.filter(w => w.started_by === "framework" || w.kind === "resources");
+  const own = ws.filter(w => !fw.includes(w));
+  const lead = own.length ? "coordinator" : "researcher";
+  const me = {run: "", branch: top.kind ? top.branch : lead, method: top.method,
               kind: top.kind, status: top.status, usd: usd(top.cost_models), score: null};
   const byBranch = {};
   for (const w of ws) byBranch[w.branch] = w;
@@ -2597,11 +2606,14 @@ function renderAgents(top, group, session) {
     + ` <b>${esc(a.branch || a.run)}</b> <span class="k">${esc(a.method || a.kind || "")}</span>`
     + `<span class="sc">${a.score == null ? "" : +a.score.toPrecision(7)}</span>`
     + `<span class="usd">${a.usd == null ? "\u2014" : "$" + a.usd.toFixed(2)}</span></div>`;
-  const below = (branch, depth) => ws
+  const below = (branch, depth) => own
     .filter(w => (byBranch[w.parent] ? w.parent : null) === branch)
     .map(w => row(w, depth) + below(w.branch, depth + 1)).join("");
-  const tree = (depth) => row(me, depth) + below(null, depth + 1)
-    + `<div class="atotal">${ws.length} worker${ws.length === 1 ? "" : "s"} \u00b7 total `
+  const tree = (depth) => fw.map(w => row({...w, method: (w.method || w.kind || "") + " \u00b7 framework"}, depth)).join("")
+    + row(me, depth) + below(null, depth + 1)
+    + `<div class="atotal">` + [own.length ? `${own.length} worker${own.length === 1 ? "" : "s"}` : "",
+        fw.length ? `${fw.length} from the framework` : ""].filter(Boolean).join(" + ")
+    + ` \u00b7 total `
     + (top.tree_usd == null ? "\u2014" : "$" + top.tree_usd.toFixed(2)) + "</div>";
   let html;
   if (grouped) {
@@ -2659,7 +2671,8 @@ async function refresh() {
     if (!here()) return;
     const ended = !!s.run && s.status !== "running";
     if (ended !== runEnded) { runEnded = ended; setChatBar(); }
-    const label = (top.workers || []).length ? (agentSel ? s.branch || agentSel : "coordinator") : "";
+    const lead = (top.workers || []).some(w => w.kind !== "resources") ? "coordinator" : "researcher";
+    const label = (top.workers || []).length ? (agentSel ? s.branch || agentSel : lead) : "";
     const recs = s.records || [];
     if (label !== agentLabel || JSON.stringify(recs) !== JSON.stringify(agentRecords)) {
       agentLabel = label; agentRecords = recs; setTabs(lastFiles);
