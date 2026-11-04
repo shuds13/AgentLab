@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # One agent looks for the lowest-drag shape, with its jobs on Polaris GPUs.
 #
-#   ./run.sh                  your Polaris endpoint (users/<you>/polaris.json)
-#   PROFILE=mep ./run.sh      a profile in that file, e.g. ALCF's facility endpoint
+#   ./run.sh                  the access at the top of users/<you>/polaris.json (in the
+#                             template, ALCF's facility endpoint)
+#   PROFILE=own ./run.sh      a profile in that file, e.g. your own endpoint
 set -euo pipefail
 cd "$(dirname "$0")"
 . ../../framework/settings.sh

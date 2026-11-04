@@ -21,9 +21,10 @@ at 160, the finest, on Polaris's A100s. Four run at once on a node of the debug 
 
 ## Running it
 
-Polaris access in `users/<you>/polaris.json`: an endpoint and the account to charge.
-ALCF's facility endpoint needs nothing installed; put it in a profile and run with
-`PROFILE=<name>`. Jobs use Polaris's `module load conda` for PyTorch.
+Polaris access in `users/<you>/polaris.json`, copied from `users/user1/polaris.json`:
+the account to charge and a work directory. The template's endpoint is ALCF's facility
+endpoint, which needs nothing installed; with your own, run `PROFILE=own ./run.sh`.
+Jobs use Polaris's `module load conda` for PyTorch.
 
 ```
 ./run.sh                 one agent
