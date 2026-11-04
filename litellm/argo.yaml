@@ -1,0 +1,32 @@
+# Argo, Argonne's model gateway (reachable only from Argonne): its models, for a lab's
+# config.yaml to include. The caller's ANL username is the key, and argo.py fits the
+# requests to where Argo differs from the OpenAI API. docs/llm.md, "Argo".
+#
+#   include:
+#     - argo.yaml
+#
+# max_input_tokens is the model's context window, which the framework gives Claude Code:
+# it cannot tell the window of a model it does not know.
+#
+# Tested with the agent: GPT-5.6 Sol and Gemini 4 Argon. Argo lists the rest:
+#   curl -s https://apps.inside.anl.gov/argoapi/v1/models -H "Authorization: Bearer $USER"
+
+model_list:
+  - model_name: gpt-5.6-sol
+    litellm_params:
+      model: custom_openai/GPT-5.6 Sol
+      api_base: https://apps.inside.anl.gov/argoapi/v1
+      api_key: os.environ/USER
+    model_info:
+      max_input_tokens: 1000000
+
+  - model_name: gemini-4-argon
+    litellm_params:
+      model: custom_openai/Gemini 4 Argon
+      api_base: https://apps.inside.anl.gov/argoapi/v1
+      api_key: os.environ/USER
+    model_info:
+      max_input_tokens: 1000000
+
+litellm_settings:
+  callbacks: argo.handler

@@ -1,38 +1,32 @@
 # The non-Anthropic models this lab can reach, and the backends serving them. Copy to
-# config.yaml and edit. That copy is not tracked by git, because the keys are in it.
-# docs/llm.md explains the two litellm_settings and how to check a model works.
+# config.yaml and edit. That copy is not tracked by git, because keys may be in it.
+# docs/llm.md explains the entries, and how to check a model works.
 #
-# lab.yaml decides whether the proxy runs and where; this file is what it reaches.
+# lab.yaml decides whether the proxy runs and where, and holds the proxy's own key
+# (litellm-key-file); this file is what it reaches.
 #
-# Name an entry after the model it serves, not the gateway it comes through: a lab
-# usually reaches several models on one backend, and the name is what a campaign asks
-# for (CRITIC_MODEL=gpt-sol, AGENT_MODEL=gpt-sol).
+# Name an entry after the model it serves, not the backend it comes through: the name is
+# what a campaign asks for (AGENT_MODEL=my-model). The prefix of `model` is the API
+# spoken upstream: custom_openai/ for an OpenAI-style chat endpoint.
+
+# Further models from a file of their own, e.g. Argo's at Argonne (argo.yaml):
+# include:
+#   - argo.yaml
 
 model_list:
-  - model_name: gpt-sol
+  # Any backend serving OpenAI-style chat completions.
+  - model_name: my-model
     litellm_params:
-      model: openai/GPT-5.6 Sol
+      model: custom_openai/<upstream-model-name>
       api_base: https://backend.example/v1
-      api_key: <key>
+      api_key: os.environ/BACKEND_API_KEY
 
-  - model_name: gpt-luna
-    litellm_params:
-      model: openai/GPT-5.6 Luna
-      api_base: https://backend.example/v1
-      api_key: <key>
-
-  - model_name: gpt-terra
-    litellm_params:
-      model: openai/GPT-5.6 Terra
-      api_base: https://backend.example/v1
-      api_key: <key>
-
+  # The ALCF inference service's Metis cluster, on its OpenAI-style chat endpoint.
   - model_name: gpt-oss-120b
     litellm_params:
-      model: openai/gpt-oss-120b
+      model: custom_openai/gpt-oss-120b
       api_base: https://inference-api.alcf.anl.gov/resource_server/metis/api/v1
       api_key: os.environ/ALCF_INFERENCE_API_KEY
 
 litellm_settings:
-  use_chat_completions_url_for_anthropic_messages: true
   drop_params: true

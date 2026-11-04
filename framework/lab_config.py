@@ -14,6 +14,7 @@ valid lab, and every setting has a default elsewhere.
 """
 
 import os
+import shlex
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -73,7 +74,12 @@ def start_command(config=None):
         return ""
     _, _, port = config.get("litellm-url", "").rpartition(":")
     command = f"{binary} --config {conf}"
-    return f"{command} --port {port}" if port.isdigit() else command
+    if port.isdigit():
+        command += f" --port {port}"
+    # LiteLLM serves nobody without a key of its own: the lab's, from its key file, which
+    # a run sent through the proxy is given too.
+    key = config.get("litellm-key-file", "")
+    return f"LITELLM_MASTER_KEY=$(cat {shlex.quote(key)}) {command}" if key else command
 
 
 def on(name, config=None):
@@ -94,6 +100,10 @@ def main():
     # so a value given on the command line still wins.
     for key, env in list(AS_ENV.items()) + [(None, "CRITIC_GATEWAY_START")]:
         value = start_command(config) if key is None else config.get(key, "")
+        if key is None:
+            # Read the key file when the command runs, not here: escaped, so exporting
+            # it does not put the key itself in the environment.
+            value = value.replace("$", "\\$")
         if value:
             print(f'{env}="${{{env}:-{value}}}"; export {env}')
 

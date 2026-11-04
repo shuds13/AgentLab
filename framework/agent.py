@@ -1207,6 +1207,7 @@ CHECK_ONLY = (os.environ.get("PREFLIGHT", "").lower() in ("1", "true", "yes")
 
 
 GATEWAY_URL = None          # set when this run is routed through the lab's gateway
+GATEWAY_WINDOW = None       # the routed model's context window, from the gateway's config
 
 
 def _on_lab_gateway():
@@ -1218,6 +1219,32 @@ def _on_lab_gateway():
     lab = (os.environ.get("CRITIC_BASE_URL") or "").rstrip("/")
     mine = (os.environ.get("ANTHROPIC_BASE_URL") or "").rstrip("/")
     return bool(lab and mine and lab == mine)
+
+
+def _gateway_models(conf, seen=None):
+    """The models a LiteLLM config serves, its included files' among them: {name: context
+    window in tokens, from the entry's model_info max_input_tokens, or None}."""
+    seen = seen if seen is not None else set()
+    path = os.path.abspath(conf)
+    if path in seen:
+        return {}
+    seen.add(path)
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError:
+        return {}
+    models = {}
+    entries = re.split(r"^\s*-?\s*model_name:", text, flags=re.M)[1:]
+    for entry in entries:
+        name = entry.split()[0] if entry.split() else None
+        window = re.search(r"^\s*max_input_tokens:\s*(\d+)", entry, re.M)
+        if name:
+            models[name] = int(window.group(1)) if window else None
+    block = re.search(r"^include:\s*\n((?:[ \t]+-.*\n?)+)", text, re.M)
+    for inc in re.findall(r"-\s*(\S+)", block.group(1)) if block else []:
+        models.update(_gateway_models(os.path.join(os.path.dirname(path), inc), seen))
+    return models
 
 
 def _route_to_gateway():
@@ -1233,14 +1260,11 @@ def _route_to_gateway():
     conf = os.environ.get("LITELLM_CONFIG") or ""
     if not AGENT_MODEL or not url or not conf:
         return
-    try:
-        with open(conf) as f:
-            served = re.findall(r"^\s*-?\s*model_name:\s*(\S+)", f.read(), re.M)
-    except OSError:
-        return
+    served = _gateway_models(conf)
     if AGENT_MODEL in served:
-        global GATEWAY_URL
+        global GATEWAY_URL, GATEWAY_WINDOW
         GATEWAY_URL = url
+        GATEWAY_WINDOW = served[AGENT_MODEL]
         if (os.environ.get("ANTHROPIC_BASE_URL") or "").rstrip("/") == url:
             return
         # The critic and the framework's own checks read this; the CLI does not, which
@@ -1263,8 +1287,33 @@ def _gateway_settings_file():
     os.makedirs(RUN_DIR, exist_ok=True)
     path = os.path.join(RUN_DIR, "gateway_settings.json")
     with open(path, "w") as f:
-        json.dump({"env": {"ANTHROPIC_BASE_URL": GATEWAY_URL}}, f)
+        json.dump({"env": _gateway_env()}, f)
     return path
+
+
+def _gateway_env():
+    """Settings env for a run sent through the gateway: where it is, its key, and the
+    model's context window. Claude Code cannot tell the window of a model it does not
+    know and assumes 200K, compacting there, unless told."""
+    env = {"ANTHROPIC_BASE_URL": GATEWAY_URL, **_gateway_key()}
+    if GATEWAY_WINDOW:
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(GATEWAY_WINDOW)
+    return env
+
+
+def _gateway_key():
+    """The credential the lab's gateway wants, as settings env: the key in its key file
+    (lab.yaml's litellm-key-file), or CRITIC_API_KEY; nothing when it wants none, and the
+    agent then sends its own."""
+    key = (os.environ.get("CRITIC_API_KEY") or "").strip()
+    path = (os.environ.get("CRITIC_API_KEY_FILE") or "").strip()
+    if path:
+        try:
+            with open(os.path.expanduser(path)) as f:
+                key = f.read().strip()
+        except OSError as e:
+            print(f"gateway: cannot read its key file ({e})", flush=True)
+    return {"ANTHROPIC_API_KEY": key} if key else {}
 
 
 def _agent_settings_file():
@@ -1276,7 +1325,7 @@ def _agent_settings_file():
     read block would only refuse shell commands it cannot analyse, such as inline code."""
     settings = {}
     if GATEWAY_URL:
-        settings["env"] = {"ANTHROPIC_BASE_URL": GATEWAY_URL}
+        settings["env"] = _gateway_env()
     if AGENT_ADVISOR:
         settings["advisorModel"] = AGENT_ADVISOR
     if FENCE_FILES:

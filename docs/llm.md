@@ -108,12 +108,10 @@ export AGENT_MODEL=nemotron-3-ultra
 `campaigns/example-quick-optimum/run_open_model.sh`, with `alcf.settings.json` beside it, is a
 working example.
 
-A model on Sophia or Metis is the LiteLLM case instead, since those clusters serve
-chat completions only. `litellm/config.yaml.template` has entries for both. The same
-access token is what `ALCF_INFERENCE_API_KEY` holds -- and LiteLLM passes the caller's
-credential upstream, so it also has to be what the campaign presents to the proxy.
-Tool calling is not currently supported on Metis, which rules that cluster out for
-agent runs.
+A model on Sophia or Metis is the LiteLLM case instead: those clusters serve the OpenAI
+chat completions API rather than the Messages API the agent speaks, so the proxy
+translates. `litellm/config.yaml.template` has an entry for Metis, which reaches it with
+the same access token, held in `ALCF_INFERENCE_API_KEY` where the proxy runs.
 
 ## A model that is not Claude, through LiteLLM
 
@@ -125,117 +123,95 @@ Install it in its own environment, since its proxy extra pulls in a large depend
 set:
 
 ```
-python -m venv ~/venvs/litellm && ~/venvs/litellm/bin/pip install "litellm[proxy]" "fastapi<0.140.7"
+python -m venv ~/venvs/litellm && ~/venvs/litellm/bin/pip install "litellm[proxy]"
 ```
 
-The FastAPI cap is needed as of LiteLLM 1.97.0. LiteLLM imports
-`fastapi.dependencies.utils.get_flat_dependant`, which FastAPI removed in 0.140.7, and
-LiteLLM declares `fastapi>=0.136.3,<1.0` — no upper bound below the removal — so an
-uncapped install takes a FastAPI the proxy cannot import. The working range is 0.136.3
-to 0.140.6. Drop the cap once a LiteLLM release no longer needs it; keep it inside that
-range rather than pinning further back, since below 0.136.3 is outside what LiteLLM
-supports.
+Tested with LiteLLM 1.106.6 and FastAPI 0.162.0.
 
-Write the config that names the upstream model, its endpoint, and the key to reach it.
-It belongs at the top of the lab, where anyone can see which models are on offer:
+Write the config that names each model, its upstream and the key to reach it. It
+belongs at the top of the lab, where anyone can see which models are on offer:
 
 ```
 cp litellm/config.yaml.template litellm/config.yaml
 ```
 
-That copy is not tracked by git, since the keys are in it.
+That copy is not tracked by git, since keys may be in it.
 
 ```yaml
 model_list:
   - model_name: my-model
     litellm_params:
-      model: openai/<upstream-model-name>
+      model: custom_openai/<upstream-model-name>
       api_base: https://backend.example/v1
       api_key: <key>
 
 litellm_settings:
-  use_chat_completions_url_for_anthropic_messages: true
   drop_params: true
 ```
 
-`use_chat_completions_url_for_anthropic_messages` is required for an OpenAI-style
-upstream. Without it LiteLLM translates `/v1/messages` to the OpenAI Responses API,
-and a backend that implements only `/v1/chat/completions` answers 404.
+The prefix of `model` is the API LiteLLM speaks to the upstream, not who made the model.
+`custom_openai/` is OpenAI's chat completions, which nearly every OpenAI-style backend
+serves. `openai/` is taken to be OpenAI itself and gets the newer Responses API, which a
+backend that implements only `/v1/chat/completions` answers with a 404. Choosing per
+entry lets one proxy serve backends that want different APIs.
 
-`drop_params` is required for the same reason from the other direction. The agent sends
-parameters an OpenAI backend has no equivalent for -- `context_management` among them --
-and LiteLLM refuses the request rather than dropping them, so the first turn fails with
-`UnsupportedParamsError` on a proxy that otherwise works.
+`drop_params` is needed because the agent sends parameters an OpenAI backend has no
+equivalent for -- `context_management` among them -- and LiteLLM refuses the request
+rather than dropping them, so the first turn fails with `UnsupportedParamsError` on a
+proxy that otherwise works.
 
-Start the proxy. `bin/lab.sh start` does it from the `litellm` lines in `lab.yaml`, and
-by hand it is:
-
-```
-~/venvs/litellm/bin/litellm --config litellm/config.yaml --port 4000
-```
-
-Check it before pointing the agent at it:
+The proxy has a key of its own, without which LiteLLM will not start. Put one in a file
+only you can read, and name the file in `lab.yaml`:
 
 ```
-curl -s -X POST http://0.0.0.0:4000/v1/messages -H 'content-type: application/json' -H 'x-api-key: <key>' -H 'anthropic-version: 2023-06-01' -d '{"model":"my-model","max_tokens":64,"messages":[{"role":"user","content":"say hi"}]}'
+(umask 077; echo "sk-$(openssl rand -hex 32)" > ~/.litellm_key)
 ```
 
-Then point the settings at the proxy:
-
-```json
-{
-  "env": {"ANTHROPIC_BASE_URL": "http://0.0.0.0:4000", "ANTHROPIC_API_KEY": "<key>"},
-  "model": "my-model"
-}
+```
+litellm-key-file: ~/.litellm_key
 ```
 
-LiteLLM passes the caller's credential upstream, so `ANTHROPIC_API_KEY` has to be one
-the backend accepts, not an arbitrary string. Where the backend authenticates by
-username, that username is the value.
+`bin/lab.sh start` starts the proxy from the `litellm` lines in `lab.yaml`, with that
+key. Check it with a model from the config:
 
-## Offering several models from one proxy
+```
+curl -s -X POST http://0.0.0.0:4000/v1/messages -H 'content-type: application/json' -H "x-api-key: $(cat ~/.litellm_key)" -H 'anthropic-version: 2023-06-01' -d '{"model":"my-model","max_tokens":64,"messages":[{"role":"user","content":"say hi"}]}'
+```
 
-One proxy can front several models, so the people running campaigns choose one by name
-and install nothing. Give each an entry:
+A run whose `AGENT_MODEL` is a `model_name` in the config is sent through the proxy, and
+given its key, with nothing else to set: `AGENT_MODEL=my-model ./run.sh`.
+
+Give each entry the model's context window, under `model_info`, as `max_input_tokens:
+1000000`. Claude Code cannot tell the window of a model it does not know, so it assumes
+200K and compacts the conversation there; the framework passes the entry's window on to
+the run. The upstream
+gets the `api_key` from the config, so the proxy should only be reachable by people
+entitled to use that key.
+
+## Argo
+
+Argo, Argonne's model gateway, serves GPT and Gemini models on an OpenAI-style chat
+endpoint and takes the caller's ANL username as the key. It differs from the OpenAI API
+in two ways, which `litellm/argo.py`, a LiteLLM hook, makes up for: it reads the
+request's `user` field as the username, where the agent puts its session id, and some of
+its models take a message's content only as a string, not as a list of parts.
+
+`litellm/argo.yaml` holds the Argo models and the hook, for a lab's `config.yaml` to
+include:
 
 ```yaml
-model_list:
-  - model_name: gpt
-    litellm_params:
-      model: openai/<gpt-model-name>
-      api_base: https://gateway.example/v1
-      api_key: os.environ/GATEWAY_KEY
-  - model_name: gemini
-    litellm_params:
-      model: openai/<gemini-model-name>
-      api_base: https://gateway.example/v1
-      api_key: os.environ/GATEWAY_KEY
-
-litellm_settings:
-  use_chat_completions_url_for_anthropic_messages: true
-  drop_params: true
+include:
+  - argo.yaml
 ```
 
-Where a gateway serves several vendors' models on one OpenAI-compatible endpoint, every
-entry uses the `openai/` handler regardless of who made the model — the handler names
-the wire format, not the vendor. Reserve `gemini/` and `anthropic/` for going to those
-vendors directly.
+`curl -s https://apps.inside.anl.gov/argoapi/v1/models -H "Authorization: Bearer $USER"`
+lists the model names Argo serves.
 
-Each person then names the model they want:
-
-```json
-{"env": {"ANTHROPIC_BASE_URL": "http://<proxy-host>:4000", "ANTHROPIC_API_KEY": "<their key>"}, "model": "gemini"}
-```
-
-LiteLLM passes the caller's credential upstream rather than substituting the one in the
-config, so each person's own key reaches the backend and usage is attributed to them.
-That also means the proxy should only be reachable from where those credentials are
-already trusted.
-
-Mixing an Anthropic-native upstream into the same config is untested here.
-`use_chat_completions_url_for_anthropic_messages` applies proxy-wide, so a Claude model
-reached through its native `/v1/messages` may need its own proxy, or a check that the
-setting does not disturb it.
+Tested with the agent: GPT-5.6 Sol and Gemini 4 Argon. GPT-6 Astra and GPT-6.1 Sol
+refuse the agent's tool calls on the chat endpoint ("Chat-to-Responses translation:
+messages.content for 'user' role must be a string"): Argo converts chat requests to its
+Responses API for them and accepts only string content, while a conversation with tool
+results has content as a list.
 
 ## A different model for one campaign
 

@@ -21,7 +21,7 @@ litellm:        off
 litellm-bin:                        # e.g. ~/venvs/litellm/bin/litellm -- docs/llm.md installs it
 litellm-config: litellm/config.yaml
 litellm-url:    http://0.0.0.0:4000
-litellm-key-file:                   # only if the proxy wants a different credential from the agent's
+litellm-key-file:                   # the proxy's own key, which runs sent through it are given (docs/llm.md)
 
 slack-channel:              # the lab's channel, e.g. C01234567
 engineer-slack-channel:     # the engineer's, if it runs

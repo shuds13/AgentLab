@@ -28,7 +28,7 @@ Untracked, because it is this installation's, not the framework's.
 | `litellm-bin` | — | the `litellm` executable, from the venv `docs/llm.md` builds |
 | `litellm-config` | `litellm/config.yaml` | which models it reaches |
 | `litellm-url` | — | where it answers: `CRITIC_BASE_URL` |
-| `litellm-key-file` | — | its credential, if not the agent's: `CRITIC_API_KEY_FILE` |
+| `litellm-key-file` | — | a file holding the proxy's own key, which LiteLLM requires; runs and the critic sent through the proxy are given it: `CRITIC_API_KEY_FILE` |
 | `slack-channel` | — | the channel the bridge reads: `SLACK_CHANNEL` |
 | `engineer-slack-channel` | — | the engineer's own channel: `ENGINEER_SLACK_CHANNEL` |
 | `engineer-webhook-file` | — | the webhook bound to it: `ENGINEER_WEBHOOK_FILE` |
