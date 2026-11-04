@@ -137,6 +137,66 @@ def root_path(campaign, root, rel):
     return path
 
 
+PICTURE_DIRS = ("outputs", "figures")
+PICTURE_TYPES = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")
+
+
+def pictures(campaign):
+    """Every image under the workspace's outputs/ (what jobs returned) and figures/ (what
+    the agents drew), newest first, each with a caption: for a job's output, the job and
+    what it was given, from jobs.jsonl; otherwise its name."""
+    ws = workspace(campaign)
+    jobs = {}
+    try:
+        with open(os.path.join(ws, "jobs.jsonl")) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("event") in ("submit", "local_submit"):
+                    local = "local_" if r["event"] == "local_submit" else ""
+                    jobs[(r.get("run"), f"{local}{r.get('job_id')}")] = (
+                        r.get("key") or json.dumps(r.get("args"))[:200])
+    except OSError:
+        pass
+    out = []
+    for top in PICTURE_DIRS:
+        for d, _, names in os.walk(os.path.join(ws, top)):
+            for n in names:
+                if not n.lower().endswith(PICTURE_TYPES):
+                    continue
+                path = os.path.join(d, n)
+                rel = os.path.relpath(path, ws)
+                parts = rel.split(os.sep)
+                caption = n
+                # outputs/<run>/job_<id>/<name>
+                if len(parts) == 4 and parts[0] == "outputs" and parts[2].startswith("job_"):
+                    job = parts[2][4:]
+                    caption = f"job {job}"
+                    if (parts[1], job) in jobs:
+                        caption += " \u00b7 " + jobs[(parts[1], job)]
+                out.append({"path": rel, "caption": caption, "mtime": _mtime(path)})
+    out.sort(key=lambda p: -p["mtime"])
+    return out
+
+
+def campaign_tabs(campaign):
+    """The record tabs a campaign asks for (campaign.json: "watch": {"tabs": [...]}),
+    in its order, or None for the usual ones. A name is a file in the workspace, or
+    "pictures"."""
+    camp = tree_roots(campaign).get("camp")
+    try:
+        with open(os.path.join(camp, "campaign.json")) as f:
+            tabs = (json.load(f).get("watch") or {}).get("tabs")
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(tabs, list):
+        return None
+    return [str(n) for n in tabs if n == "pictures"
+            or (n and not os.path.normpath(str(n)).startswith((".", "/")))]
+
+
 def listing(campaign, root, rel):
     """One directory. Unsorted: the page orders it, so switching between name and date
     costs no round trip."""
@@ -1389,6 +1449,8 @@ PAGE = """<!doctype html>
  #tabs .runs span { pointer-events:none; padding:0 6px; border:1px solid #333;
                     background:#222; color:#bbb; font-size:19px; line-height:24px; }
  /* The group panel's toggle: a chevron, at the clock's size. */
+ #tabs button.iconbtn svg { display:block; height:1.5em; width:1.5em; fill:none;
+                           stroke:currentColor; stroke-width:1.2; }
  #tabs button.groupbtn svg { display:block; height:1.5em; width:1.5em; fill:none;
                             stroke:currentColor; stroke-width:1.5; }
  #tabs button.groupbtn .pane.on { fill:currentColor; }
@@ -1554,6 +1616,17 @@ PAGE = """<!doctype html>
         border-top:1px solid #24313d; }
  #say input { flex:1; background:#0b0f14; color:#ddd; border:1px solid #2b3946;
               padding:5px 8px; font:inherit; }
+ .pics { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));
+         gap:12px; padding:12px 14px; }
+ .pics figure { margin:0; cursor:zoom-in; }
+ .pics img { width:100%%; display:block; border:1px solid #333; background:#fff; }
+ .pics figcaption { color:#999; font-size:12px; margin-top:4px; overflow-wrap:anywhere; }
+ #picbox { position:fixed; inset:0; background:rgba(0,0,0,0.88); z-index:50;
+           display:flex; flex-direction:column; align-items:center; justify-content:center; }
+ #picbox img { max-width:94vw; max-height:84vh; background:#fff; }
+ #picbox .cap { color:#ccc; margin-top:10px; max-width:94vw; text-align:center;
+                overflow-wrap:anywhere; font-size:13px; }
+ #picbox .cap span { color:#777; }
  #say select { background:#0b0f14; color:#bbb; border:1px solid #2b3946; font:inherit; }
  #say button { background:#222; color:#bbb; border:1px solid #333; padding:5px 14px;
                cursor:pointer; font:inherit; }
@@ -1699,7 +1772,15 @@ function setTabs(files) {
     const b = document.createElement("button");
     // The log is what the agent said and did; the file name is not the point.
     b.textContent = n === "log" ? "agent log" : n.startsWith("r:") ? n.slice(2) : n;
-    b.className = n === tab ? "on" : "";
+    // Pictures as an icon, to leave room for the records: a frame with a hill and a sun.
+    if (n === "pictures") {
+      b.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">`
+        + `<rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/>`
+        + `<path d="M2 12 L6 7.5 L9 10.5 L11 8.5 L14 11.5"/>`
+        + `<circle cx="11" cy="5.5" r="1.2"/></svg>`;
+      b.title = "pictures";
+    }
+    b.className = (n === tab ? "on" : "") + (n === "pictures" ? " iconbtn" : "");
     b.onclick = () => { openTab(n); setTabs(files); };
     t.appendChild(b);
   };
@@ -2322,6 +2403,51 @@ const sizeof = n => n < 1000 ? n + " B"
                   : n < 1e6 ? (n / 1e3).toFixed(1) + " KB"
                   : (n / 1e6).toFixed(1) + " MB";
 const isImage = n => /\\.(png|jpe?g|gif|svg|webp)$/i.test(n);
+// Every picture the run's jobs returned and its agents drew, newest first, as a grid.
+// One clicked opens over the page; the arrow keys go to the next and the one before,
+// Escape closes it.
+let pics = [], picAt = -1;
+async function renderPictures() {
+  const mine = campaign;
+  let list;
+  try { list = await (await fetch(url("/pictures"))).json(); } catch (e) { return; }
+  if (mine !== campaign || tab !== "pictures") return;
+  const sig = JSON.stringify(list.map(p => p.path));
+  if (view.dataset.body === sig) return;
+  view.dataset.body = sig; view.className = "";
+  pics = list;
+  const src = p => esc(url("/image?root=ws&name=" + encodeURIComponent(p.path)));
+  const cut = s => s.length > 48 ? s.slice(0, 46) + "\u2026" : s;
+  view.innerHTML = `<div class="pics">` + (list.length ? list.map((p, i) =>
+    `<figure data-pic="${i}" title="${esc(p.caption)}"><img loading="lazy" src="${src(p)}">`
+    + `<figcaption>${esc(cut(p.caption))}</figcaption></figure>`).join("")
+    : `<div class="none">no pictures yet</div>`) + `</div>`;
+}
+function showPic(i) {
+  let box = document.getElementById("picbox");
+  if (i < 0 || i >= pics.length) { if (box) box.remove(); picAt = -1; return; }
+  picAt = i;
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "picbox";
+    box.onclick = e => { if (e.target === box) showPic(-1); };
+    document.body.appendChild(box);
+  }
+  const p = pics[i];
+  box.innerHTML = `<img src="${esc(url("/image?root=ws&name=" + encodeURIComponent(p.path)))}">`
+    + `<div class="cap">${i + 1} of ${pics.length} \u00b7 ${esc(p.caption)}`
+    + `<br><span>\u2190 \u2192 to move, Esc to close</span></div>`;
+}
+document.addEventListener("click", e => {
+  const f = e.target.closest("[data-pic]");
+  if (f) showPic(+f.dataset.pic);
+});
+document.addEventListener("keydown", e => {
+  if (picAt < 0) return;
+  if (e.key === "Escape") showPic(-1);
+  else if (e.key === "ArrowRight") showPic(Math.min(picAt + 1, pics.length - 1));
+  else if (e.key === "ArrowLeft") showPic(Math.max(picAt - 1, 0));
+});
 const stamp = t => when(new Date(t * 1000).toISOString());
 // A key is root and path together, because the same relative path means a different
 // file under each root.
@@ -2548,6 +2674,7 @@ async function refresh() {
     if (tab === "resources") { await renderResources(); return; }
     if (tab === "budgets") { await renderBudgets(); return; }
     if (tab === "tree") { await renderTree(); return; }
+    if (tab === "pictures") { await renderPictures(); return; }
     if (tab === "log") {
       view.className = "";
       const stick = atBottom();
@@ -3598,10 +3725,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif url.path == "/runs":
             self._send(json.dumps(runs(campaign)), "application/json")
         elif url.path == "/files":
+            # The record tabs: the campaign's own choice, else the usual records, and
+            # pictures wherever there are any. Only those that exist yet.
             ws = workspace(campaign)
-            self._send(json.dumps([f for f in READABLE
-                                   if os.path.isfile(os.path.join(ws, f))]),
+            chosen = campaign_tabs(campaign)
+            names = chosen if chosen is not None else list(READABLE) + ["pictures"]
+            have_pics = "pictures" in names and bool(pictures(campaign))
+            self._send(json.dumps([n for n in names
+                                   if (n == "pictures" and have_pics)
+                                   or (n != "pictures"
+                                       and os.path.isfile(os.path.join(ws, n)))]),
                        "application/json")
+        elif url.path == "/pictures":
+            self._send(json.dumps(pictures(campaign)), "application/json")
         elif url.path == "/tree":
             keys = [k for k in q.get("open", [""])[0].split(",") if k]
             self._send(json.dumps(tree(campaign, keys)), "application/json")
@@ -3717,7 +3853,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self._read(path, rel)
 
     def _file(self, campaign, name):
-        if name not in READABLE:
+        if name not in READABLE and name not in (campaign_tabs(campaign) or []):
             return "not a file this watcher serves"
         path = os.path.join(workspace(campaign), name)
         # A record is written when there is first something in it, so a missing one is

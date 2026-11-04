@@ -230,6 +230,17 @@ moment, and is wrong from the following run onward.
 Where a campaign produces one comparable set of numbers per run, a small table with a row
 appended each run is easier to read than the logbook or the raw records.
 
+
+The watch shows a campaign's records as tabs: `LOGBOOK.md`, `findings.md`, `JOURNAL.md`,
+`REVIEWS.md`, `results.jsonl` and `jobs.jsonl`, and **pictures** once there are any:
+every image under the workspace's `outputs/` (files jobs returned) and `figures/`,
+newest first, each captioned with its job, and flipped through with the arrow keys. A
+campaign chooses its own tabs, in order, in `campaign.json`; a name is a file in the
+workspace, or `pictures`:
+
+```json
+"watch": {"tabs": ["pictures", "JOURNAL.md", "LOGBOOK.md", "results.jsonl"]}
+```
 ## Setting up a later run
 
 1. Read the last logbook entry — what the previous run concluded and left open.
