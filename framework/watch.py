@@ -54,8 +54,9 @@ else:
 LAB_DIR = os.path.abspath(os.environ.get("LAB_DIR", _default_lab))
 # Files worth opening while a run is in flight. Anything else in the workspace is
 # listed but not offered as a tab: run directories, caches, figures.
+# ANNOUNCEMENTS.md is not among them: what is on it is in the chat.
 READABLE = ("LOGBOOK.md", "findings.md", "JOURNAL.md", "REVIEWS.md", "results.jsonl",
-            "ANNOUNCEMENTS.md", "jobs.jsonl")
+            "jobs.jsonl")
 # What a record that does not exist yet means.
 NOT_YET = {"jobs.jsonl": "no jobs submitted yet", "results.jsonl": "no results yet"}
 TAIL_BYTES = 400_000        # of a file view; the log is followed from an offset instead
@@ -1553,6 +1554,7 @@ PAGE = """<!doctype html>
         border-top:1px solid #24313d; }
  #say input { flex:1; background:#0b0f14; color:#ddd; border:1px solid #2b3946;
               padding:5px 8px; font:inherit; }
+ #say select { background:#0b0f14; color:#bbb; border:1px solid #2b3946; font:inherit; }
  #say button { background:#222; color:#bbb; border:1px solid #333; padding:5px 14px;
                cursor:pointer; font:inherit; }
  button.copy { background:#222; color:#999; border:1px solid #333; padding:0 6px;
@@ -1576,7 +1578,7 @@ PAGE = """<!doctype html>
 <div id="chat">
   <div id="chathead"><span id="chattitle">CHAT</span><button id="chattoggle">hide</button></div>
   <div id="chatlog" class="none">no messages yet</div>
-  <div id="say"><input id="msg" autocomplete="off"
+  <div id="say"><select id="to" title="who the message goes to"><option value="">everyone</option></select><input id="msg" autocomplete="off"
     placeholder="message the agent \u2014 it reads between turns"><button>send</button></div>
 </div>
 <script>
@@ -2460,6 +2462,7 @@ function renderAgents(top, group, session) {
   const byBranch = {};
   for (const w of ws) byBranch[w.branch] = w;
   agentByBranch = Object.fromEntries(ws.map(w => [w.branch, w.run]));
+  setRecipients(ws.find(w => w.run === agentSel));
   const dot = st => st === "running" ? '<i class="on">\u25cf</i>'
     : st === "not responding" ? '<i class="bad">\u25cf</i>' : "<i>\u25cb</i>";
   const row = (a, depth) =>
@@ -2609,6 +2612,8 @@ let chatText = "";
 
 async function chat() {
   if (selecting()) return;
+  // The lab's chat has one reader, the secretary, so there is no one to pick.
+  document.getElementById("to").hidden = scope === "lab";
   if (scope === "lab") return labChat();
   const mine = campaign;
   let body;
@@ -2705,6 +2710,17 @@ function renderChat(body) {
   if (near) chatlog.scrollTop = chatlog.scrollHeight;
 }
 
+// Who a message can go to: everyone (the board every agent reads), or the worker chosen
+// in the agents panel alone (its run's inbox). Rebuilt only when that changes.
+function setRecipients(chosen) {
+  const sel = document.getElementById("to");
+  const want = [["", "everyone"], ...(chosen ? [[chosen.run, "only " + (chosen.branch || chosen.run)]] : [])];
+  const have = [...sel.options].map(o => [o.value, o.textContent]);
+  if (JSON.stringify(want) === JSON.stringify(have)) return;
+  const keep = sel.value;
+  sel.innerHTML = want.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
+  sel.value = want.some(([v]) => v === keep) ? keep : "";
+}
 // A message goes to the board the agent reads between turns, so it lands after the
 // turn in flight rather than interrupting it. On the lab page it goes to the
 // secretary's inbox instead -- one reader, one answer, however many campaigns are up.
@@ -2712,7 +2728,12 @@ async function say() {
   const box = document.getElementById("msg"), text = box.value.trim();
   if (!text) return;
   box.value = "";
-  const to = scope === "lab" ? "/say?lab" : url("/say");
+  const one = scope === "lab" ? "" : document.getElementById("to").value;
+  // Everyone means the board of the run being watched, whichever worker is chosen in the
+  // agents panel; only an ended top run takes a message into its saved session instead.
+  const to = scope === "lab" ? "/say?lab"
+    : one ? url("/say") + "&to=" + encodeURIComponent(one)
+    : "/say?c=" + encodeURIComponent(campaign) + (run ? "&run=" + encodeURIComponent(run) : "");
   try {
     const r = await (await fetch(to, {method: "POST", body: text})).json();
     if (r.error) { box.value = text; alert(r.error); return; }
@@ -3444,6 +3465,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         ws = workspace(campaign)
         stamp = datetime.now().strftime("%H:%M")
+        # A message to one agent alone goes to its run's inbox, which only it reads.
+        to = (q.get("to") or [""])[0]
+        if to:
+            to_dir = run_path(campaign, to)
+            if not to_dir:
+                self._send(json.dumps({"sent": False, "error": f"no run {to}"}),
+                           "application/json")
+                return
+            if _ended_with_session(to_dir):
+                self._send(json.dumps(talk_to_run(to_dir, ws, text, stamp)),
+                           "application/json")
+                return
+            name = _meta(os.path.join(to_dir, "meta.json")).get("branch") or to
+            try:
+                with open(os.path.join(to_dir, "INBOX.md"), "a") as f:
+                    f.write(text.replace("\n", " ") + "\n")
+                with open(os.path.join(ws, "MESSAGES.md"), "a") as f:
+                    f.write(f"`{stamp}` **you** (to {name} only) {text}\n\n")
+            except OSError as e:
+                self._send(json.dumps({"sent": False, "error": str(e)}), "application/json")
+                return
+            self._send(json.dumps({"sent": True}), "application/json")
+            return
         # A run that has ended reads no board, so a message to it reopens its session
         # instead, and the agent's reply joins the same conversation (talk.py).
         run_dir = run_path(campaign, (q.get("run") or [""])[0] or None)

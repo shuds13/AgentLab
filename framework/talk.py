@@ -196,7 +196,7 @@ async def main():
 
     run_dir = os.path.abspath(a.run_dir)
     meta = read_meta(run_dir)
-    who = meta.get("handle") or "agent"
+    who = meta.get("branch") or meta.get("handle") or "agent"
     # One conversation at a time per run: a second message waits for the reply to the
     # first, so both carry on the same fork.
     with open(os.path.join(run_dir, "talk.lock"), "w") as lock:

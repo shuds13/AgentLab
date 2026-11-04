@@ -139,6 +139,13 @@ From your own computer, when the lab is on a machine you reach by ssh: copy
 It logs in once, starts the watcher over there, forwards the port it took, and opens
 your browser. Ctrl-C stops both ends.
 
+The chat at the bottom of a campaign's page talks to its agents. A message to everyone
+goes on the campaign's board (`ANNOUNCEMENTS.md`), which every running agent reads
+between turns. With an agent chosen in the agents panel, a message can go to that agent
+only: it lands in its run's `INBOX.md`, wakes it if it is waiting, and the other agents
+do not see it. Replies come back in the chat under the agent's name. A message to an
+agent whose run has ended reopens its saved session, as `bin/talk.sh` does.
+
 ## Sandbox
 
 On Linux, `SANDBOX=bwrap` runs the agent in a box built with bubblewrap. It sees only the

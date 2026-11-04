@@ -619,6 +619,41 @@ def _announcements_prompt(text, tail=""):
     return body + ("\n\n" + tail if tail else "")
 
 
+# Messages to this agent alone, from the watch: <run dir>/INBOX.md, one per line. Read
+# from where the last read ended, so each is given once.
+INBOX_FILE = os.path.join(RUN_DIR, "INBOX.md")
+# A continued run was given what is already there.
+_inbox_seen = os.path.getsize(INBOX_FILE) if os.path.exists(INBOX_FILE) else 0
+
+
+def _inbox_waiting():
+    try:
+        return os.path.getsize(INBOX_FILE) > _inbox_seen
+    except OSError:
+        return False
+
+
+def _new_inbox():
+    """Messages to this agent alone that it has not yet been given."""
+    global _inbox_seen
+    try:
+        with open(INBOX_FILE, "rb") as f:
+            f.seek(_inbox_seen)
+            data = f.read()
+    except OSError:
+        return ""
+    _inbox_seen += len(data)
+    return data.decode("utf-8", "replace").strip()
+
+
+def _inbox_prompt(text, tail=""):
+    quoted = "\n".join("> " + line for line in text.strip().splitlines())
+    body = ("A message to you alone from the person watching this run (the other agents "
+            "do not see it):\n\n" + quoted + "\n\nAnswer it with `notify`, and do what "
+            "it asks. Pending jobs remain tracked.")
+    return body + ("\n\n" + tail if tail else "")
+
+
 class Tee:
     """Write to both a file and the original stream."""
     def __init__(self, log_file, stream):
@@ -2154,6 +2189,9 @@ async def main():
                     if fresh:
                         prompt = _announcements_prompt(fresh, tail=prompt)
                 last_announcements = board
+                mail = _new_inbox()
+                if mail:
+                    prompt = _inbox_prompt(mail, tail=prompt)
                 submits_before = tools.submit_count()
                 _prov_turn(prompt)
                 await client.query(prompt)
@@ -2212,7 +2250,8 @@ async def main():
                         await asyncio.sleep(RESOURCE_POLL)
                         waited += RESOURCE_POLL
                         _heartbeat(force=False)
-                        if tools._routing.demand(WORKSPACE_DIR, RUN_ID) != seen:
+                        if (tools._routing.demand(WORKSPACE_DIR, RUN_ID) != seen
+                                or _inbox_waiting()):
                             break
                     now = tools._routing.demand(WORKSPACE_DIR, RUN_ID)
                     if now["live_runs"]:
@@ -2267,8 +2306,11 @@ async def main():
                         last_announcements = board
                         if board_update:
                             break
-                    # A budget change is told at the turn it breaks out to.
+                    # A budget change, or a message to this agent alone, is told at the
+                    # turn it breaks out to.
                     if budgets.changes_since(RUN_DIR, budget_seen)[1] > budget_seen:
+                        break
+                    if _inbox_waiting():
                         break
                     since_tick += ANNOUNCE_POLL
                     if since_tick < WAIT_TIMEOUT:
@@ -2311,6 +2353,10 @@ async def main():
                     # CONTINUE asks for the next region, which is the one thing a run
                     # that is winding down must not do.
                     prompt = WINDDOWN_PROMPT
+                elif _inbox_waiting() and tools.pending_count() > 0:
+                    # Woken for a message, not a result: the message is put first at the
+                    # top of the turn.
+                    prompt = "No job has finished yet. " + _WAIT_NOTE
                 else:
                     prompt = CONTINUE_PROMPT
     except asyncio.CancelledError:

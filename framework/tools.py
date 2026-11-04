@@ -559,6 +559,12 @@ _last_success_time = None   # last non-error completion (real progress)
 _problem_since = None       # when the agent flagged a blocking problem (None = none)
 
 
+# Who this agent is in the conversation: a worker by its branch (researcher-1, resources),
+# the run that starts workers as the coordinator, else the agent.
+AGENT_NAME = (json.loads(os.environ.get("RUN_META") or "{}").get("branch")
+              or ("coordinator" if getattr(task, "ROLES", None) else "agent"))
+
+
 def record_message(who, msg):
     """Add one line to the run's conversation. Best-effort: a record nobody can write
     is not a reason to lose a message or fail a turn."""
@@ -1525,7 +1531,7 @@ async def notify(args):
     if blocking and _problem_since is None:
         _problem_since = time.time()
     _slack_post(args["message"])
-    record_message("agent", args["message"])
+    record_message(AGENT_NAME, args["message"])
     note = " (blocking: shutdown grace started)" if blocking else ""
     return {"content": [{"type": "text", "text": "notified" + note}]}
 

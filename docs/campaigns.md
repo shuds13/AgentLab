@@ -122,7 +122,7 @@ of the other agents rather than doing any, so it gets `system_status` and `set_r
 and no submit tools. It follows `method_resources.md` in the campaign if there is one,
 else `methods/resources.md`, and keeps `RESOURCES.md`, an entry per check with what it
 saw and decided. It checks every `RESOURCE_INTERVAL` seconds (300 by default), or sooner
-when a task is submitted or collected. `RESOURCE_MODEL` sets its
+when a task is submitted or collected or it is sent a message. `RESOURCE_MODEL` sets its
 model; otherwise it has the run's own.
 
 Machine-specific keys belong in `systems/<system>.json` rather than here, or the
