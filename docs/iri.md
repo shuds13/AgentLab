@@ -1,8 +1,10 @@
 # System status through IRI (optional)
 
 IRI (the DOE Integrated Research Infrastructure) gives each facility the same REST API
-for its systems. A campaign that asks for it gives its agent a read-only
-`system_status` tool, which returns for one system:
+for its systems. A resource agent (`ROLE=resources`, see
+[campaigns.md](campaigns.md#resources)) has a read-only `system_status` tool wherever a
+system has IRI settings, and a campaign can give it to its own agents. It returns for
+one system:
 
 - whether it is up, and any open incidents (outages, maintenance)
 - all your current batch jobs there (this run's blocks and any others of yours), with
@@ -18,14 +20,14 @@ to every job.
 
 ## Turning it on
 
-In `campaign.json`:
+For agents other than a resource agent, in `campaign.json`:
 
 ```json
 "iri": true
 ```
 
-Every system the campaign uses that has an `iri` block in `systems/<system>.json` is
-covered. Polaris has one:
+Either way, every system the campaign uses that has an `iri` block in
+`systems/<system>.json` is covered. Polaris has one:
 
 ```json
 "iri": {

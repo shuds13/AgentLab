@@ -1177,7 +1177,26 @@ def status(campaign, run=None):
         "workers": started_runs, "tree_usd": tree_usd,
         "records": meta.get("records") or [],
         "scores": meta.get("scores") or {}, "primary_score": meta.get("primary_score"),
+        "routes": _routes_set(ws, os.path.basename(run_dir)) if meta.get("kind") == "resources"
+                  else None,
     }
+
+
+def _routes_set(ws, run_id):
+    """The route changes a resource agent made, from the workspace's routing_log.jsonl."""
+    out = []
+    try:
+        with open(os.path.join(ws, "routing_log.jsonl")) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if r.get("who") == run_id:
+                    out.append({k: r.get(k) for k in ("ts", "from", "after", "reason")})
+    except OSError:
+        pass
+    return out
 
 
 def newest_log(campaign):
@@ -2144,6 +2163,7 @@ async function renderResources() {
 function renderStatus(s) {
   if (!s.run) { view.textContent = "no run yet"; return; }
   const shapes = Object.entries(s.buckets || {});
+  const placer = s.kind === "resources";
   const rows = [
     ["run", `${s.handle || "\u2014"} \u00b7 ${s.run}`],
     ["state", s.status === "running"
@@ -2155,15 +2175,15 @@ function renderStatus(s) {
     // Where the work ran, next to the counts of it. A campaign whose task defines both
     // kinds of job splits the counts, since they did not run in the same place.
     // The systems by name; their endpoints are in the resources view.
-    ["jobs run on", (s.endpoint
+    [placer ? "places work in" : "jobs run on", (placer ? "" : (s.endpoint
         ? (Object.keys(s.systems || {}).length ? Object.keys(s.systems) : [s.system || "?"])
             .join(" \u00b7 ") + (s.has_local ? " \u00b7 this machine" : "")
-        : "this machine")
+        : "this machine"))
         // The shape a job is given -- nodes, queue, walltime -- which is worth seeing
         // even when there is only one of them. The name and the default marker are
         // only meaningful where there is a choice.
         + (shapes.length
-           ? `<br>` + shapes.map(([k, b]) => {
+           ? (placer ? "" : `<br>`) + shapes.map(([k, b]) => {
                // Only while the run is live: a run killed with work outstanding never
                // logs those completions, so the count would stay up for good.
                const out = s.status === "running"
@@ -2192,9 +2212,14 @@ function renderStatus(s) {
         ? `${fmt(r.used == null ? 0 : r.used)} <span style="color:#777">(no limit)</span>`
         : bar(r.used || 0, r.limit, fmt)];
     }),
-    ["still running", `${s.jobs_run - s.jobs_done - (s.jobs_abandoned || 0)} of `
+    ...(placer ? [
+      ["checks", String(s.turns || 0)],
+      ["routes set", !(s.routes || []).length ? "none"
+        : s.routes.map(r => `${clock(r.ts)} ${esc(r.from)} \u2192 ${esc(r.after || "(back)")}`
+            + (r.reason ? ` <span style="color:#777">${esc(r.reason)}</span>` : "")).join("<br>")]]
+    : [["still running", `${s.jobs_run - s.jobs_done - (s.jobs_abandoned || 0)} of `
         + `${s.jobs_run} submitted, ${s.jobs_done} returned`
-        + (s.jobs_abandoned ? `, ${s.jobs_abandoned} abandoned` : "")],
+        + (s.jobs_abandoned ? `, ${s.jobs_abandoned} abandoned` : "")]]),
     // The scores the run's jobs reported, the campaign's primary one first and marked.
     ...(Object.keys(s.scores || {}).length ? [["scores", Object.entries(s.scores)
         .sort(([a], [b]) => (b === s.primary_score) - (a === s.primary_score))
@@ -2212,13 +2237,13 @@ function renderStatus(s) {
     ...(s.tree_usd == null ? [] : [["cost with workers", "$" + s.tree_usd.toFixed(2)]]),
     ...(s.parent_run ? [
       // The run that started a worker is the one whose agents panel it was chosen in.
-      ["started by", (s.parent_run_known
+      ["started by", (placer ? "the framework, with run " : "") + (s.parent_run_known
         ? `<a href="#" data-agent="">${esc(s.parent_run)}</a>`
         : `${esc(s.parent_run)} <span style="color:#777">(no such run here)</span>`)
         + (s.parents.length ? " \u00b7 from " + s.parents.map(b => agentByBranch[b]
             ? `<a href="#" data-agent="${esc(agentByBranch[b])}">${esc(b)}</a>` : esc(b))
             .join(" + ") : "")],
-      ["works on", `${esc(s.branch || "\u2014")} (${esc(s.kind || "?")})`]] : []),
+      ...(placer ? [] : [["works on", `${esc(s.branch || "\u2014")} (${esc(s.kind || "?")})`]])] : []),
     // Only a run that has a critic names one.
     ...(s.critic && !/^(none|no critic)/.test(s.critic) ? [["critic", esc(s.critic)]] : []),
     // The run's Claude session, to reopen afterwards with `claude -r`. Copying is

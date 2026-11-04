@@ -104,6 +104,27 @@ can start a session as it does and leave it open, since the next session closes 
 kept in `<group>/resource_session.json`. A block that a run outside the group also used
 is counted in full to the group.
 
+A bucket's tasks can be redirected to another bucket while the runs go, for every run
+in the workspace from its next submit, when both give a job the same number of nodes:
+
+```
+bin/route.sh <workspace> debug=debug_scaling      # send debug's tasks to debug_scaling
+bin/route.sh <workspace> debug=                   # stop redirecting debug
+```
+
+A submit that was redirected says so in its result. The redirects are kept in
+`<workspace>/routing.json`, and each change in `routing_log.jsonl`.
+
+A resource agent makes the same change with its `set_route` tool. With
+`RESOURCE_AGENT=true` in `run.sh`, the framework starts one as the run's first worker:
+it shows in the agents panel as `resources` and stops with the run. It places the work
+of the other agents rather than doing any, so it gets `system_status` and `set_route`
+and no submit tools. It follows `method_resources.md` in the campaign if there is one,
+else `methods/resources.md`, and keeps `RESOURCES.md`, an entry per check with what it
+saw and decided. It checks every `RESOURCE_INTERVAL` seconds (300 by default), or sooner
+when a task is submitted or collected. `RESOURCE_MODEL` sets its
+model; otherwise it has the run's own.
+
 Machine-specific keys belong in `systems/<system>.json` rather than here, or the
 campaign will not run anywhere else.
 
@@ -188,9 +209,9 @@ each path named exists. Remote jobs are not affected; they run on their own syst
 
 ## System status
 
-With `"iri": true` in `campaign.json`, the agent gets a `system_status` tool: whether a
-system is up, its open incidents, your batch jobs there, and how busy the queues your
-buckets use are. It reads the facility's IRI API. See [iri.md](iri.md).
+A resource agent, or with `"iri": true` in `campaign.json` any agent, gets a
+`system_status` tool: whether a system is up, its open incidents, your batch jobs there,
+and how busy the queues your buckets use are. It reads the facility's IRI API. See [iri.md](iri.md).
 
 ## The workspace
 

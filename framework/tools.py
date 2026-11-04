@@ -32,10 +32,15 @@ import node_hours as _node_hours
 import resource_session as _resource_session
 import transfer as _transfer
 import iri as _iri
+import routing as _routing
 from globus_compute_sdk import Executor
 from globus_compute_sdk.serialize import ComputeSerializer, AllCodeStrategies
 
 ROLE = os.environ.get("ROLE", "both")          # free-form; the prompt defines what roles mean
+# One role is the framework's own: a resource agent (ROLE=resources) places the work of
+# the runs in its workspace rather than doing any. It gets the resource tools
+# (system_status, set_route) and no submit tools.
+RESOURCE_AGENT = ROLE == "resources"
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LAB_DIR = os.path.abspath(os.environ.get("LAB_DIR", os.path.join(SCRIPT_DIR, "..")))
@@ -345,16 +350,17 @@ _transfer.MAIN = SYSTEM if SYSTEM in _transfer.CFGS else next(iter(_transfer.CFG
 _transfer.CFG = _transfer.CFGS.get(_transfer.MAIN)
 HAS_TRANSFER = bool(_transfer.CFGS)
 
-# The facility's IRI API is optional too: a campaign asks for it with `"iri": true`, and
-# each system it uses gives its IRI settings in systems/<system>.json (iri.py). It gives
-# the agent the state of a system and its queues, read-only.
+# The facility's IRI API is optional too: each system gives its IRI settings in
+# systems/<system>.json (iri.py), and it gives the state of a system and its queues,
+# read-only. A resource agent has it wherever a system has the settings; any other agent
+# only in a campaign that asks for it with `"iri": true`.
 IRI = {}
-if _cam.get("iri"):
+if _cam.get("iri") or RESOURCE_AGENT:
     for _name, _sy in SYSTEMS.items():
         _c = _iri.configure(_sy["cfg"], _sy["usr"], USER_NAME)
         if _c is not None:
             IRI[_name] = _c
-    if not IRI:
+    if not IRI and not RESOURCE_AGENT:
         sys.exit("campaign.json asks for iri, but no system it uses has an iri block in "
                  "systems/<system>.json")
 HAS_IRI = bool(IRI)
@@ -828,12 +834,37 @@ def _remote_pending_count(bucket=None):
                and (bucket is None or j["bucket"] == bucket))
 
 
-def _bucket_of(args, kind="job"):
-    """Which bucket this job would go to, before it is fired."""
+def _chosen_bucket(args, kind="job"):
+    """The bucket the task picks for this job."""
     k = KINDS[kind]
     if k.get("bucket"):
         return k["bucket"]
     return k["bucket_for"](args) if k.get("bucket_for") else _default_bucket
+
+
+def _route_problem(frm, to):
+    """Why tasks bound for bucket `frm` cannot be sent to `to`, or None."""
+    for b in (frm, to):
+        if b not in _SYS["buckets"]:
+            return f"no bucket {b!r}; buckets are {sorted(_SYS['buckets'])}"
+    if _SYS["buckets"][frm]["nodes_per_job"] != _SYS["buckets"][to]["nodes_per_job"]:
+        return (f"{frm!r} gives a job {_SYS['buckets'][frm]['nodes_per_job']} node(s) and "
+                f"{to!r} {_SYS['buckets'][to]['nodes_per_job']}; a redirect must keep the "
+                f"nodes per job")
+    return None
+
+
+def _bucket_of(args, kind="job"):
+    """Which bucket this job goes to: the task's choice, unless the workspace's routing
+    (routing.py) redirects that bucket. A redirect that does not fit is ignored."""
+    b = _chosen_bucket(args, kind)
+    to = _routing.load(WORKSPACE_DIR).get(b)
+    if to and to != b:
+        problem = _route_problem(b, to)
+        if problem is None:
+            return to
+        print(f"[routing] ignoring redirect {b} -> {to}: {problem}", file=sys.stderr, flush=True)
+    return b
 
 
 def _key_of(args, kind="job"):
@@ -1137,11 +1168,19 @@ def _fire_remote(args, kind="job"):
         return {"error": f"submit failed: {e}"}
 
     _submit_count += 1
-    _bucket_submit_count[bucket] = _bucket_submit_count.get(bucket, 0) + 1
-    _jobs[job_id] = {"future": fut, "args": args, "key": key, "bucket": bucket, "kind": kind}
+    # A bucket's submit budget is the agent's, so it counts what the agent chose, wherever
+    # the workspace's routing sent it.
+    chosen = _chosen_bucket(args, kind)
+    _bucket_submit_count[chosen] = _bucket_submit_count.get(chosen, 0) + 1
+    _jobs[job_id] = {"future": fut, "args": args, "key": key, "bucket": bucket, "kind": kind,
+                     "chosen": chosen}
     _append_jobs_log({"event": "submit", "job_id": job_id, "key": key, "args": args,
                       "kind": kind, "bucket": bucket, "system": _b["system"],
                       "idle_s": _b["idle_s"]})
+    if chosen != bucket:
+        return {"job_id": job_id, "key": key, "bucket": bucket,
+                "note": f"redirected from bucket {chosen!r} to {bucket!r} by this "
+                        f"workspace's routing"}
     return {"job_id": job_id, "key": key}
 
 
@@ -1159,12 +1198,13 @@ async def _submit_one(args, kind="job"):
                 f"submit refused: at capacity ({_remote_pending_count()} running/queued, "
                 f"max_concurrent={MAX_CONCURRENT}). Collect a finished job "
                 f"with get_completed_jobs before submitting more."}], "is_error": True}
-    _b = _bucket_of(args, kind)
-    _lim = bucket_submits().get(_b)
-    if _reached(_bucket_submit_count.get(_b, 0), _lim):
+    _c = _chosen_bucket(args, kind)
+    _lim = bucket_submits().get(_c)
+    if _reached(_bucket_submit_count.get(_c, 0), _lim):
         return {"content": [{"type": "text", "text":
-                f"submit refused: bucket {_b!r} has used its {_lim} submits for this run"}],
+                f"submit refused: bucket {_c!r} has used its {_lim} submits for this run"}],
                 "is_error": True}
+    _b = _bucket_of(args, kind)
     _cap = _SYS["buckets"].get(_b, {}).get("max_concurrent")
     if _cap and _remote_pending_count(_b) >= _cap:
         return {"content": [{"type": "text", "text":
@@ -1304,7 +1344,7 @@ async def get_completed_jobs(args):
         # time its batch job had left, did no work, so it does not count as a submit.
         if res.get("refused"):
             _submit_count -= 1
-            _bucket_submit_count[info["bucket"]] -= 1
+            _bucket_submit_count[info.get("chosen", info["bucket"])] -= 1
             res["submits_used"] = _submit_count
         if "error" not in res:
             _last_success_time = time.time()
@@ -1695,16 +1735,43 @@ def _split_jobs(jobs, queues):
     return out
 
 
+SET_ROUTE_DESC = (
+    "Send every task bound for one resource bucket to another instead, for all runs in "
+    "this workspace, from their next submit; or, with to_bucket empty, stop redirecting "
+    "it. Tasks already submitted stay where they are. Both buckets must give a job the "
+    "same number of nodes. Give the reason, which is logged with the change.\n\n"
+    "The buckets:\n" + "\n".join(_block_shape(n) for n in _SYS["buckets"])
+)
+
+
+@tool("set_route", SET_ROUTE_DESC,
+      {"type": "object", "properties": {"from_bucket": {"type": "string"},
+                                        "to_bucket": {"type": "string"},
+                                        "reason": {"type": "string"}},
+       "required": ["from_bucket", "reason"]})
+async def set_route(args):
+    frm = (args.get("from_bucket") or "").strip()
+    to = (args.get("to_bucket") or "").strip()
+    problem = _route_problem(frm, to or frm)
+    if problem:
+        return {"content": [{"type": "text", "text": json.dumps({"error": problem})}],
+                "is_error": True}
+    c = _routing.change(WORKSPACE_DIR, frm, to, who=os.environ.get("RUN_ID", ROLE),
+                        reason=(args.get("reason") or "").strip())
+    return {"content": [{"type": "text", "text": json.dumps(
+        {**c, "redirects": _routing.load(WORKSPACE_DIR)})}]}
+
+
 def _tools():
     """The tools this agent is given. The job tools are offered only when the task
     defines the matching function -- remote_fn for the remote tools, local_fn for the
-    local."""
+    local -- and not to a resource agent, which places work rather than doing it."""
     tools = []
-    if HAS_REMOTE:
+    if HAS_REMOTE and not RESOURCE_AGENT:
         tools += (list(KIND_TOOLS.values()) if MULTI_KIND
                   else [submit_job_batch if BATCH_MODE else submit_job])
         tools += [get_completed_jobs, release_claim, abandon_job]
-    if HAS_LOCAL:
+    if HAS_LOCAL and not RESOURCE_AGENT:
         tools += [submit_local_batch if BATCH_MODE else submit_local,
                   get_local_completed]
     tools += [notify, cycle_done, goal_met, goal_abandoned, end_run]
@@ -1714,6 +1781,8 @@ def _tools():
         tools.append(_transfer.transfer)
     if HAS_IRI:
         tools.append(system_status)
+    if RESOURCE_AGENT and len(_SYS["buckets"]) > 1:
+        tools.append(set_route)
     return tools
 
 
