@@ -4,6 +4,7 @@ globus-sdk
 # Optional: only if your task or figures need them.
 # matplotlib
 # mpi4py
+# alcf-tokens   # system status through IRI at ALCF (docs/iri.md)
 
 # Rendered records in the run viewer (bin/watch.sh, and WATCH=true during a run).
 markdown

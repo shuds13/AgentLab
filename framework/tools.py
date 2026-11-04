@@ -10,6 +10,7 @@ Which system to run on is picked with the SYSTEM env var and described in
 config.json.
 """
 
+import asyncio
 import importlib
 import inspect
 import itertools
@@ -30,6 +31,7 @@ import budgets
 import node_hours as _node_hours
 import resource_session as _resource_session
 import transfer as _transfer
+import iri as _iri
 from globus_compute_sdk import Executor
 from globus_compute_sdk.serialize import ComputeSerializer, AllCodeStrategies
 
@@ -342,6 +344,20 @@ for _name, _sy in SYSTEMS.items():
 _transfer.MAIN = SYSTEM if SYSTEM in _transfer.CFGS else next(iter(_transfer.CFGS), None)
 _transfer.CFG = _transfer.CFGS.get(_transfer.MAIN)
 HAS_TRANSFER = bool(_transfer.CFGS)
+
+# The facility's IRI API is optional too: a campaign asks for it with `"iri": true`, and
+# each system it uses gives its IRI settings in systems/<system>.json (iri.py). It gives
+# the agent the state of a system and its queues, read-only.
+IRI = {}
+if _cam.get("iri"):
+    for _name, _sy in SYSTEMS.items():
+        _c = _iri.configure(_sy["cfg"], _sy["usr"], USER_NAME)
+        if _c is not None:
+            IRI[_name] = _c
+    if not IRI:
+        sys.exit("campaign.json asks for iri, but no system it uses has an iri block in "
+                 "systems/<system>.json")
+HAS_IRI = bool(IRI)
 # Named resource shapes on one system (e.g. a small quick queue and a large long one).
 # A task routes a job to one with bucket_for(args); otherwise the default is used.
 #
@@ -1616,9 +1632,73 @@ async def check_backend(args):
     return {"content": [{"type": "text", "text": json.dumps(info, indent=2, default=str)}]}
 
 
-def create_server():
-    """MCP server exposing the tools. Each pair is only offered when the task defines
-    the matching function -- remote_fn for the remote tools, local_fn for the local."""
+SYSTEM_STATUS_DESC = (
+    "The state of a compute system this run uses, from the facility's IRI API: whether "
+    "it is up, any open incidents (outages, maintenance), your user's current batch jobs "
+    "there with their state (queued, held, active), and how many jobs are queued, held and "
+    "running in each queue your resource buckets use and each queue those jobs are in. "
+    "The jobs are split three ways: `this_workflow`, blocks this workspace's tasks have run "
+    "in; `maybe_this_workflow`, jobs in a queue one of its buckets uses that no task has "
+    "reported yet (a block that has not started looks like this); and `other_runs`, the "
+    "same user's jobs from other campaigns and runs, which are not this workflow's and "
+    "count only as load on their queue. Counts only: it does not give a job's "
+    "place in the queue or when it is expected to start. Use it when work is slow to "
+    f"start, to tell a long queue from a problem with the system. `system` defaults to "
+    f"{SYSTEM}" + (f"; one of {', '.join(IRI)}." if len(IRI) > 1 else ".")
+)
+
+
+@tool("system_status", SYSTEM_STATUS_DESC,
+      {"type": "object", "properties": {"system": {"type": "string"}}})
+async def system_status(args):
+    name = (args.get("system") or "").strip() or (SYSTEM if SYSTEM in IRI else next(iter(IRI)))
+    if name not in IRI:
+        return {"content": [{"type": "text", "text": json.dumps(
+            {"error": f"no IRI settings for {name!r}; systems with them: {list(IRI)}"})}],
+                "is_error": True}
+    queues = [b["user_config"].get("queue") for b in _SYS["buckets"].values()
+              if b["system"] == name]
+    info = await asyncio.to_thread(_iri.status, IRI[name], queues)
+    if "your_jobs" in info:
+        info.update(_split_jobs(info.pop("your_jobs"), queues))
+    return {"content": [{"type": "text", "text": json.dumps({"system": name, **info},
+                                                            indent=2)}]}
+
+
+def _split_jobs(jobs, queues):
+    """The user's jobs on a system, as this workspace's blocks (a task of it ran there),
+    possibly its blocks (in one of its buckets' queues, not yet reported), and other runs'.
+    IRI gives no more than id, state, queue and account, so this is as close as it gets."""
+    known = set()
+    try:
+        with open(JOBS_LOG) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                for on in [r.get("ran_on") or {}] + [x.get("ran_on") or {}
+                                                     for x in r.get("refused") or []
+                                                     if isinstance(x, dict)]:
+                    if on.get("batch_job"):
+                        known.add(str(on["batch_job"]).split(".")[0])
+    except OSError:
+        pass
+    out = {"this_workflow": [], "maybe_this_workflow": [], "other_runs": []}
+    for j in jobs:
+        if j["id"] in known:
+            out["this_workflow"].append(j)
+        elif j.get("queue") in queues and j.get("state") in ("queued", "held"):
+            out["maybe_this_workflow"].append(j)
+        else:
+            out["other_runs"].append(j)
+    return out
+
+
+def _tools():
+    """The tools this agent is given. The job tools are offered only when the task
+    defines the matching function -- remote_fn for the remote tools, local_fn for the
+    local."""
     tools = []
     if HAS_REMOTE:
         tools += (list(KIND_TOOLS.values()) if MULTI_KIND
@@ -1627,35 +1707,21 @@ def create_server():
     if HAS_LOCAL:
         tools += [submit_local_batch if BATCH_MODE else submit_local,
                   get_local_completed]
-    tools.append(notify)
-    tools.append(cycle_done)
-    tools.append(goal_met)
-    tools.append(goal_abandoned)
-    tools.append(end_run)
+    tools += [notify, cycle_done, goal_met, goal_abandoned, end_run]
     if HAS_REMOTE:
         tools.append(check_backend)
     if HAS_TRANSFER:
         tools.append(_transfer.transfer)
-    return create_sdk_mcp_server(name="cas", version="1.0.0", tools=tools)
+    if HAS_IRI:
+        tools.append(system_status)
+    return tools
+
+
+def create_server():
+    """MCP server exposing this agent's tools."""
+    return create_sdk_mcp_server(name="cas", version="1.0.0", tools=_tools())
 
 
 def tool_names():
     """Fully-qualified names for ClaudeAgentOptions(allowed_tools=...)."""
-    names = []
-    if HAS_REMOTE:
-        names += ([f"submit_{k}" for k in KIND_TOOLS] if MULTI_KIND
-                  else ["submit_job_batch" if BATCH_MODE else "submit_job"])
-        names += ["get_completed_jobs", "release_claim", "abandon_job"]
-    if HAS_LOCAL:
-        names += ["submit_local_batch" if BATCH_MODE else "submit_local",
-                  "get_local_completed"]
-    names.append("notify")
-    names.append("cycle_done")
-    names.append("goal_met")
-    names.append("goal_abandoned")
-    names.append("end_run")
-    if HAS_REMOTE:
-        names.append("check_backend")
-    if HAS_TRANSFER:
-        names.append("transfer")
-    return [f"mcp__cas__{n}" for n in names]
+    return [f"mcp__cas__{t.name}" for t in _tools()]

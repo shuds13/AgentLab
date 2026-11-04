@@ -34,6 +34,7 @@ import threading
 import time
 
 import budgets
+import iri
 import node_hours
 import resource_session
 import sys
@@ -256,6 +257,44 @@ def _group_siblings(campaign):
     return [c for c in campaigns() if c.startswith(group) and c != campaign]
 
 
+# What a system's IRI API says about its queues and your batch jobs (iri.py), for the
+# systems that have IRI settings. Fetched in the background at most once a minute per
+# system, so a page refresh never waits on the facility; the first look has nothing yet.
+IRI_TTL = 60
+_iri_seen = {}
+_iri_lock = threading.Lock()
+
+
+def iri_view(system, queues):
+    def read(path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
+    user = os.environ.get("USER_NAME") or getpass.getuser()
+    cfg = iri.configure(read(os.path.join(LAB_DIR, "systems", f"{system}.json")),
+                        read(os.path.join(LAB_DIR, "users", user, f"{system}.json")), user)
+    if cfg is None:
+        return None
+    key = (system, tuple(sorted(q for q in queues if q)))
+    with _iri_lock:
+        seen = _iri_seen.setdefault(key, {"at": None, "data": {}, "busy": False})
+        stale = seen["at"] is None or time.time() - seen["at"] >= IRI_TTL
+        if stale and not seen["busy"]:
+            seen["busy"] = True
+
+            def fetch():
+                try:
+                    data = iri.status(cfg, list(key[1]))
+                except Exception as e:
+                    data = {"jobs_error": str(e)}
+                with _iri_lock:
+                    seen.update(at=time.time(), data=data, busy=False)
+            threading.Thread(target=fetch, daemon=True).start()
+        return {"checked_at": seen["at"], **seen["data"]}
+
+
 def resources(campaign, run=None, light=False):
     """The run tree's remote work: per system, its buckets and who shares them, the
     blocks its tasks ran in, and the tasks each block ran or handed back.
@@ -398,7 +437,8 @@ def resources(campaign, run=None, light=False):
         sysd.update(blocks=rows,
                     node_hours=round(sum(node_hours.hours(b) or 0 for b in rows), 1),
                     max_node_hours=(_budget_limits(top_dir, top).get("node_hours")
-                                    or {}).get(name))
+                                    or {}).get(name),
+                    iri=iri_view(name, [s.get("queue") for s in sysd["buckets"].values()]))
         out.append(sysd)
     return {"systems": out, "tasks": tasks, "selected": selected,
             "group": campaign.split("/", 1)[0] if siblings else None,
@@ -1899,6 +1939,19 @@ async function renderBudgets() {
 const clock = t => t ? new Date(t * 1000).toLocaleString([], {weekday: "short",
   hour: "2-digit", minute: "2-digit"}) : "\u2014";
 const dur = s => s == null ? "\u2014" : hms(Math.round(s));
+// A task in flight, made more exact by your batch jobs in its bucket's queue: queued
+// when every one there is queued or held, else still "waiting or running".
+function iriState(sy, t) {
+  const jobs = sy.iri && sy.iri.your_jobs;
+  const q = ((sy.buckets || {})[t.bucket] || {}).queue;
+  if (t.state !== "waiting or running" || !jobs || !q) return t.state;
+  const here = jobs.filter(j => j.queue === q);
+  if (here.length && here.every(j => j.state === "queued" || j.state === "held"))
+    return `waiting: block ${here.map(j => j.id).join(", ")} ${here[0].state} in ${q}`;
+  if (here.some(j => j.state === "active"))
+    return `waiting or running (a block of yours in ${q} is running)`;
+  return t.state;
+}
 // One block as a timeline: a lane per worker, grouped by node, over the block's walltime.
 // A task names its worker where the engine gives one; otherwise a node's tasks are packed
 // into as few lanes as hold them, which shows how many ran at once but not which worker.
@@ -2058,7 +2111,8 @@ async function renderResources() {
         + `<tr><th>agent</th><th>task</th><th>kind</th><th>submitted</th><th>state</th></tr>`;
       for (const t of ts)
         h += `<tr class="${rowCls(t)}"><td>${esc(t.agent)}</td><td>${t.job_id}</td>`
-          + `<td>${esc(t.kind || "")}</td><td>${clock(t.submitted)}</td><td>${esc(t.state)}</td></tr>`;
+          + `<td>${esc(t.kind || "")}</td><td>${clock(t.submitted)}</td>`
+          + `<td>${esc(iriState(sy, t))}</td></tr>`;
       h += "</table>";
     }
   }

@@ -1521,6 +1521,10 @@ def preflight():
         except Exception as e:
             print(f"[preflight] WARNING: could not check Globus Transfer collections: {e}",
                   flush=True)
+    for _nm, _c in tools.IRI.items():
+        _err = tools._iri.check(_c)
+        if _err:
+            problems.append(f"IRI on {_nm} ({_c['base_url']}): {_err}")
     if problems:
         print("PREFLIGHT FAILED - cannot run. Fix these and restart:", flush=True)
         for pr in problems:

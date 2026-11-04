@@ -186,6 +186,12 @@ A campaign whose agent needs more names it in `campaign.json`:
 A path missing from the box fails as "No such file or directory". Preflight checks that
 each path named exists. Remote jobs are not affected; they run on their own system.
 
+## System status
+
+With `"iri": true` in `campaign.json`, the agent gets a `system_status` tool: whether a
+system is up, its open incidents, your batch jobs there, and how busy the queues your
+buckets use are. It reads the facility's IRI API. See [iri.md](iri.md).
+
 ## The workspace
 
 Written by the agent, not by you. What is in it is whatever the campaign asks for —
