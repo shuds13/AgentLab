@@ -2059,7 +2059,16 @@ function iriState(sy, t) {
 // One block as a timeline: a lane per worker, grouped by node, over the block's walltime.
 // A task names its worker where the engine gives one; otherwise a node's tasks are packed
 // into as few lanes as hold them, which shows how many ran at once but not which worker.
-function blockTimeline(b, perNode, pick, cls) {
+function blockTimeline(b, shapes, pick, cls) {
+  // A bucket whose jobs span several nodes has one worker per job, on the job's first
+  // node, not a worker on every node; its lanes are workers. Otherwise, a lane per worker
+  // on each node.
+  const perNode = Math.max(1, ...Object.values(shapes).map(s => s.workers_per_node || 1));
+  const bt = b.tasks.find(t => shapes[t.bucket]);
+  const shape = bt ? shapes[bt.bucket] : null;
+  const perJob = shape ? (shape.nodes_per_job || shape.num_nodes || 1) : 1;
+  const workers = perJob > 1
+    ? (shape.jobs_per_block || Math.max(1, Math.floor((b.nodes || perJob) / perJob))) : null;
   const span = b.walltime_s || Math.max(1, (b.end || b.last) - b.start);
   const pos = t => Math.max(0, Math.min(100, 100 * (t - b.start) / span));
   const bars = b.tasks.filter(pick).filter(t => t.started && t.ran_s != null)
@@ -2084,7 +2093,7 @@ function blockTimeline(b, perNode, pick, cls) {
     }
   }
   const busy = bars.filter(x => x.kind !== "postponed").reduce((a, x) => a + x.to - x.from, 0);
-  const lanes = (b.nodes || Object.keys(nodes).length) * perNode;
+  const lanes = workers || (b.nodes || Object.keys(nodes).length) * perNode;
   const used = (b.end || b.last) - b.start;
   let h = `<div class="tlb"><b>${esc(b.id)}</b> \u00b7 ${esc(b.queue || "")} \u00b7 `
     + `${b.nodes == null ? "?" : b.nodes} node${b.nodes === 1 ? "" : "s"} \u00b7 started ${clock(b.start)}`
@@ -2105,11 +2114,17 @@ function blockTimeline(b, perNode, pick, cls) {
     const rows = Object.keys(n.named).sort((p, q) => p - q)
       .map(w => [`${host} \u00b7 ${w}`, n.named[w]])
       .concat(n.packed.map((l, i) => [i ? "" : host, l.bars]));
-    for (let i = rows.length; i < perNode; i++) rows.push([rows.length ? "" : host, []]);
+    if (!workers) for (let i = rows.length; i < perNode; i++) rows.push([rows.length ? "" : host, []]);
     for (const [label, xs] of rows) h += lane(label, xs);
   }
-  for (let i = hosts.length; i < (b.nodes || 0); i++)
-    for (let w = 0; w < perNode; w++) h += lane(w ? "" : "node ran no task", []);
+  if (workers) {
+    const used = hosts.reduce((a, host) => a + Object.keys(nodes[host].named).length
+                                              + nodes[host].packed.length, 0);
+    for (let i = used; i < workers; i++) h += lane("worker ran no task", []);
+  } else {
+    for (let i = hosts.length; i < (b.nodes || 0); i++)
+      for (let w = 0; w < perNode; w++) h += lane(w ? "" : "node ran no task", []);
+  }
   h += `<div class="row"><div class="lbl"></div><div class="axis">`
     + [0, 1, 2, 3, 4].map(k => `<span style="left:${25 * k}%%">${Math.round(span * k / 240)}m</span>`).join("")
     + `</div></div></div>`;
@@ -2169,11 +2184,9 @@ async function renderResources() {
       + ` (running or queued) from <b>${busy.length}</b> agent${busy.length === 1 ? "" : "s"}`
       + ` · done <b>${here.length - flying.length}</b></div>`;
     if (resView === "timeline") {
-      const shapes = Object.values(sy.buckets || {});
-      const perNode = Math.max(1, ...shapes.map(b => b.workers_per_node || 1));
       for (const b of sy.blocks) {
         if (only && !b.tasks.some(t => t.mine) && !b.refused.some(x => x.mine)) continue;
-        if (b.start) h += blockTimeline(b, perNode, pick, t => d.selected ? (t.mine ? "me" : "other") : "");
+        if (b.start) h += blockTimeline(b, sy.buckets || {}, pick, t => d.selected ? (t.mine ? "me" : "other") : "");
       }
     } else {
     h += '<table class="grid"><tr><th>block</th><th>queue</th><th>nodes</th><th>waited</th>'
