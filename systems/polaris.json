@@ -7,6 +7,11 @@
     "/eagle",
     "/lus/eagle/projects"
   ],
+  "iri": {
+    "base_url": "https://api.alcf.anl.gov/api/v2",
+    "compute_resource": "55c1c993-1124-47f9-b823-514ba3849a9a",
+    "token_command": ["alcf-tokens", "get-token", "iri"]
+  },
   "ppn": 1,
   "target": {
     "worker_setup": "module use /soft/modulefiles && module load conda && conda activate",

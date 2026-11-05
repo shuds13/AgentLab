@@ -27,6 +27,10 @@ Examples:
 - **Multi-agent:** [`campaigns/example-multi-agent-ale-ahc016/`](campaigns/example-multi-agent-ale-ahc016/)
   — a coordinator launches explorer and refiner agents on an AtCoder heuristic contest
   problem, each on its own git branch, on the local machine.
+- **GPU:** [`campaigns/example-wind-tunnel/`](campaigns/example-wind-tunnel/) — an agent
+  looks for the lowest-drag shape in a wind tunnel simulated on Polaris GPUs, and each
+  job returns a picture of the airflow. `run_resources.sh` adds a resource agent that
+  picks the queue from what the IRI API reports.
 
 ![AgentLab view of a multi-agent run: a tree of the coordinator and its explorer and refiner agents with scores and costs, and the status of the selected refiner](docs/images/multi-agent-undirected.png)
 
@@ -139,6 +143,13 @@ From your own computer, when the lab is on a machine you reach by ssh: copy
 It logs in once, starts the watcher over there, forwards the port it took, and opens
 your browser. Ctrl-C stops both ends.
 
+The chat at the bottom of a campaign's page talks to its agents. A message to everyone
+goes on the campaign's board (`ANNOUNCEMENTS.md`), which every running agent reads
+between turns. With an agent chosen in the agents panel, a message can go to that agent
+only: it lands in its run's `INBOX.md`, wakes it if it is waiting, and the other agents
+do not see it. Replies come back in the chat under the agent's name. A message to an
+agent whose run has ended reopens its saved session, as `bin/talk.sh` does.
+
 ## Sandbox
 
 On Linux, `SANDBOX=bwrap` runs the agent in a box built with bubblewrap. It sees only the
@@ -220,7 +231,10 @@ Copy `campaigns/example-vllm-inference-opt/` and replace these files:
 `job_key`, `remote_fn` — `remote_fn` is sent to the worker by source, so everything it
 needs must be imported inside it or passed in through its arguments. A result with
 `"refused": true` is a job the task declined to run, and it does not count against
-`MAX_SUBMITS`. For work that runs on the machine the agent is on: `LOCAL_DESC`,
+`MAX_SUBMITS`. Files beside the task that `remote_fn` needs on the system (a script it
+runs) are named in `REMOTE_FILES` and reach it as `target["files"]`. A result may carry
+small files back as `"files": {name: base64}`: they are saved under the workspace's
+`outputs/` and the agent is given their paths. For work that runs on the machine the agent is on: `LOCAL_DESC`,
 `LOCAL_SCHEMA`, `local_fn`. A task may define both, and the agent is given tools for
 whichever it defines. A task with only
 `local_fn` needs no Globus Compute endpoint.

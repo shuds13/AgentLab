@@ -1,21 +1,22 @@
 {
-  "_comment": "Copy to users/<you>/polaris.json and fill in. The top level is your default access; `profiles` names alternatives for the same machine, picked by \"profile\" in campaign.json. A profile overrides only the keys it names.",
-  "endpoint": "<globus-compute-endpoint-uuid>",
+  "_comment": "Copy to users/<you>/polaris.json and fill in. The top level is your default access: ALCF's facility multi-user endpoint, which needs nothing installed. `profiles` names alternatives for the same machine, picked by \"profile\" in campaign.json or PROFILE=<name>; a profile overrides only the keys it names.",
+  "endpoint": "9a947ba5-f537-4681-acf3-cc66485aadec",
   "account": "<project-to-charge>",
   "work_root": "/lus/eagle/projects/<project>/<you>/agentlab",
+  "resources": {
+    "max_idletime": 600,
+    "scheduler_options": "#PBS -l filesystems=home:eagle"
+  },
   "globus": {
     "_comment": "Optional. See docs/globus_transfer.md.",
     "remote_collection": "05d2c76a-e867-4f67-aa57-76edeb0beda0",
     "local_collection": "<this-machine-s-collection-uuid>"
   },
   "profiles": {
-    "mep": {
-      "_comment": "ALCF facility multi-user endpoint.",
-      "endpoint": "9a947ba5-f537-4681-acf3-cc66485aadec",
-      "resources": {
-        "max_idletime": 600,
-        "scheduler_options": "#PBS -l filesystems=home:eagle"
-      }
+    "own": {
+      "_comment": "Your own Globus Compute endpoint instead (systems/endpoints/polaris_pbs).",
+      "endpoint": "<globus-compute-endpoint-uuid>",
+      "resources": {}
     }
   }
 }

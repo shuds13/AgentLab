@@ -222,6 +222,50 @@ def _node_hours_left():
                                 for sy, cap in caps.items()}}
 
 
+def start_resource_agent():
+    """Start this run's resource agent (ROLE=resources) in the background, as a worker of
+    this run: it shows in the run's agents and ends with it. It places the run tree's
+    tasks between buckets (methods/resources.md); it does no work of the campaign.
+
+    Its method is the campaign's method_resources.md where there is one, else the lab's
+    methods/resources.md. RESOURCE_MODEL sets its model; else the run's own. Returns the
+    process."""
+    workspace = os.environ["WORKSPACE_DIR"]
+    run_id = os.environ.get("RUN_ID", "")
+    home = os.path.join(workspace, "agents", "resources")
+    os.makedirs(home, exist_ok=True)
+    campaign_dir = os.environ.get("CAMPAIGN_DIR") or os.path.join(
+        os.path.dirname(FRAMEWORK_DIR), "campaigns", os.environ.get("CAMPAIGN", ""))
+    method = os.path.join(campaign_dir, "method_resources.md")
+    if not os.path.isfile(method):
+        method = os.path.join(os.path.dirname(FRAMEWORK_DIR), "methods", "resources.md")
+    user_prompt = os.path.join(home, "user_prompt.md")
+    with open(user_prompt, "w") as f:
+        f.write("Start placing work. The runs in this workspace submit tasks into the "
+                "resource buckets your set_route tool lists. Do a first check now.\n")
+    env = dict(os.environ)
+    for name in ("RESUME_SESSION", "CONTINUE_RUN", "WATCH", "RUN_ID", "RESOURCE_AGENT"):
+        env.pop(name, None)
+    env.update({
+        "ROLE": "resources",
+        "METHOD_FILE": method,
+        "AGENT_CWD": home,
+        "USER_PROMPT_FILE": user_prompt,
+        "NOTIFY_START": "false", "NOTIFY_DAILY": "false", "NOTIFY_FINISH": "false",
+        # Linked to the run it serves, so it stops with it and is found beside it, but
+        # started by the framework, not by that run's agent.
+        "RUN_META": json.dumps({"parent_run": run_id, "kind": "resources",
+                                "branch": "resources", "started_by": "framework",
+                                "records": ["RESOURCES.md"]}),
+    })
+    if os.environ.get("RESOURCE_MODEL"):
+        env["AGENT_MODEL"] = os.environ["RESOURCE_MODEL"]
+    console = open(os.path.join(home, "console.log"), "a")
+    return subprocess.Popen([sys.executable, "-u", os.path.join(FRAMEWORK_DIR, "agent.py")],
+                            env=env, cwd=FRAMEWORK_DIR, stdout=console,
+                            stderr=subprocess.STDOUT)
+
+
 def run_worker(args, *, repo, roles, timeout=None):
     """Start one worker, wait for it to finish, and return what it produced.
 

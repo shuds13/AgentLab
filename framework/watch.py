@@ -34,6 +34,7 @@ import threading
 import time
 
 import budgets
+import iri
 import node_hours
 import resource_session
 import sys
@@ -53,8 +54,9 @@ else:
 LAB_DIR = os.path.abspath(os.environ.get("LAB_DIR", _default_lab))
 # Files worth opening while a run is in flight. Anything else in the workspace is
 # listed but not offered as a tab: run directories, caches, figures.
+# ANNOUNCEMENTS.md is not among them: what is on it is in the chat.
 READABLE = ("LOGBOOK.md", "findings.md", "JOURNAL.md", "REVIEWS.md", "results.jsonl",
-            "ANNOUNCEMENTS.md", "jobs.jsonl")
+            "jobs.jsonl")
 # What a record that does not exist yet means.
 NOT_YET = {"jobs.jsonl": "no jobs submitted yet", "results.jsonl": "no results yet"}
 TAIL_BYTES = 400_000        # of a file view; the log is followed from an offset instead
@@ -133,6 +135,66 @@ def root_path(campaign, root, rel):
     if path != base and not path.startswith(base + os.sep):
         return None
     return path
+
+
+PICTURE_DIRS = ("outputs", "figures")
+PICTURE_TYPES = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp")
+
+
+def pictures(campaign):
+    """Every image under the workspace's outputs/ (what jobs returned) and figures/ (what
+    the agents drew), newest first, each with a caption: for a job's output, the job and
+    what it was given, from jobs.jsonl; otherwise its name."""
+    ws = workspace(campaign)
+    jobs = {}
+    try:
+        with open(os.path.join(ws, "jobs.jsonl")) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("event") in ("submit", "local_submit"):
+                    local = "local_" if r["event"] == "local_submit" else ""
+                    jobs[(r.get("run"), f"{local}{r.get('job_id')}")] = (
+                        r.get("key") or json.dumps(r.get("args"))[:200])
+    except OSError:
+        pass
+    out = []
+    for top in PICTURE_DIRS:
+        for d, _, names in os.walk(os.path.join(ws, top)):
+            for n in names:
+                if not n.lower().endswith(PICTURE_TYPES):
+                    continue
+                path = os.path.join(d, n)
+                rel = os.path.relpath(path, ws)
+                parts = rel.split(os.sep)
+                caption = n
+                # outputs/<run>/job_<id>/<name>
+                if len(parts) == 4 and parts[0] == "outputs" and parts[2].startswith("job_"):
+                    job = parts[2][4:]
+                    caption = f"job {job}"
+                    if (parts[1], job) in jobs:
+                        caption += " \u00b7 " + jobs[(parts[1], job)]
+                out.append({"path": rel, "caption": caption, "mtime": _mtime(path)})
+    out.sort(key=lambda p: -p["mtime"])
+    return out
+
+
+def campaign_tabs(campaign):
+    """The record tabs a campaign asks for (campaign.json: "watch": {"tabs": [...]}),
+    in its order, or None for the usual ones. A name is a file in the workspace, or
+    "pictures"."""
+    camp = tree_roots(campaign).get("camp")
+    try:
+        with open(os.path.join(camp, "campaign.json")) as f:
+            tabs = (json.load(f).get("watch") or {}).get("tabs")
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(tabs, list):
+        return None
+    return [str(n) for n in tabs if n == "pictures"
+            or (n and not os.path.normpath(str(n)).startswith((".", "/")))]
 
 
 def listing(campaign, root, rel):
@@ -256,6 +318,44 @@ def _group_siblings(campaign):
     return [c for c in campaigns() if c.startswith(group) and c != campaign]
 
 
+# What a system's IRI API says about its queues and your batch jobs (iri.py), for the
+# systems that have IRI settings. Fetched in the background at most once a minute per
+# system, so a page refresh never waits on the facility; the first look has nothing yet.
+IRI_TTL = 60
+_iri_seen = {}
+_iri_lock = threading.Lock()
+
+
+def iri_view(system, queues):
+    def read(path):
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
+    user = os.environ.get("USER_NAME") or getpass.getuser()
+    cfg = iri.configure(read(os.path.join(LAB_DIR, "systems", f"{system}.json")),
+                        read(os.path.join(LAB_DIR, "users", user, f"{system}.json")), user)
+    if cfg is None:
+        return None
+    key = (system, tuple(sorted(q for q in queues if q)))
+    with _iri_lock:
+        seen = _iri_seen.setdefault(key, {"at": None, "data": {}, "busy": False})
+        stale = seen["at"] is None or time.time() - seen["at"] >= IRI_TTL
+        if stale and not seen["busy"]:
+            seen["busy"] = True
+
+            def fetch():
+                try:
+                    data = iri.status(cfg, list(key[1]))
+                except Exception as e:
+                    data = {"jobs_error": str(e)}
+                with _iri_lock:
+                    seen.update(at=time.time(), data=data, busy=False)
+            threading.Thread(target=fetch, daemon=True).start()
+        return {"checked_at": seen["at"], **seen["data"]}
+
+
 def resources(campaign, run=None, light=False):
     """The run tree's remote work: per system, its buckets and who shares them, the
     blocks its tasks ran in, and the tasks each block ran or handed back.
@@ -280,9 +380,11 @@ def resources(campaign, run=None, light=False):
         rid = os.path.basename(os.path.dirname(m))
         if rid == top_id or d.get("parent_run") == top_id:
             metas[rid] = d
-    # A run's own tasks are labelled by its role: a coordinator when it has workers,
-    # else a single researcher. In a group, by its workspace's name as well.
-    top_label = "coordinator" if len(metas) > 1 else "researcher"
+    # A run's own tasks are labelled by its role: a coordinator when it has workers that
+    # do the work (a resource agent does none), else a single researcher. In a group, by
+    # its workspace's name as well.
+    top_label = ("coordinator" if any(d.get("kind") != "resources" for rid, d in metas.items()
+                                      if rid != top_id) else "researcher")
     siblings = _group_siblings(campaign)
     if siblings and not selected:
         selected = top_id
@@ -398,7 +500,8 @@ def resources(campaign, run=None, light=False):
         sysd.update(blocks=rows,
                     node_hours=round(sum(node_hours.hours(b) or 0 for b in rows), 1),
                     max_node_hours=(_budget_limits(top_dir, top).get("node_hours")
-                                    or {}).get(name))
+                                    or {}).get(name),
+                    iri=iri_view(name, [s.get("queue") for s in sysd["buckets"].values()]))
         out.append(sysd)
     return {"systems": out, "tasks": tasks, "selected": selected,
             "group": campaign.split("/", 1)[0] if siblings else None,
@@ -502,7 +605,7 @@ def workers(campaign, run_id):
             state = "not responding"
         cwd = run_cwd(campaign, meta)
         out.append({"run": os.path.basename(d), "kind": meta.get("kind"),
-                    "method": meta.get("method"),
+                    "method": meta.get("method"), "started_by": meta.get("started_by"),
                     "branch": meta.get("branch"), "parent": meta.get("parent"),
                     "parents": meta.get("parents") or [],
                     "status": state, "usd": _usd(meta),
@@ -1137,7 +1240,26 @@ def status(campaign, run=None):
         "workers": started_runs, "tree_usd": tree_usd,
         "records": meta.get("records") or [],
         "scores": meta.get("scores") or {}, "primary_score": meta.get("primary_score"),
+        "routes": _routes_set(ws, os.path.basename(run_dir)) if meta.get("kind") == "resources"
+                  else None,
     }
+
+
+def _routes_set(ws, run_id):
+    """The route changes a resource agent made, from the workspace's routing_log.jsonl."""
+    out = []
+    try:
+        with open(os.path.join(ws, "routing_log.jsonl")) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if r.get("who") == run_id:
+                    out.append({k: r.get(k) for k in ("ts", "from", "after", "reason")})
+    except OSError:
+        pass
+    return out
 
 
 def newest_log(campaign):
@@ -1329,6 +1451,8 @@ PAGE = """<!doctype html>
  #tabs .runs span { pointer-events:none; padding:0 6px; border:1px solid #333;
                     background:#222; color:#bbb; font-size:19px; line-height:24px; }
  /* The group panel's toggle: a chevron, at the clock's size. */
+ #tabs button.iconbtn svg { display:block; height:1.5em; width:1.5em; fill:none;
+                           stroke:currentColor; stroke-width:1.2; }
  #tabs button.groupbtn svg { display:block; height:1.5em; width:1.5em; fill:none;
                             stroke:currentColor; stroke-width:1.5; }
  #tabs button.groupbtn .pane.on { fill:currentColor; }
@@ -1494,6 +1618,18 @@ PAGE = """<!doctype html>
         border-top:1px solid #24313d; }
  #say input { flex:1; background:#0b0f14; color:#ddd; border:1px solid #2b3946;
               padding:5px 8px; font:inherit; }
+ .pics { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));
+         gap:12px; padding:12px 14px; }
+ .pics figure { margin:0; cursor:zoom-in; }
+ .pics img { width:100%%; display:block; border:1px solid #333; background:#fff; }
+ .pics figcaption { color:#999; font-size:12px; margin-top:4px; overflow-wrap:anywhere; }
+ #picbox { position:fixed; inset:0; background:rgba(0,0,0,0.88); z-index:50;
+           display:flex; flex-direction:column; align-items:center; justify-content:center; }
+ #picbox img { max-width:94vw; max-height:84vh; background:#fff; }
+ #picbox .cap { color:#ccc; margin-top:10px; max-width:94vw; text-align:center;
+                overflow-wrap:anywhere; font-size:13px; }
+ #picbox .cap span { color:#777; }
+ #say select { background:#0b0f14; color:#bbb; border:1px solid #2b3946; font:inherit; }
  #say button { background:#222; color:#bbb; border:1px solid #333; padding:5px 14px;
                cursor:pointer; font:inherit; }
  button.copy { background:#222; color:#999; border:1px solid #333; padding:0 6px;
@@ -1517,7 +1653,7 @@ PAGE = """<!doctype html>
 <div id="chat">
   <div id="chathead"><span id="chattitle">CHAT</span><button id="chattoggle">hide</button></div>
   <div id="chatlog" class="none">no messages yet</div>
-  <div id="say"><input id="msg" autocomplete="off"
+  <div id="say"><select id="to" title="who the message goes to"><option value="">everyone</option></select><input id="msg" autocomplete="off"
     placeholder="message the agent \u2014 it reads between turns"><button>send</button></div>
 </div>
 <script>
@@ -1638,7 +1774,15 @@ function setTabs(files) {
     const b = document.createElement("button");
     // The log is what the agent said and did; the file name is not the point.
     b.textContent = n === "log" ? "agent log" : n.startsWith("r:") ? n.slice(2) : n;
-    b.className = n === tab ? "on" : "";
+    // Pictures as an icon, to leave room for the records: a frame with a hill and a sun.
+    if (n === "pictures") {
+      b.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true">`
+        + `<rect x="1.5" y="2.5" width="13" height="11" rx="1.5"/>`
+        + `<path d="M2 12 L6 7.5 L9 10.5 L11 8.5 L14 11.5"/>`
+        + `<circle cx="11" cy="5.5" r="1.2"/></svg>`;
+      b.title = "pictures";
+    }
+    b.className = (n === tab ? "on" : "") + (n === "pictures" ? " iconbtn" : "");
     b.onclick = () => { openTab(n); setTabs(files); };
     t.appendChild(b);
   };
@@ -1899,6 +2043,19 @@ async function renderBudgets() {
 const clock = t => t ? new Date(t * 1000).toLocaleString([], {weekday: "short",
   hour: "2-digit", minute: "2-digit"}) : "\u2014";
 const dur = s => s == null ? "\u2014" : hms(Math.round(s));
+// A task in flight, made more exact by your batch jobs in its bucket's queue: queued
+// when every one there is queued or held, else still "waiting or running".
+function iriState(sy, t) {
+  const jobs = sy.iri && sy.iri.your_jobs;
+  const q = ((sy.buckets || {})[t.bucket] || {}).queue;
+  if (t.state !== "waiting or running" || !jobs || !q) return t.state;
+  const here = jobs.filter(j => j.queue === q);
+  if (here.length && here.every(j => j.state === "queued" || j.state === "held"))
+    return `waiting: block ${here.map(j => j.id).join(", ")} ${here[0].state} in ${q}`;
+  if (here.some(j => j.state === "active"))
+    return `waiting or running (a block of yours in ${q} is running)`;
+  return t.state;
+}
 // One block as a timeline: a lane per worker, grouped by node, over the block's walltime.
 // A task names its worker where the engine gives one; otherwise a node's tasks are packed
 // into as few lanes as hold them, which shows how many ran at once but not which worker.
@@ -2058,7 +2215,8 @@ async function renderResources() {
         + `<tr><th>agent</th><th>task</th><th>kind</th><th>submitted</th><th>state</th></tr>`;
       for (const t of ts)
         h += `<tr class="${rowCls(t)}"><td>${esc(t.agent)}</td><td>${t.job_id}</td>`
-          + `<td>${esc(t.kind || "")}</td><td>${clock(t.submitted)}</td><td>${esc(t.state)}</td></tr>`;
+          + `<td>${esc(t.kind || "")}</td><td>${clock(t.submitted)}</td>`
+          + `<td>${esc(iriState(sy, t))}</td></tr>`;
       h += "</table>";
     }
   }
@@ -2090,6 +2248,7 @@ async function renderResources() {
 function renderStatus(s) {
   if (!s.run) { view.textContent = "no run yet"; return; }
   const shapes = Object.entries(s.buckets || {});
+  const placer = s.kind === "resources";
   const rows = [
     ["run", `${s.handle || "\u2014"} \u00b7 ${s.run}`],
     ["state", s.status === "running"
@@ -2101,15 +2260,15 @@ function renderStatus(s) {
     // Where the work ran, next to the counts of it. A campaign whose task defines both
     // kinds of job splits the counts, since they did not run in the same place.
     // The systems by name; their endpoints are in the resources view.
-    ["jobs run on", (s.endpoint
+    [placer ? "places work in" : "jobs run on", (placer ? "" : (s.endpoint
         ? (Object.keys(s.systems || {}).length ? Object.keys(s.systems) : [s.system || "?"])
             .join(" \u00b7 ") + (s.has_local ? " \u00b7 this machine" : "")
-        : "this machine")
+        : "this machine"))
         // The shape a job is given -- nodes, queue, walltime -- which is worth seeing
         // even when there is only one of them. The name and the default marker are
         // only meaningful where there is a choice.
         + (shapes.length
-           ? `<br>` + shapes.map(([k, b]) => {
+           ? (placer ? "" : `<br>`) + shapes.map(([k, b]) => {
                // Only while the run is live: a run killed with work outstanding never
                // logs those completions, so the count would stay up for good.
                const out = s.status === "running"
@@ -2138,9 +2297,14 @@ function renderStatus(s) {
         ? `${fmt(r.used == null ? 0 : r.used)} <span style="color:#777">(no limit)</span>`
         : bar(r.used || 0, r.limit, fmt)];
     }),
-    ["still running", `${s.jobs_run - s.jobs_done - (s.jobs_abandoned || 0)} of `
+    ...(placer ? [
+      ["checks", String(s.turns || 0)],
+      ["routes set", !(s.routes || []).length ? "none"
+        : s.routes.map(r => `${clock(r.ts)} ${esc(r.from)} \u2192 ${esc(r.after || "(back)")}`
+            + (r.reason ? ` <span style="color:#777">${esc(r.reason)}</span>` : "")).join("<br>")]]
+    : [["still running", `${s.jobs_run - s.jobs_done - (s.jobs_abandoned || 0)} of `
         + `${s.jobs_run} submitted, ${s.jobs_done} returned`
-        + (s.jobs_abandoned ? `, ${s.jobs_abandoned} abandoned` : "")],
+        + (s.jobs_abandoned ? `, ${s.jobs_abandoned} abandoned` : "")]]),
     // The scores the run's jobs reported, the campaign's primary one first and marked.
     ...(Object.keys(s.scores || {}).length ? [["scores", Object.entries(s.scores)
         .sort(([a], [b]) => (b === s.primary_score) - (a === s.primary_score))
@@ -2158,13 +2322,13 @@ function renderStatus(s) {
     ...(s.tree_usd == null ? [] : [["cost with workers", "$" + s.tree_usd.toFixed(2)]]),
     ...(s.parent_run ? [
       // The run that started a worker is the one whose agents panel it was chosen in.
-      ["started by", (s.parent_run_known
+      ["started by", (placer ? "the framework, with run " : "") + (s.parent_run_known
         ? `<a href="#" data-agent="">${esc(s.parent_run)}</a>`
         : `${esc(s.parent_run)} <span style="color:#777">(no such run here)</span>`)
         + (s.parents.length ? " \u00b7 from " + s.parents.map(b => agentByBranch[b]
             ? `<a href="#" data-agent="${esc(agentByBranch[b])}">${esc(b)}</a>` : esc(b))
             .join(" + ") : "")],
-      ["works on", `${esc(s.branch || "\u2014")} (${esc(s.kind || "?")})`]] : []),
+      ...(placer ? [] : [["works on", `${esc(s.branch || "\u2014")} (${esc(s.kind || "?")})`]])] : []),
     // Only a run that has a critic names one.
     ...(s.critic && !/^(none|no critic)/.test(s.critic) ? [["critic", esc(s.critic)]] : []),
     // The run's Claude session, to reopen afterwards with `claude -r`. Copying is
@@ -2241,6 +2405,51 @@ const sizeof = n => n < 1000 ? n + " B"
                   : n < 1e6 ? (n / 1e3).toFixed(1) + " KB"
                   : (n / 1e6).toFixed(1) + " MB";
 const isImage = n => /\\.(png|jpe?g|gif|svg|webp)$/i.test(n);
+// Every picture the run's jobs returned and its agents drew, newest first, as a grid.
+// One clicked opens over the page; the arrow keys go to the next and the one before,
+// Escape closes it.
+let pics = [], picAt = -1;
+async function renderPictures() {
+  const mine = campaign;
+  let list;
+  try { list = await (await fetch(url("/pictures"))).json(); } catch (e) { return; }
+  if (mine !== campaign || tab !== "pictures") return;
+  const sig = JSON.stringify(list.map(p => p.path));
+  if (view.dataset.body === sig) return;
+  view.dataset.body = sig; view.className = "";
+  pics = list;
+  const src = p => esc(url("/image?root=ws&name=" + encodeURIComponent(p.path)));
+  const cut = s => s.length > 48 ? s.slice(0, 46) + "\u2026" : s;
+  view.innerHTML = `<div class="pics">` + (list.length ? list.map((p, i) =>
+    `<figure data-pic="${i}" title="${esc(p.caption)}"><img loading="lazy" src="${src(p)}">`
+    + `<figcaption>${esc(cut(p.caption))}</figcaption></figure>`).join("")
+    : `<div class="none">no pictures yet</div>`) + `</div>`;
+}
+function showPic(i) {
+  let box = document.getElementById("picbox");
+  if (i < 0 || i >= pics.length) { if (box) box.remove(); picAt = -1; return; }
+  picAt = i;
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "picbox";
+    box.onclick = e => { if (e.target === box) showPic(-1); };
+    document.body.appendChild(box);
+  }
+  const p = pics[i];
+  box.innerHTML = `<img src="${esc(url("/image?root=ws&name=" + encodeURIComponent(p.path)))}">`
+    + `<div class="cap">${i + 1} of ${pics.length} \u00b7 ${esc(p.caption)}`
+    + `<br><span>\u2190 \u2192 to move, Esc to close</span></div>`;
+}
+document.addEventListener("click", e => {
+  const f = e.target.closest("[data-pic]");
+  if (f) showPic(+f.dataset.pic);
+});
+document.addEventListener("keydown", e => {
+  if (picAt < 0) return;
+  if (e.key === "Escape") showPic(-1);
+  else if (e.key === "ArrowRight") showPic(Math.min(picAt + 1, pics.length - 1));
+  else if (e.key === "ArrowLeft") showPic(Math.max(picAt - 1, 0));
+});
 const stamp = t => when(new Date(t * 1000).toISOString());
 // A key is root and path together, because the same relative path means a different
 // file under each root.
@@ -2376,11 +2585,19 @@ function renderAgents(top, group, session) {
   const usd = models => (models || []).reduce((t, m) => t + (m.usd || 0), 0);
   // Each row names how that agent works: its method (director, explorer, ...), or for a
   // run from before methods were recorded, a worker's kind.
-  const me = {run: "", branch: top.kind ? top.branch : "coordinator", method: top.method,
+  // The top run coordinates only if it started workers that do the work; beside a
+  // resource agent alone it is the one researcher.
+  // Agents the framework started (a resource agent) sit beside the top run, not under
+  // it: its agent did not start them.
+  const fw = ws.filter(w => w.started_by === "framework" || w.kind === "resources");
+  const own = ws.filter(w => !fw.includes(w));
+  const lead = own.length ? "coordinator" : "researcher";
+  const me = {run: "", branch: top.kind ? top.branch : lead, method: top.method,
               kind: top.kind, status: top.status, usd: usd(top.cost_models), score: null};
   const byBranch = {};
   for (const w of ws) byBranch[w.branch] = w;
   agentByBranch = Object.fromEntries(ws.map(w => [w.branch, w.run]));
+  setRecipients(ws.find(w => w.run === agentSel));
   const dot = st => st === "running" ? '<i class="on">\u25cf</i>'
     : st === "not responding" ? '<i class="bad">\u25cf</i>' : "<i>\u25cb</i>";
   const row = (a, depth) =>
@@ -2389,11 +2606,14 @@ function renderAgents(top, group, session) {
     + ` <b>${esc(a.branch || a.run)}</b> <span class="k">${esc(a.method || a.kind || "")}</span>`
     + `<span class="sc">${a.score == null ? "" : +a.score.toPrecision(7)}</span>`
     + `<span class="usd">${a.usd == null ? "\u2014" : "$" + a.usd.toFixed(2)}</span></div>`;
-  const below = (branch, depth) => ws
+  const below = (branch, depth) => own
     .filter(w => (byBranch[w.parent] ? w.parent : null) === branch)
     .map(w => row(w, depth) + below(w.branch, depth + 1)).join("");
-  const tree = (depth) => row(me, depth) + below(null, depth + 1)
-    + `<div class="atotal">${ws.length} worker${ws.length === 1 ? "" : "s"} \u00b7 total `
+  const tree = (depth) => fw.map(w => row({...w, method: (w.method || w.kind || "") + " \u00b7 framework"}, depth)).join("")
+    + row(me, depth) + below(null, depth + 1)
+    + `<div class="atotal">` + [own.length ? `${own.length} worker${own.length === 1 ? "" : "s"}` : "",
+        fw.length ? `${fw.length} from the framework` : ""].filter(Boolean).join(" + ")
+    + ` \u00b7 total `
     + (top.tree_usd == null ? "\u2014" : "$" + top.tree_usd.toFixed(2)) + "</div>";
   let html;
   if (grouped) {
@@ -2451,7 +2671,8 @@ async function refresh() {
     if (!here()) return;
     const ended = !!s.run && s.status !== "running";
     if (ended !== runEnded) { runEnded = ended; setChatBar(); }
-    const label = (top.workers || []).length ? (agentSel ? s.branch || agentSel : "coordinator") : "";
+    const lead = (top.workers || []).some(w => w.kind !== "resources") ? "coordinator" : "researcher";
+    const label = (top.workers || []).length ? (agentSel ? s.branch || agentSel : lead) : "";
     const recs = s.records || [];
     if (label !== agentLabel || JSON.stringify(recs) !== JSON.stringify(agentRecords)) {
       agentLabel = label; agentRecords = recs; setTabs(lastFiles);
@@ -2466,6 +2687,7 @@ async function refresh() {
     if (tab === "resources") { await renderResources(); return; }
     if (tab === "budgets") { await renderBudgets(); return; }
     if (tab === "tree") { await renderTree(); return; }
+    if (tab === "pictures") { await renderPictures(); return; }
     if (tab === "log") {
       view.className = "";
       const stick = atBottom();
@@ -2530,6 +2752,8 @@ let chatText = "";
 
 async function chat() {
   if (selecting()) return;
+  // The lab's chat has one reader, the secretary, so there is no one to pick.
+  document.getElementById("to").hidden = scope === "lab";
   if (scope === "lab") return labChat();
   const mine = campaign;
   let body;
@@ -2626,6 +2850,17 @@ function renderChat(body) {
   if (near) chatlog.scrollTop = chatlog.scrollHeight;
 }
 
+// Who a message can go to: everyone (the board every agent reads), or the worker chosen
+// in the agents panel alone (its run's inbox). Rebuilt only when that changes.
+function setRecipients(chosen) {
+  const sel = document.getElementById("to");
+  const want = [["", "everyone"], ...(chosen ? [[chosen.run, "only " + (chosen.branch || chosen.run)]] : [])];
+  const have = [...sel.options].map(o => [o.value, o.textContent]);
+  if (JSON.stringify(want) === JSON.stringify(have)) return;
+  const keep = sel.value;
+  sel.innerHTML = want.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("");
+  sel.value = want.some(([v]) => v === keep) ? keep : "";
+}
 // A message goes to the board the agent reads between turns, so it lands after the
 // turn in flight rather than interrupting it. On the lab page it goes to the
 // secretary's inbox instead -- one reader, one answer, however many campaigns are up.
@@ -2633,7 +2868,12 @@ async function say() {
   const box = document.getElementById("msg"), text = box.value.trim();
   if (!text) return;
   box.value = "";
-  const to = scope === "lab" ? "/say?lab" : url("/say");
+  const one = scope === "lab" ? "" : document.getElementById("to").value;
+  // Everyone means the board of the run being watched, whichever worker is chosen in the
+  // agents panel; only an ended top run takes a message into its saved session instead.
+  const to = scope === "lab" ? "/say?lab"
+    : one ? url("/say") + "&to=" + encodeURIComponent(one)
+    : "/say?c=" + encodeURIComponent(campaign) + (run ? "&run=" + encodeURIComponent(run) : "");
   try {
     const r = await (await fetch(to, {method: "POST", body: text})).json();
     if (r.error) { box.value = text; alert(r.error); return; }
@@ -3365,6 +3605,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         ws = workspace(campaign)
         stamp = datetime.now().strftime("%H:%M")
+        # A message to one agent alone goes to its run's inbox, which only it reads.
+        to = (q.get("to") or [""])[0]
+        if to:
+            to_dir = run_path(campaign, to)
+            if not to_dir:
+                self._send(json.dumps({"sent": False, "error": f"no run {to}"}),
+                           "application/json")
+                return
+            if _ended_with_session(to_dir):
+                self._send(json.dumps(talk_to_run(to_dir, ws, text, stamp)),
+                           "application/json")
+                return
+            name = _meta(os.path.join(to_dir, "meta.json")).get("branch") or to
+            try:
+                with open(os.path.join(to_dir, "INBOX.md"), "a") as f:
+                    f.write(text.replace("\n", " ") + "\n")
+                with open(os.path.join(ws, "MESSAGES.md"), "a") as f:
+                    f.write(f"`{stamp}` **you** (to {name} only) {text}\n\n")
+            except OSError as e:
+                self._send(json.dumps({"sent": False, "error": str(e)}), "application/json")
+                return
+            self._send(json.dumps({"sent": True}), "application/json")
+            return
         # A run that has ended reads no board, so a message to it reopens its session
         # instead, and the agent's reply joins the same conversation (talk.py).
         run_dir = run_path(campaign, (q.get("run") or [""])[0] or None)
@@ -3475,10 +3738,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif url.path == "/runs":
             self._send(json.dumps(runs(campaign)), "application/json")
         elif url.path == "/files":
+            # The record tabs: the campaign's own choice, else the usual records, and
+            # pictures wherever there are any. Only those that exist yet.
             ws = workspace(campaign)
-            self._send(json.dumps([f for f in READABLE
-                                   if os.path.isfile(os.path.join(ws, f))]),
+            chosen = campaign_tabs(campaign)
+            names = chosen if chosen is not None else list(READABLE) + ["pictures"]
+            have_pics = "pictures" in names and bool(pictures(campaign))
+            self._send(json.dumps([n for n in names
+                                   if (n == "pictures" and have_pics)
+                                   or (n != "pictures"
+                                       and os.path.isfile(os.path.join(ws, n)))]),
                        "application/json")
+        elif url.path == "/pictures":
+            self._send(json.dumps(pictures(campaign)), "application/json")
         elif url.path == "/tree":
             keys = [k for k in q.get("open", [""])[0].split(",") if k]
             self._send(json.dumps(tree(campaign, keys)), "application/json")
@@ -3594,7 +3866,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return self._read(path, rel)
 
     def _file(self, campaign, name):
-        if name not in READABLE:
+        if name not in READABLE and name not in (campaign_tabs(campaign) or []):
             return "not a file this watcher serves"
         path = os.path.join(workspace(campaign), name)
         # A record is written when there is first something in it, so a missing one is

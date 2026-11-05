@@ -210,6 +210,20 @@ EXPLORE_PROMPT = _prompt("EXPLORE_PROMPT",
     "the next step is and submit it. If the goal is met, or nothing further is worth "
     "running, say so and stop rather than filling the budget. " + _WAIT_NOTE
 )
+# A resource agent (ROLE=resources) has no jobs of its own. It is woken every
+# RESOURCE_INTERVAL seconds, or sooner when the work in flight in the workspace changes,
+# and ends once no other run there has been alive for RESOURCE_IDLE_END seconds.
+RESOURCE_INTERVAL = int(os.environ.get("RESOURCE_INTERVAL", "300"))
+RESOURCE_IDLE_END = int(os.environ.get("RESOURCE_IDLE_END", "600"))
+RESOURCE_POLL = 15
+RESOURCE_FIRST_WAIT = int(os.environ.get("RESOURCE_FIRST_WAIT", "300"))
+RESOURCE_PROMPT = _prompt("RESOURCE_PROMPT",
+    "Time to check where work goes. The work in flight in this workspace now, as tasks "
+    "per bucket, and the runs alive: {demand}. Check the systems, change any route your "
+    "method calls for, and record the check as your method says. Then end your turn by "
+    "replying without a tool call: you are woken again within {minutes} minutes, or "
+    "sooner when the work in flight changes."
+)
 WINDDOWN_PROMPT = _prompt("WINDDOWN_PROMPT",
     "Wind-down requested: this run is ending. Submit no new work -- the submit tools "
     "will refuse it. Collect and log the jobs already in flight as they finish; a job "
@@ -603,6 +617,41 @@ def _announcements_prompt(text, tail=""):
     body = ("A message for you on the announcements board:\n\n" + quoted +
             "\n\nDo what it asks, and answer it with `notify`. Pending jobs remain "
             "tracked.")
+    return body + ("\n\n" + tail if tail else "")
+
+
+# Messages to this agent alone, from the watch: <run dir>/INBOX.md, one per line. Read
+# from where the last read ended, so each is given once.
+INBOX_FILE = os.path.join(RUN_DIR, "INBOX.md")
+# A continued run was given what is already there.
+_inbox_seen = os.path.getsize(INBOX_FILE) if os.path.exists(INBOX_FILE) else 0
+
+
+def _inbox_waiting():
+    try:
+        return os.path.getsize(INBOX_FILE) > _inbox_seen
+    except OSError:
+        return False
+
+
+def _new_inbox():
+    """Messages to this agent alone that it has not yet been given."""
+    global _inbox_seen
+    try:
+        with open(INBOX_FILE, "rb") as f:
+            f.seek(_inbox_seen)
+            data = f.read()
+    except OSError:
+        return ""
+    _inbox_seen += len(data)
+    return data.decode("utf-8", "replace").strip()
+
+
+def _inbox_prompt(text, tail=""):
+    quoted = "\n".join("> " + line for line in text.strip().splitlines())
+    body = ("A message to you alone from the person watching this run (the other agents "
+            "do not see it):\n\n" + quoted + "\n\nAnswer it with `notify`, and do what "
+            "it asks. Pending jobs remain tracked.")
     return body + ("\n\n" + tail if tail else "")
 
 
@@ -1081,6 +1130,14 @@ def _changed_since_part():
 def _seed_budgets():
     """Record the run's budgets (budgets.py) from what it was started with. A continued
     run keeps the budgets it has; they are raised with bin/budget.sh."""
+    # A resource agent submits nothing and starts no workers: its run time is its only
+    # budget, whatever the task module it was started with defines.
+    if tools.RESOURCE_AGENT:
+        try:
+            budgets.seed(RUN_DIR, {"runtime_s": MAX_RUNTIME})
+        except OSError as e:
+            print(f"[run] could not record budgets (the starting values hold): {e}", flush=True)
+        return
     values = {"submits": tools.MAX_SUBMITS, "submits_buckets": dict(tools.BUCKET_SUBMITS),
               "runtime_s": MAX_RUNTIME}
     # Node-hours are the launch's: the run that starts workers holds them.
@@ -1521,6 +1578,10 @@ def preflight():
         except Exception as e:
             print(f"[preflight] WARNING: could not check Globus Transfer collections: {e}",
                   flush=True)
+    for _nm, _c in tools.IRI.items():
+        _err = tools._iri.check(_c)
+        if _err:
+            problems.append(f"IRI on {_nm} ({_c['base_url']}): {_err}")
     if problems:
         print("PREFLIGHT FAILED - cannot run. Fix these and restart:", flush=True)
         for pr in problems:
@@ -1568,6 +1629,10 @@ def preflight():
     print(f"model:        {RESOLVED_MODEL or '(could not be determined)'}", flush=True)
     print(f"effort:       {AGENT_EFFORT or '(left to Claude Code)'}", flush=True)
     print(f"advisor:      {AGENT_ADVISOR or 'none'}", flush=True)
+    if os.environ.get("RESOURCE_AGENT", "").lower() == "true" and not tools.RESOURCE_AGENT:
+        print(f"resources:    a resource agent, on "
+              f"{os.environ.get('RESOURCE_MODEL') or AGENT_MODEL or 'the default model'}, "
+              f"checking every {RESOURCE_INTERVAL}s", flush=True)
     print(f"critic:       {CRITIC_LABEL}", flush=True)
     # The budget and the resources a job asks for. They come from three files and the
     # environment, so the resolved values are the only honest way to show them -- and
@@ -1951,6 +2016,40 @@ async def main():
 
     beat_task = asyncio.create_task(_heartbeat_loop())
 
+    # The run's resource agent (RESOURCE_AGENT=true), started by the framework as the top
+    # run's first worker and stopped when the run ends.
+    resource_proc = None
+    if (os.environ.get("RESOURCE_AGENT", "").lower() == "true" and not tools.RESOURCE_AGENT
+            and not RUN_META.get("parent_run")):
+        import spawn as _spawn
+        resource_proc = _spawn.start_resource_agent()
+        print(f"[resources] resource agent started (pid {resource_proc.pid})", flush=True)
+        # This run's first turn waits for the resource agent's first check, so a route it
+        # sets applies from the first job; at most RESOURCE_FIRST_WAIT seconds, so one
+        # that cannot start does not hold the run.
+        _set_phase("waiting for the resource agent's first check")
+        waited = 0
+        while waited < RESOURCE_FIRST_WAIT and resource_proc.poll() is None:
+            done = False
+            for m in glob.glob(os.path.join(WORKSPACE_DIR, "runs", "*", "meta.json")):
+                try:
+                    with open(m) as fh:
+                        rm = json.load(fh)
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if (rm.get("parent_run") == RUN_ID and rm.get("kind") == "resources"
+                        and (rm.get("turns") or 0) >= 1):
+                    done = True
+            if done:
+                print(f"[resources] first check done after {waited}s", flush=True)
+                break
+            await asyncio.sleep(5)
+            waited += 5
+        else:
+            print(f"[resources] going on without the resource agent's first check "
+                  f"({'it exited' if resource_proc.poll() is not None else f'{waited}s'})",
+                  flush=True)
+
     try:
         async with ClaudeSDKClient(options=options) as client:
             # The window is asked for once the first turn has drained -- the lookup is
@@ -1998,6 +2097,7 @@ async def main():
             # are in the budgets it was told of.
             _, budget_seen = budgets.changes_since(RUN_DIR, 0)
             finalize_turns = 0
+            last_live = time.time()     # a resource agent's last sight of another run
             # A continuation's turns are numbered on from the earlier part's.
             first_turn = (PREV_META.get("turns") or 0) + 1 if CONTINUED else 1
             for turn_num in range(first_turn, first_turn + MAX_TURNS):
@@ -2115,6 +2215,9 @@ async def main():
                     if fresh:
                         prompt = _announcements_prompt(fresh, tail=prompt)
                 last_announcements = board
+                mail = _new_inbox()
+                if mail:
+                    prompt = _inbox_prompt(mail, tail=prompt)
                 submits_before = tools.submit_count()
                 _prov_turn(prompt)
                 await client.query(prompt)
@@ -2162,6 +2265,31 @@ async def main():
                     print(f"{stopping}: drained and written up — run complete.", flush=True)
                     stop_reason = stopping
                     break
+                # A resource agent waits for time to pass or the demand to change, not
+                # for jobs of its own.
+                if tools.RESOURCE_AGENT:
+                    seen = tools._routing.demand(WORKSPACE_DIR, RUN_ID)
+                    waited = 0
+                    while (waited < RESOURCE_INTERVAL and not _stop_file_present()
+                           and not _over_time()):
+                        _set_phase(f"turn {turn_num}: waiting to check placement")
+                        await asyncio.sleep(RESOURCE_POLL)
+                        waited += RESOURCE_POLL
+                        _heartbeat(force=False)
+                        if (tools._routing.demand(WORKSPACE_DIR, RUN_ID) != seen
+                                or _inbox_waiting()):
+                            break
+                    now = tools._routing.demand(WORKSPACE_DIR, RUN_ID)
+                    if now["live_runs"]:
+                        last_live = time.time()
+                    elif time.time() - last_live >= RESOURCE_IDLE_END:
+                        print(f"No other run alive for {RESOURCE_IDLE_END}s -- stopping.",
+                              flush=True)
+                        stop_reason = "no runs left to place work for"
+                        break
+                    prompt = RESOURCE_PROMPT.format(demand=json.dumps(now),
+                                                    minutes=max(1, RESOURCE_INTERVAL // 60))
+                    continue
                 # Idle turn with budget left: re-prompt the agent to propose a NEW
                 # region instead of exiting. A consecutive-empty cap stops a truly
                 # stuck agent.
@@ -2204,8 +2332,11 @@ async def main():
                         last_announcements = board
                         if board_update:
                             break
-                    # A budget change is told at the turn it breaks out to.
+                    # A budget change, or a message to this agent alone, is told at the
+                    # turn it breaks out to.
                     if budgets.changes_since(RUN_DIR, budget_seen)[1] > budget_seen:
+                        break
+                    if _inbox_waiting():
                         break
                     since_tick += ANNOUNCE_POLL
                     if since_tick < WAIT_TIMEOUT:
@@ -2248,12 +2379,22 @@ async def main():
                     # CONTINUE asks for the next region, which is the one thing a run
                     # that is winding down must not do.
                     prompt = WINDDOWN_PROMPT
+                elif _inbox_waiting() and tools.pending_count() > 0:
+                    # Woken for a message, not a result: the message is put first at the
+                    # top of the turn.
+                    prompt = "No job has finished yet. " + _WAIT_NOTE
                 else:
                     prompt = CONTINUE_PROMPT
     except asyncio.CancelledError:
         print("Cancelled -- running graceful shutdown.", flush=True)
     finally:
         beat_task.cancel()
+        if resource_proc is not None and resource_proc.poll() is None:
+            resource_proc.terminate()
+            try:
+                resource_proc.wait(timeout=120)
+            except subprocess.TimeoutExpired:
+                resource_proc.kill()
         _prov_close()
         # Its answer is of no use once the run has ended.
         if _context_task is not None and not _context_task.done():

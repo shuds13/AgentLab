@@ -104,6 +104,27 @@ can start a session as it does and leave it open, since the next session closes 
 kept in `<group>/resource_session.json`. A block that a run outside the group also used
 is counted in full to the group.
 
+A bucket's tasks can be redirected to another bucket while the runs go, for every run
+in the workspace from its next submit, when both give a job the same number of nodes:
+
+```
+bin/route.sh <workspace> debug=debug_scaling      # send debug's tasks to debug_scaling
+bin/route.sh <workspace> debug=                   # stop redirecting debug
+```
+
+A submit that was redirected says so in its result. The redirects are kept in
+`<workspace>/routing.json`, and each change in `routing_log.jsonl`.
+
+A resource agent makes the same change with its `set_route` tool. With
+`RESOURCE_AGENT=true` in `run.sh`, the framework starts one as the run's first worker:
+it shows in the agents panel as `resources` and stops with the run. It places the work
+of the other agents rather than doing any, so it gets `system_status` and `set_route`
+and no submit tools. It follows `method_resources.md` in the campaign if there is one,
+else `methods/resources.md`, and keeps `RESOURCES.md`, an entry per check with what it
+saw and decided. It checks every `RESOURCE_INTERVAL` seconds (300 by default), or sooner
+when a task is submitted or collected or it is sent a message. `RESOURCE_MODEL` sets its
+model; otherwise it has the run's own.
+
 Machine-specific keys belong in `systems/<system>.json` rather than here, or the
 campaign will not run anywhere else.
 
@@ -186,6 +207,12 @@ A campaign whose agent needs more names it in `campaign.json`:
 A path missing from the box fails as "No such file or directory". Preflight checks that
 each path named exists. Remote jobs are not affected; they run on their own system.
 
+## System status
+
+A resource agent, or with `"iri": true` in `campaign.json` any agent, gets a
+`system_status` tool: whether a system is up, its open incidents, your batch jobs there,
+and how busy the queues your buckets use are. It reads the facility's IRI API. See [iri.md](iri.md).
+
 ## The workspace
 
 Written by the agent, not by you. What is in it is whatever the campaign asks for —
@@ -203,6 +230,17 @@ moment, and is wrong from the following run onward.
 Where a campaign produces one comparable set of numbers per run, a small table with a row
 appended each run is easier to read than the logbook or the raw records.
 
+
+The watch shows a campaign's records as tabs: `LOGBOOK.md`, `findings.md`, `JOURNAL.md`,
+`REVIEWS.md`, `results.jsonl` and `jobs.jsonl`, and **pictures** once there are any:
+every image under the workspace's `outputs/` (files jobs returned) and `figures/`,
+newest first, each captioned with its job, and flipped through with the arrow keys. A
+campaign chooses its own tabs, in order, in `campaign.json`; a name is a file in the
+workspace, or `pictures`:
+
+```json
+"watch": {"tabs": ["pictures", "JOURNAL.md", "LOGBOOK.md", "results.jsonl"]}
+```
 ## Setting up a later run
 
 1. Read the last logbook entry — what the previous run concluded and left open.
