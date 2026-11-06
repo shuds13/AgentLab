@@ -197,6 +197,9 @@ bin/budget.sh <campaign>                            the newest run's budgets
 bin/budget.sh <campaign> submits=+10 node_hours.polaris=+5
 ```
 
+`bin/cost.sh <campaign>` lists what each agent consumed (tokens per model, and dollars
+where known) and the totals, whether or not the run shows its cost (`SHOW_COST`).
+
 ![AgentLab budgets view: the run's totals against their limits, the Polaris node-hours, and each worker's jobs and run time, with fields to raise any of them](docs/images/budgets.png)
 
 *The Budgets tab mid-run, with 10 more explorer workers about to be added.*

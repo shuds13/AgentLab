@@ -48,7 +48,7 @@ Parameters:
   context         What you want the worker to know, added to its prompt. Empty for none.
 
 Returns the worker's `session_id` (pass it as parent_session to continue it later),
-its `summary`, the `score` and `commit` of its newest scored commit, `cost_usd`,
+its `summary`, the `score` and `commit` of its newest scored commit,
 `run_id`, `jobs_given` and `jobs_used`, and `shared_jobs_left` for the team. Workers take
 a few minutes.
 

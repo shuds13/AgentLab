@@ -279,7 +279,9 @@ def _bool_env(name, default=False):
     v = os.environ.get(name)
     return default if v is None else v.strip().lower() in ("1", "true", "yes", "on")
 
-# Tokens always; dollars only where the price is the serving model's own, see _note_cost.
+# Cost is always recorded in meta.json (tokens always; dollars only where the price is the
+# serving model's own, see _note_cost). This decides whether it is shown: in the status
+# line, in Slack and, through meta.json, in the viewer.
 SHOW_COST = _bool_env("SHOW_COST", True)
 # A run whose method has it write up before calling goal_met, as a worker's does, ends
 # when goal_met (or goal_abandoned) leaves nothing in flight: there is nothing left to wind
@@ -1200,7 +1202,7 @@ def _start_run_dir():
     _write_meta(buckets=_buckets, default_bucket=tools._default_bucket,
                 submits_label=tools.submits_label(),
                 max_turns=MAX_TURNS + ((PREV_META.get("turns") or 0) if CONTINUED else 0),
-                critic=CRITIC_LABEL, advisor=AGENT_ADVISOR,
+                critic=CRITIC_LABEL, advisor=AGENT_ADVISOR, show_cost=SHOW_COST,
                 run_id=RUN_ID, handle=HANDLE, system=SYSTEM, role=ROLE,
                 endpoint=tools.ENDPOINT_ID if tools.HAS_REMOTE else "",
                 work_dir=tools.WORK_DIR,
@@ -1802,8 +1804,7 @@ async def drain_turn(client, turn_num):
                     _set_phase(f"turn {turn_num}: {_PHASES.get(bare, bare)}")
         elif isinstance(message, ResultMessage):
             _note_session(getattr(message, "session_id", None))
-            if SHOW_COST:
-                _note_cost(message)
+            _note_cost(message)
             print(f"\n[turn {turn_num} end] {message.subtype}", flush=True)
     _note_turn_context(turn_usage, turn_model)
     # The window is the one figure a turn does not carry. Ask until it is known, then

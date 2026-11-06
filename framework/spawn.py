@@ -479,7 +479,6 @@ def run_worker(args, *, repo, roles, timeout=None):
         score = scores.get(primary)
     elif len(scores) == 1:
         score = next(iter(scores.values()))
-    usd = [c.get("usd") for c in meta.get("cost_models") or [] if c.get("usd") is not None]
     return {
         "args": args,
         "run_id": meta.get("run_id"),
@@ -490,7 +489,6 @@ def run_worker(args, *, repo, roles, timeout=None):
         "commit_subject": subject,
         "score": score,
         "scores": scores,
-        "cost_usd": round(sum(usd), 4) if usd else None,
         "jobs_given": jobs,
         "jobs_used": used,
         "shared_jobs_left": left,

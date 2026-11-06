@@ -584,7 +584,15 @@ def run_score(meta, cwd=None):
     return None
 
 
+def _shows_cost(meta):
+    """Whether the run shows its cost (SHOW_COST). It is recorded either way, for
+    bin/cost.sh."""
+    return meta.get("show_cost") is not False
+
+
 def _usd(meta):
+    if not _shows_cost(meta):
+        return None
     usd = [c.get("usd") for c in meta.get("cost_models") or [] if c.get("usd") is not None]
     return sum(usd) if usd else None
 
@@ -661,11 +669,11 @@ def runs(campaign):
                 meta = json.load(f)
         except Exception:
             meta = {}
-        usd = [c.get("usd") for c in meta.get("cost_models") or [] if c.get("usd") is not None]
+        usd = _usd(meta)
         out.append({"run": os.path.basename(d), "started_at": meta.get("started_at"),
                     "status": meta.get("status"), "stop_reason": meta.get("stop_reason"),
                     "model": meta.get("model"), "turns": meta.get("turns"),
-                    "usd": sum(usd) if usd else None, "_t": _run_time(d),
+                    "usd": usd, "_t": _run_time(d),
                     "parent_run": meta.get("parent_run"), "kind": meta.get("kind"),
                     "branch": meta.get("branch")})
     out.sort(key=lambda r: r.pop("_t"), reverse=True)
@@ -1192,7 +1200,7 @@ def status(campaign, run=None):
     started_runs = workers(campaign, meta.get("run_id"))
     own_usd = _usd(meta)
     tree_usd = (sum(w["usd"] or 0 for w in started_runs) + (own_usd or 0)
-                if started_runs else None)
+                if started_runs and _shows_cost(meta) else None)
     elapsed = _elapsed(meta, run_dir)
     budget = budget_rows(campaign, run_dir, meta,
                          _submits_by_run(os.path.join(ws, "jobs.jsonl")), elapsed,
@@ -1209,7 +1217,8 @@ def status(campaign, run=None):
         "context_tokens": meta.get("context_tokens"),
         "context_window": meta.get("context_window"),
         "context_pct": meta.get("context_pct"),
-        "cost_models": meta.get("cost_models") or [],
+        "cost_models": (meta.get("cost_models") or []) if _shows_cost(meta) else [],
+        "show_cost": _shows_cost(meta),
         "turns": meta.get("turns"),
         "started_at": started, "ended_at": meta.get("ended_at"),
         "elapsed_s": elapsed, "heartbeat_age_s": age,
@@ -2596,6 +2605,10 @@ function renderAgents(top, group, session) {
   panel.hidden = false;
   panel.classList.toggle("grouped", grouped);
   const usd = models => (models || []).reduce((t, m) => t + (m.usd || 0), 0);
+  // A run with SHOW_COST off shows no cost here: no column, no total.
+  const costs = top.show_cost !== false;
+  const money = v => !costs ? ""
+    : `<span class="usd">${v == null ? "\u2014" : "$" + v.toFixed(2)}</span>`;
   // Each row names how that agent works: its method (director, explorer, ...), or for a
   // run from before methods were recorded, a worker's kind.
   // The top run coordinates only if it started workers that do the work; beside a
@@ -2618,7 +2631,7 @@ function renderAgents(top, group, session) {
     + ` style="padding-left:${0.8 + 1.6 * depth}em">${depth ? "\u2514 " : ""}${dot(a.status)}`
     + ` <b>${esc(a.branch || a.run)}</b> <span class="k">${esc(a.method || a.kind || "")}</span>`
     + `<span class="sc">${a.score == null ? "" : +a.score.toPrecision(7)}</span>`
-    + `<span class="usd">${a.usd == null ? "\u2014" : "$" + a.usd.toFixed(2)}</span></div>`;
+    + money(a.usd) + `</div>`;
   const below = (branch, depth) => own
     .filter(w => (byBranch[w.parent] ? w.parent : null) === branch)
     .map(w => row(w, depth) + below(w.branch, depth + 1)).join("");
@@ -2626,8 +2639,8 @@ function renderAgents(top, group, session) {
     + row(me, depth) + below(null, depth + 1)
     + `<div class="atotal">` + [own.length ? `${own.length} worker${own.length === 1 ? "" : "s"}` : "",
         fw.length ? `${fw.length} from the framework` : ""].filter(Boolean).join(" + ")
-    + ` \u00b7 total `
-    + (top.tree_usd == null ? "\u2014" : "$" + top.tree_usd.toFixed(2)) + "</div>";
+    + (!costs ? "" : ` \u00b7 total `
+       + (top.tree_usd == null ? "\u2014" : "$" + top.tree_usd.toFixed(2))) + "</div>";
   let html;
   if (grouped) {
     const name = c => c.slice(c.indexOf("/") + 1);
@@ -2646,10 +2659,10 @@ function renderAgents(top, group, session) {
         return `<div class="arow grun${here && !agentSel ? " sel" : ""}" data-camp="${esc(g.campaign)}">`
           + `${gdot(g)} <b>${esc(name(g.campaign))}</b> <span class="k">${esc(g.model || "")}</span>`
           + `<span class="sc">${g.score == null ? "" : +g.score.toPrecision(7)}</span>`
-          + `<span class="usd">${g.usd == null ? "\u2014" : "$" + g.usd.toFixed(2)}</span></div>`
+          + money(g.usd) + `</div>`
           + (here && ws.length ? tree(1) : "");
       }).join("")
-      + `<div class="atotal">total $${total.toFixed(2)}</div>`;
+      + (costs ? `<div class="atotal">total $${total.toFixed(2)}</div>` : "");
   } else {
     html = tree(0);
   }
