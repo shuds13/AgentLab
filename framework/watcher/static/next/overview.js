@@ -1,6 +1,6 @@
 // A run at a glance: headline figures, budgets, its agents, where its tasks run, and
 // the details of the run itself.
-import { html, useState, hms, short, usd, score, plural, when, tone, copyText } from "./util.js";
+import { html, useState, hms, short, usd, score, plural, when, copyText } from "./util.js";
 
 const modelCost = s => (s.cost_models || []).reduce((t, m) => t + (m.usd || 0), 0);
 const hasCost = s => (s.cost_models || []).some(m => m.usd != null);
@@ -63,48 +63,6 @@ function Budgets({s, onTab}) {
         <span class="amt">${fmt(used)}${r.limit != null && html`<span class="faint"> / ${fmt(r.limit)}</span>`}</span>
       </div>`;
     })}
-  </${Card}>`;
-}
-
-// The run and every worker it started, as a tree by who started whom. Agents the
-// framework started (a resource agent) sit beside the run, not under it.
-function Agents({top, agent, onAgent}) {
-  const ws = (top && top.workers) || [];
-  if (!ws.length) return null;
-  const costs = top.show_cost !== false;
-  const fw = ws.filter(w => w.started_by === "framework" || w.kind === "resources");
-  const own = ws.filter(w => !fw.includes(w));
-  const byBranch = Object.fromEntries(ws.map(w => [w.branch, w]));
-  const me = {run: "", branch: own.length ? "coordinator" : "researcher", method: top.method,
-              status: top.status, usd: modelCost(top), score: null};
-  const rows = [];
-  const row = (a, depth, extra) => rows.push(html`
-    <div class="agent ${a.run === agent ? "on" : ""}" onClick=${() => onAgent(a.run)}>
-      <span class="who" style=${`padding-left:${depth * 18}px`}>
-        ${depth > 0 && html`<span class="elbow">└</span>`}
-        <span class="dot ${tone(a.status)}"></span>
-        <b>${a.branch || a.run}</b>
-        <span class="faint">${(a.method || a.kind || "") + (extra || "")}</span>
-      </span>
-      <span class="score">${score(a.score)}</span>
-      <span class="usd">${costs ? usd(a.usd) : ""}</span>
-    </div>`);
-  const below = (branch, depth) => own
-    .filter(w => (byBranch[w.parent] ? w.parent : null) === branch)
-    .forEach(w => { row(w, depth); below(w.branch, depth + 1); });
-  fw.forEach(w => row(w, 0, " · framework"));
-  row(me, 0);
-  below(null, 1);
-  const running = ws.filter(w => w.status === "running").length;
-  return html`<${Card} title="Agents" right=${`${running} of ${ws.length} running`} flush>
-    <div class="agents">
-      ${rows}
-      <div class="total">
-        <span>${[own.length ? plural(own.length, "worker") : "", fw.length ? `${fw.length} from the framework` : ""]
-                 .filter(Boolean).join(" + ")}</span>
-        ${costs && html`<span class="num">total ${usd(top.tree_usd)}</span>`}
-      </div>
-    </div>
   </${Card}>`;
 }
 
@@ -220,7 +178,7 @@ function Totals({s}) {
   </${Card}>`;
 }
 
-export function Overview({top, s, agent, onAgent, onTab}) {
+export function Overview({s, onAgent, onTab}) {
   if (!s) return html`<div class="empty">Loading…</div>`;
   if (!s.run) return html`<div class="empty">This campaign has no run yet.</div>`;
   return html`
@@ -228,7 +186,6 @@ export function Overview({top, s, agent, onAgent, onTab}) {
     <div class="cols">
       <div class="col">
         <${Budgets} s=${s} onTab=${onTab} />
-        <${Agents} top=${top} agent=${agent} onAgent=${onAgent} />
         <${Compute} s=${s} onTab=${onTab} />
         <${Routes} s=${s} />
       </div>

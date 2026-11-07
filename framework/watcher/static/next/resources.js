@@ -211,7 +211,7 @@ export function Resources({campaign, run, agentName}) {
   const [view, setView] = useState(() => recall("resView", "table"));
   const [only, setOnly] = useState(() => !!recall("resOnly", ""));
   const [system, setSystem] = useState("");
-  const {data: d, error} = usePoll(() => getJSON("/resources", {c: campaign, run}), 5000, [campaign, run]);
+  const {data: d, error} = usePoll(() => getJSON("/resources", {c: campaign, run}), 5000, [campaign, run], {keep: true});
   if (!d) return html`<div class="empty">${error ? error.message : "Loading…"}</div>`;
   const systems = d.systems || [];
   const shown = systems.filter(sy => !system || sy.system === system);

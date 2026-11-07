@@ -1,6 +1,7 @@
 // The campaign list: running first, then recently ended, then all of them, with groups
 // (`group/name`) folded under their group.
-import { html, useState, usePoll, getJSON } from "./util.js";
+import { html, useState, useEffect, usePoll, getJSON } from "./util.js";
+import { AgentTree } from "./agents.js";
 
 function useCampaigns() {
   const names = usePoll(() => getJSON("/campaigns"), 15000, []);
@@ -23,8 +24,14 @@ function Item({name, label, on, dot, meta, sub, onPick}) {
   </div>`;
 }
 
-export function Sidebar({campaign, onPick, theme, onTheme}) {
+// Inside a campaign whose run started workers, the sidebar shows its agents, so one can
+// be chosen from any tab; a switch at the top goes back to the campaigns.
+export function Sidebar({campaign, onPick, theme, onTheme, top, agent, onAgent}) {
   const {names, running, recent} = useCampaigns();
+  const hasAgents = !!campaign && !!top && (top.workers || []).length > 0;
+  const [mode, setMode] = useState(null);
+  useEffect(() => setMode(null), [campaign]);
+  const show = mode || (hasAgents ? "agents" : "campaigns");
   const [filter, setFilter] = useState("");
   const [open, setOpen] = useState(() => new Set(campaign.includes("/") ? [campaign.split("/")[0]] : []));
   const live = new Set(running);
@@ -63,6 +70,14 @@ export function Sidebar({campaign, onPick, theme, onTheme}) {
 
   return html`<aside class="sidebar">
     <div class="brand"><span class="logo">A</span>AgentLab</div>
+    ${hasAgents && html`<div class="seg sideseg">
+      <button class=${show === "campaigns" ? "on" : ""} onClick=${() => setMode("campaigns")}>Campaigns</button>
+      <button class=${show === "agents" ? "on" : ""} onClick=${() => setMode("agents")}>Agents</button>
+    </div>`}
+    ${show === "agents" ? html`<div class="navlist flushlist">
+      <div class="sidecamp" title=${campaign}>${campaign}</div>
+      <${AgentTree} top=${top} agent=${agent} onAgent=${onAgent} />
+    </div>` : html`
     <div class="search"><input placeholder="Filter campaigns" value=${filter}
       onInput=${e => setFilter(e.target.value)} /></div>
     <div class="navlist">
@@ -79,7 +94,7 @@ export function Sidebar({campaign, onPick, theme, onTheme}) {
                                            meta=${ago(r.ended)} onPick=${onPick} />`)}`}
       <div class="navsec"><span>All campaigns</span></div>
       ${all}
-    </div>
+    </div>`}
     <div class="sidefoot">
       <a href=${"/?" + (campaign ? "c=" + encodeURIComponent(campaign) : "lab")} class="muted">Classic view</a>
       <button class="btn sm" onClick=${onTheme} title="Switch theme">${theme === "light" ? "Dark" : "Light"}</button>

@@ -52,7 +52,7 @@ function BudgetTable({rows, d, campaign, editable, onDone}) {
 
 export function Budgets({campaign, run, onTab}) {
   const [note, setNote] = useState(null);
-  const {data: d, error, reload} = usePoll(() => getJSON("/budgets", {c: campaign, run}), 3000, [campaign, run]);
+  const {data: d, error, reload} = usePoll(() => getJSON("/budgets", {c: campaign, run}), 3000, [campaign, run], {keep: true});
   if (!d) return html`<div class="empty">${error ? error.message : "Loading…"}</div>`;
   if (!d.run) return html`<div class="empty">This campaign has no run yet.</div>`;
   const onDone = res => {

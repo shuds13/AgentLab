@@ -41,12 +41,11 @@ function RunPicker({campaign, run, onRun}) {
   </select>`;
 }
 
-function Campaign({view, go, chat}) {
+function Campaign({view, go, chat, top}) {
   const {campaign, run, agent, tab} = view;
-  const top = usePoll(() => getJSON("/status", {c: campaign, run}), 2000, [campaign, run]).data;
   const picked = usePoll(() => agent ? getJSON("/status", {c: campaign, run: agent}) : null,
-                         2000, [campaign, agent]).data;
-  const s = agent ? picked : top;
+                         2000, [campaign, agent], {keep: true}).data;
+  const s = agent ? picked || top : top;
   const workers = (top && top.workers) || [];
   const agentRow = workers.find(w => w.run === agent);
   // A worker the run no longer lists is let go.
@@ -87,7 +86,7 @@ function Campaign({view, go, chat}) {
       : tab === "resources"
       ? html`<div class="content"><${Resources} campaign=${campaign} run=${agent || run}
                agentName=${agentRow && agentRow.branch} /></div>`
-      : html`<div class="content"><${Overview} top=${top} s=${s} agent=${agent}
+      : html`<div class="content"><${Overview} s=${s}
                onAgent=${a => go({agent: a}, true)} onTab=${t => go({tab: t}, true)} /></div>`}
   </div>
   ${chat.open && html`<${Chat} campaign=${campaign} run=${run} worker=${agentRow}
@@ -129,6 +128,12 @@ function App() {
     try { localStorage.setItem("chat", open ? "open" : "closed"); } catch (e) {}
     setChatOpen(open);
   }};
+  // The run's status, for the page and for the agents in the sidebar.
+  const here = view.campaign + "|" + view.run;
+  const polled = usePoll(() => view.campaign
+    ? getJSON("/status", {c: view.campaign, run: view.run}).then(d => ({...d, _for: here})) : null,
+    2000, [view.campaign, view.run]).data;
+  const top = polled && polled._for === here ? polled : null;
   const flipTheme = () => {
     const t = theme === "light" ? "dark" : "light";
     document.documentElement.dataset.theme = t;
@@ -137,8 +142,9 @@ function App() {
   };
   return html`<div class="shell">
     <${Sidebar} campaign=${view.campaign} theme=${theme} onTheme=${flipTheme}
+      top=${top} agent=${view.agent} onAgent=${a => go({agent: a}, true)}
       onPick=${c => go({campaign: c, run: "", agent: "", tab: view.tab}, true)} />
-    ${view.campaign ? html`<${Campaign} key=${view.campaign} view=${view} go=${go} chat=${chat} />` : html`<${LabPage} go=${go} chat=${chat} />`}
+    ${view.campaign ? html`<${Campaign} key=${view.campaign} view=${view} go=${go} chat=${chat} top=${top} />` : html`<${LabPage} go=${go} chat=${chat} />`}
   </div>`;
 }
 
