@@ -1,0 +1,305 @@
+ html,body { height:100%; margin:0; }
+ /* The frame the run sits in: the header's blue carried round the page. */
+ body { display:flex; flex-direction:column;
+        font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;
+        background:#111; color:#ddd;
+        border:2px solid #3a4a5a; box-sizing:border-box; }
+ header { padding:8px 12px; background:#1b2836; border-bottom:2px solid #3a4a5a;
+          display:flex; gap:16px; align-items:baseline; flex:none; color:#cfe0f0; }
+ header b { color:#fff; font-size:14px; }
+ header .sep { color:#555; }
+ header #head { margin-left:auto; }
+ header span { color:#888; }
+ /* The campaign being watched, and the way to watch another. Styled as the heading it
+    replaces, so the header still reads as a name rather than as a form. */
+ header select { background:#1b2836; color:#fff; font:inherit; font-size:14px;
+                 font-weight:bold; border:1px solid #3a4a5a; padding:1px 4px;
+                 cursor:pointer; }
+ header select:hover { border-color:#6a8aaa; }
+ header select option.live { color:#7ac87a; }
+ header select option.recent { color:#a8b8c8; }
+ /* The lab's name is the way back up to it, from inside a campaign. */
+ header b.home { cursor:pointer; }
+ header b.home:hover { color:#9cc4e8; }
+ header b.here { cursor:default; }
+ /* The lab: every campaign it has, and which of them is doing something. A row is the
+    way in, so the whole row answers to the pointer rather than a link inside it. */
+ /* The lab's own processes, at the top of the page and ruled off from the campaigns
+    below: what is up, and the button that changes it. It stays put whatever the state
+    and says what it would do -- a control that comes and goes is one you cannot find
+    when you want it. */
+ #labsvc { display:none; padding:12px; margin-bottom:8px;
+            border-bottom:1px solid #2b3946; }
+ #labsvc .svcs { display:flex; flex-wrap:wrap; gap:18px; align-items:center; }
+ #labsvc #svclist { display:flex; gap:18px; }
+ #labsvc .svc { color:#888; }
+ #labsvc .svc.up { color:#7aa87a; }
+ #labsvc .dot { display:inline-block; width:7px; height:7px; border-radius:50%;
+                background:#3a3a3a; margin-right:7px; vertical-align:middle; }
+ #labsvc .svc.up .dot { background:#3d7a3d; }
+ #labsvc .labtabs { display:flex; gap:4px; margin-right:18px; }
+ #labsvc .labtabs button { background:#222; color:#bbb; border:1px solid #333; }
+ #labsvc .labtabs button.on { background:#2d4a2d; color:#fff; }
+ #labsvc .acts { margin-left:auto; display:flex; gap:12px; align-items:center; }
+ #labsvc .lbl { color:#4d5c6b; text-transform:uppercase; font-size:11px;
+                letter-spacing:.06em; }
+ #labsvc .acts .div { align-self:stretch; border-left:1px solid #2b3946; }
+ #labsvc button { background:#1b2836; color:#cfe0f0; border:1px solid #2b3946;
+                  padding:3px 12px; cursor:pointer; font:inherit; }
+ #labsvc button:hover:enabled { background:#24374b; color:#fff; }
+ #labsvc button:disabled { opacity:.5; cursor:default; }
+ #lab { display:none; padding:12px; }
+ #lab table { width:100%; margin:0; }
+ /* The headings are the sort control, so they answer to the pointer, and the arrow on
+    the one in use says which way it is running. */
+ #lab th { text-align:left; color:#6f8296; font-weight:normal; cursor:pointer;
+           padding:0 18px 5px 0; border-bottom:1px solid #2b3946; }
+ #lab th:hover { color:#9cc4e8; }
+ #lab td { padding:7px 18px 7px 0; border-bottom:1px solid #1e1e1e; }
+ /* A name and a duration read as one thing; broken over two lines they do not. The
+    free text -- what stopped it, what it is doing -- is what gives way instead. */
+ #lab th, #lab td { white-space:nowrap; }
+ #lab .state, #lab .doing { white-space:normal; }
+ /* Where the running campaigns end: the row line that is there anyway, in the frame's
+    blue rather than the near-black the other rows get. */
+ #lab tr.edge td { border-bottom-color:#3a4a5a; }
+ #lab tr.row { cursor:pointer; }
+ #lab tr.row:hover td { background:#1a2430; }
+ #lab .name { color:#fff; }
+ /* A group's runs sit under it, indented, once it is opened. */
+ #lab tr.sub td.name { padding-left:22px; }
+ #lab .fold { display:inline-block; width:1.2em; color:#6f8296; }
+ #lab .dot { display:inline-block; width:7px; height:7px; border-radius:50%;
+             background:#3d7a3d; margin-right:8px; vertical-align:middle; }
+ #lab .dot.off { background:#3a3a3a; }
+ #lab .on { color:#7aa87a; }
+ #lab .quiet { color:#888; }
+ #lab .none { color:#666; padding:12px 0; }
+ /* People share the campaign table's grid and its click-the-whole-row behaviour, so
+    the two read as one page. */
+ #labusers { display:none; padding:12px; }
+ #labusers table { width:100%; margin:0; }
+ #labusers th { text-align:left; color:#6f8296; font-weight:normal;
+                padding:0 18px 5px 0; border-bottom:1px solid #2b3946; }
+ #labusers td { padding:7px 18px 7px 0; border-bottom:1px solid #1e1e1e;
+                white-space:nowrap; }
+ #labusers tr.row { cursor:pointer; }
+ #labusers tr.row:hover td { background:#1a2430; }
+ #labusers .who { color:#fff; }
+ /* A system the user is set up on. Muted when the file is still a template, so an
+    unconfigured entry is visibly not access. */
+ #labusers .chip { display:inline-block; padding:1px 8px; margin-right:6px;
+                   border:1px solid #2b3946; border-radius:10px; color:#9ab;
+                   font-size:12px; }
+ #labusers .chip.stub { border-style:dashed; color:#666; }
+ #labusers .chip.locked { border-color:#5a3a3a; color:#b08080; }
+ #labusers tr.locked .who { color:#b08080; }
+ #labusers .caret { display:inline-block; width:12px; color:#6f8296; }
+ #labusers tr.detail td { border-bottom:1px solid #1e1e1e; padding:0 18px 10px 0; }
+ #labusers .kv { display:grid; grid-template-columns:auto 1fr; gap:2px 14px;
+                 padding:8px 0 2px 20px; white-space:normal; }
+ #labusers .kv .k { color:#6f8296; }
+ #labusers .kv .v { color:#ccc; word-break:break-all; }
+ #labusers .on { color:#7aa87a; }
+ #labusers .quiet { color:#888; }
+ #labusers .none { color:#666; padding:12px 0; }
+ #tabs { display:flex; gap:4px; padding:6px 12px; background:#161616;
+         border-bottom:1px solid #333; flex-wrap:wrap; flex:none; }
+ #tabs button { background:#222; color:#bbb; border:1px solid #333; padding:3px 10px;
+                cursor:pointer; font:inherit; }
+ #tabs button.on { background:#2d4a2d; color:#fff; }
+ #tabs .div { align-self:stretch; border-left:1px solid #3a4a5a; margin:0 8px; }
+ /* Whose tabs follow: the agent chosen, or the campaign. */
+ #tabs .grp { align-self:center; color:#6f8296; margin:0 4px 0 2px; }
+ #tabs select { background:#222; color:#bbb; border:1px solid #333; padding:2px 4px;
+                font:inherit; cursor:pointer; }
+ #tabs select.past { background:#3a3220; color:#fff; border-color:#6a5a30; }
+ /* Past runs: a clock, with the list opening at its own width. */
+ #tabs .runs { position:relative; display:inline-flex; }
+ #tabs .runs span { pointer-events:none; padding:0 6px; border:1px solid #333;
+                    background:#222; color:#bbb; font-size:19px; line-height:24px; }
+ /* The group panel's toggle: a chevron, at the clock's size. */
+ #tabs button.iconbtn svg { display:block; height:1.5em; width:1.5em; fill:none;
+                           stroke:currentColor; stroke-width:1.2; }
+ #tabs button.groupbtn svg { display:block; height:1.5em; width:1.5em; fill:none;
+                            stroke:currentColor; stroke-width:1.5; }
+ #tabs button.groupbtn .pane.on { fill:currentColor; }
+ #tabs .runs.past span { background:#3a3220; color:#fff; border-color:#6a5a30; }
+ #tabs .runs select { position:absolute; inset:0; width:100%; opacity:0; }
+ a[data-run], a[data-agent] { color:#7aa8c8; }
+ /* A coordinated run: its agents beside the pane. The one chosen is what the status
+    and log tabs show. */
+ #agents { flex:none; width:var(--agents-w, 32em); max-width:70%; overflow:auto;
+           background:#141414; padding:8px 0; }
+ /* The divider between the agents and the pane; drag it to resize the agents panel.
+    Hidden with the panel. */
+ #agentsdrag { flex:none; width:5px; cursor:ew-resize; background:#1a1a1a;
+               border-left:1px solid #333; }
+ #agentsdrag:hover { background:#2b3946; }
+ #agents[hidden] + #agentsdrag { display:none; }
+ .arow { display:flex; gap:10px; padding:2px 12px; cursor:pointer; white-space:nowrap; }
+ .arow:hover { background:#1c1c1c; }
+ .arow.sel { background:#2d4a2d; }
+ .arow i { font-style:normal; color:#666; }
+ .arow i.on { color:#7ac87a; }
+ .arow i.bad { color:#d66; }
+ .arow .k { color:#6f8296; }
+ .arow .sc { margin-left:auto; color:#ddd; }
+ .arow .usd { color:#888; min-width:4.5em; text-align:right; }
+ .agrp { color:#6f8296; padding:2px 12px 6px; letter-spacing:.04em; }
+ /* A group of separate runs, as against one run's swarm of workers: its own tint, and a
+    rule between runs, so the runs read as separate. A run's workers, if it has any,
+    still show as a tree under it. */
+ #agents.grouped { background:#101820; }
+ #agents.grouped .arow.grun { border-top:1px solid #22313f; padding-top:4px; padding-bottom:4px; }
+ #agents.grouped .arow.grun:hover { background:#17222d; }
+ #agents.grouped .arow.grun.sel { background:#2d4a2d; }
+ .atotal { padding:6px 12px; margin-top:6px; color:#888; border-top:1px solid #262626; }
+ /* The pane scrolls, not the page, so the tabs stay put wherever you are in a file. */
+ #main { flex:1; display:flex; min-height:0; }
+ #pane { flex:1; overflow:auto; position:relative; }
+ /* What the run was handed, beside what it is doing. */
+ #side { flex:none; width:var(--side-w, 0px); overflow:auto; background:#141414;
+         border-left:1px solid #333; padding:8px 0; }
+ #side .grp { color:#6f8296; padding:6px 12px 3px; letter-spacing:.06em; }
+ #side button { display:block; width:100%; text-align:left; background:none;
+                color:#bbb; border:0; border-left:3px solid transparent;
+                padding:3px 12px; cursor:pointer; font:inherit; }
+ #side button:hover { background:#1c1c1c; color:#ddd; }
+ #side button.on { background:#2d4a2d; color:#fff; border-left-color:#7aa87a; }
+ #side .none { color:#666; padding:3px 12px; }
+ /* The workspace as it is on disk: a list of links, one directory at a time. */
+ .crumbs { padding:6px 14px; border-bottom:1px solid #2b2b2b; color:#6f8296; }
+ .crumbs .crumb { background:none; border:0; color:#7aa8c8; cursor:pointer;
+                  font:inherit; padding:0; }
+ .crumbs .crumb:hover { text-decoration:underline; }
+ .crumbs b { color:#ddd; font-weight:normal; }
+ .crumbs .lbl { color:#6f8296; }
+ .crumbs .crumb.on { color:#9ec89e; }
+ .tree { padding:0; }
+ .tree .trow { display:flex; align-items:baseline; gap:10px; padding:1px 14px; }
+ .tree .trow:hover { background:#1c1c1c; }
+ .tree .trow button { background:none; border:0; color:#cfcfcf; cursor:pointer;
+                      font:inherit; padding:1px 0; text-align:left; }
+ .tree .trow button[data-t] { color:#9ec89e; }
+ .tree .thead { border-bottom:1px solid #2b2b2b; padding-bottom:3px;
+                margin-bottom:3px; }
+ .tree .thead button { color:#6f8296; }
+ .tree .thead button:hover { color:#9ab4cc; }
+ .tree .root { border-top:1px solid #262626; margin-top:4px; padding-top:3px; }
+ .tree .root button { color:#9ec89e; }
+ .tree .sz { color:#666; margin-left:auto; text-align:right; }
+ .tree .dt { color:#5f5f5f; min-width:9.5em; text-align:right; }
+ .tree .none { color:#666; padding:6px 14px; }
+ pre { margin:0; padding:12px; white-space:pre-wrap; word-break:break-word; }
+ .doc { padding:12px 16px; white-space:normal; max-width:60em; }
+ .doc h1,.doc h2,.doc h3 { color:#fff; margin:1.2em 0 .4em; line-height:1.3; }
+ .doc h1 { font-size:19px; } .doc h2 { font-size:16px; } .doc h3 { font-size:14px; }
+ .doc code { background:#1d1d1d; padding:1px 4px; }
+ .doc pre { background:#1a1a1a; padding:10px; overflow:auto; }
+ .doc table { border-collapse:collapse; margin:10px 0; }
+ .doc th,.doc td { border:1px solid #333; padding:3px 10px; text-align:left; }
+ .doc th { background:#1d1d1d; color:#eee; }
+ .doc img { max-width:100%; max-height:75vh; border:1px solid #333; background:#fff;
+            display:block; margin:10px 0; cursor:zoom-in; }
+ .doc blockquote { border-left:3px solid #333; margin:8px 0; padding-left:12px;
+                   color:#aaa; }
+ table { border-collapse:collapse; margin:12px; }
+ #res h3 { margin:14px 12px 2px; font-size:14px; color:#cfd8e0; }
+ #res .note { margin:2px 12px; color:#8a9aaa; }
+ #res a { color:#8ab4d8; }
+ #res input.bchange { background:#1b1b1b; color:#ddd; border:1px solid #333; padding:2px 5px;
+                      font:inherit; }
+ #res input.bchange::placeholder { color:#555; }
+ #res input.bchange:focus { outline:none; border-color:#3d7a3d; }
+ #res button.braise { background:#222; color:#bbb; border:1px solid #333; padding:2px 8px;
+                      cursor:pointer; font:inherit; }
+ #res button.braise:hover { color:#fff; border-color:#3d7a3d; }
+ #res .live { margin:4px 12px 6px; padding:2px 0 2px 10px; border-left:3px solid #3d7a3d; color:#8a9aaa; }
+ #res .live b { color:#e8f0f6; }
+ #res table.grid td, #res table.grid th { padding:2px 14px 2px 0; text-align:left;
+                                         white-space:nowrap; }
+ #res table.grid th { color:#6f8296; font-weight:normal; border-bottom:1px solid #2b3946; }
+ #res tr.blk td { border-top:1px solid #22303c; }
+ #res td.sub { color:#9aa8b5; padding-left:18px; }
+ #res tr.other td { color:#5d6b78; }
+ #res h3.sys:not(:first-of-type) { border-top:1px solid #2b3946; padding-top:14px;
+                                  margin-top:22px; }
+ #res select { background:#1b2836; color:#dde6ee; font:inherit; font-size:13px;
+               border:1px solid #3a4a5a; padding:1px 4px; cursor:pointer; }
+ #res input[type=checkbox] { accent-color:#3d7a3d; }
+ #res label.resonly { margin-left:24px; font-weight:normal; font-size:13px; color:#9aa8b5;
+                      cursor:pointer; }
+ #res tr.me td { color:#e8f0f6; background:#1f3a2a; }
+ #res .resview a { margin-right:8px; } #res .resview a.on { color:#e8f0f6; text-decoration:none; }
+ #res .tlb { margin:10px 12px 4px; color:#9aa8b5; } #res .tlb b { color:#e8f0f6; }
+ #res .tl { margin:0 12px 6px; }
+ #res .tl .row { display:flex; align-items:center; height:12px; margin:1px 0; }
+ #res .tl .lbl { width:150px; flex:none; font-size:11px; color:#6f8296; white-space:nowrap; overflow:hidden; }
+ #res .tl .lane { position:relative; flex:1; height:10px; background:#16212b; }
+ #res .tl .after { position:absolute; top:0; bottom:0; right:0; background:#101820; }
+ #res .tl .now { position:absolute; top:-1px; bottom:-1px; width:1px; background:#8ab4d8; }
+ #res .tl .t { position:absolute; top:1px; bottom:1px; min-width:2px; background:#3d7a3d; box-shadow:inset -1px 0 #16212b; }
+ #res .tl .t.error { background:#a8553f; } #res .tl .t.postponed { background:#6f8296; }
+ #res .tl .t.other { opacity:.35; } #res .tl .t.me { background:#5fb85f; }
+ #res .tl .axis { position:relative; flex:1; height:14px; font-size:10px; color:#6f8296; }
+ #res .tl .axis span { position:absolute; transform:translateX(-50%); white-space:nowrap; }
+ #res .tl .axis span:first-child { transform:none; } #res .tl .axis span:last-child { transform:translateX(-100%); }
+ /* The run and the campaign are different spans of time, and their counts differ. */
+ tr.sec td { color:#6f8296; padding:14px 0 2px; border-bottom:1px solid #2b3946; }
+ td { padding:3px 18px 3px 0; vertical-align:top; }
+ td.k { color:#888; }
+ .bar { display:inline-block; width:150px; height:9px; background:#222;
+        border:1px solid #333; vertical-align:middle; margin-right:8px; }
+ .bar i { display:block; height:100%; background:#3d7a3d; }
+ /* Clear of the chat panel, whichever of its height and its floor is in force. */
+ #newest { position:fixed; right:calc(18px + var(--side-w, 0px));
+           bottom:calc(max(var(--chat-h, 30vh), 120px) + 14px); display:none;
+           background:#2d4a2d; color:#fff; border:1px solid #4a7a4a; padding:5px 12px;
+           cursor:pointer; font:inherit; }
+ /* The conversation with the run: what has been said, and where you say it. One
+    section, because an input detached from its transcript reads as a search box. */
+ /* --chat-h is set when the CHAT bar is dragged; anything sitting above the chat
+    reads it too, so it moves with the divider. */
+ #chat { flex:none; height:var(--chat-h, 30vh); min-height:120px;
+         display:flex; flex-direction:column;
+         background:#0b0f14; border-top:2px solid #3a4a5a; }
+ #chathead { flex:none; padding:4px 12px; background:#1b2836; color:#cfe0f0;
+             border-bottom:1px solid #24313d; letter-spacing:.08em;
+             cursor:ns-resize; user-select:none; }
+ #chatlog { flex:1; overflow:auto; padding:8px 12px; }
+ #chathead button { float:right; background:none; border:none; padding:0; color:#8ab4d8;
+                    font:inherit; letter-spacing:normal; cursor:pointer; }
+ /* Hidden: the bar alone, holding only the control that opens it again. */
+ html.chatoff #chat { height:auto; min-height:0; }
+ html.chatoff #chatlog, html.chatoff #say, html.chatoff #chattitle { display:none; }
+ html.chatoff #chathead { cursor:pointer; border-bottom:none; text-align:right; }
+ /* With the title gone a floated control would leave the bar no height of its own. */
+ html.chatoff #chathead button { float:none; }
+ html.chatoff #newest { bottom:44px; }
+ #chatlog .m { margin:0 0 7px; }
+ #chatlog .t { color:#666; margin-right:8px; }
+ #chatlog .who { color:#7aa87a; margin-right:6px; }
+ #chatlog .who.you { color:#7a9ac8; }
+ #chatlog .none { color:#666; }
+ #say { display:flex; gap:6px; padding:8px 12px; background:#101720; flex:none;
+        border-top:1px solid #24313d; }
+ #say input { flex:1; background:#0b0f14; color:#ddd; border:1px solid #2b3946;
+              padding:5px 8px; font:inherit; }
+ .pics { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr));
+         gap:12px; padding:12px 14px; }
+ .pics figure { margin:0; cursor:zoom-in; }
+ .pics img { width:100%; display:block; border:1px solid #333; background:#fff; }
+ .pics figcaption { color:#999; font-size:12px; margin-top:4px; overflow-wrap:anywhere; }
+ #picbox { position:fixed; inset:0; background:rgba(0,0,0,0.88); z-index:50;
+           display:flex; flex-direction:column; align-items:center; justify-content:center; }
+ #picbox img { max-width:94vw; max-height:84vh; background:#fff; }
+ #picbox .cap { color:#ccc; margin-top:10px; max-width:94vw; text-align:center;
+                overflow-wrap:anywhere; font-size:13px; }
+ #picbox .cap span { color:#777; }
+ #say select { background:#0b0f14; color:#bbb; border:1px solid #2b3946; font:inherit; }
+ #say button { background:#222; color:#bbb; border:1px solid #333; padding:5px 14px;
+               cursor:pointer; font:inherit; }
+ button.copy { background:#222; color:#999; border:1px solid #333; padding:0 6px;
+               margin-left:8px; cursor:pointer; font:inherit; font-size:11px; }
+ button.copy:hover { color:#fff; }
