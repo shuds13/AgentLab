@@ -1,7 +1,7 @@
 // The campaign list: running first, then recently ended, then all of them, with groups
 // (`group/name`) folded under their group.
 import { html, useState, useEffect, usePoll, getJSON } from "./util.js";
-import { AgentTree } from "./agents.js";
+import { AgentTree, GroupRuns } from "./agents.js";
 
 function useCampaigns() {
   const names = usePoll(() => getJSON("/campaigns"), 15000, []);
@@ -26,12 +26,15 @@ function Item({name, label, on, dot, meta, sub, onPick}) {
 
 // Inside a campaign whose run started workers, the sidebar shows its agents, so one can
 // be chosen from any tab; a switch at the top goes back to the campaigns.
-export function Sidebar({campaign, onPick, theme, onTheme, top, agent, onAgent}) {
+export function Sidebar({campaign, group: groupOn, onGroup, onPick, theme, onTheme, top, agent, onAgent}) {
   const {names, running, recent} = useCampaigns();
+  const inGroup = campaign.includes("/");
   const hasAgents = !!campaign && !!top && (top.workers || []).length > 0;
+  // A run in a group shows the group's runs, with its own agents under it.
+  const context = inGroup ? "group" : hasAgents ? "agents" : null;
   const [mode, setMode] = useState(null);
   useEffect(() => setMode(null), [campaign]);
-  const show = mode || (hasAgents ? "agents" : "campaigns");
+  const show = mode === "campaigns" || !context ? "campaigns" : context;
   const [filter, setFilter] = useState("");
   const [open, setOpen] = useState(() => new Set(campaign.includes("/") ? [campaign.split("/")[0]] : []));
   const live = new Set(running);
@@ -53,10 +56,11 @@ export function Sidebar({campaign, onPick, theme, onTheme, top, agent, onAgent})
   for (const {key, group} of order) {
     if (group) {
       const members = groups.get(key);
-      const isOpen = open.has(key) || !!f;
+      const isOpen = open.has(key) || !!f || key === groupOn;
       const anyLive = members.some(m => live.has(m));
-      all.push(html`<div class="navitem" onClick=${() => toggle(key)} title=${key}>
-        <span class="caret">${isOpen ? "▾" : "▸"}</span>
+      all.push(html`<div class="navitem ${groupOn === key ? "on" : ""}" title=${key}
+          onClick=${() => { onGroup(key); setOpen(s => new Set(s).add(key)); }}>
+        <span class="caret" title=${isOpen ? "Fold" : "Unfold"} onClick=${e => { e.stopPropagation(); toggle(key); }}>${isOpen ? "▾" : "▸"}</span>
         <span class="name">${key}</span>
         <span class="meta">${anyLive ? html`<span class="dot ok" style="display:inline-block;margin-right:6px"></span>` : ""}${members.length}</span>
       </div>`);
@@ -70,18 +74,22 @@ export function Sidebar({campaign, onPick, theme, onTheme, top, agent, onAgent})
 
   return html`<aside class="sidebar">
     <div class="brand"><span class="logo">A</span>AgentLab</div>
-    ${hasAgents && html`<div class="seg sideseg">
+    ${context && html`<div class="seg sideseg">
       <button class=${show === "campaigns" ? "on" : ""} onClick=${() => setMode("campaigns")}>Campaigns</button>
-      <button class=${show === "agents" ? "on" : ""} onClick=${() => setMode("agents")}>Agents</button>
+      <button class=${show === context ? "on" : ""} onClick=${() => setMode(null)}>${context === "group" ? "Group" : "Agents"}</button>
     </div>`}
     ${show === "agents" ? html`<div class="navlist flushlist">
       <div class="sidecamp" title=${campaign}>${campaign}</div>
       <${AgentTree} top=${top} agent=${agent} onAgent=${onAgent} />
+    </div>` : show === "group" ? html`<div class="navlist flushlist">
+      <div class="sidecamp"><a href="#" class="grouplink" title="The group's page"
+        onClick=${e => { e.preventDefault(); onGroup(campaign.split("/")[0]); }}>${campaign.split("/")[0]}</a></div>
+      <${GroupRuns} campaign=${campaign} top=${top} agent=${agent} onAgent=${onAgent} onPick=${onPick} />
     </div>` : html`
     <div class="search"><input placeholder="Filter campaigns" value=${filter}
       onInput=${e => setFilter(e.target.value)} /></div>
     <div class="navlist">
-      <div class="navitem ${campaign ? "" : "on"}" onClick=${() => onPick("")}>
+      <div class="navitem ${campaign || groupOn ? "" : "on"}" onClick=${() => onPick("")}>
         <span class="caret">⌂</span><span class="name">Lab overview</span>
         <span class="meta">${names.length}</span>
       </div>

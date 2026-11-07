@@ -4,7 +4,7 @@ import { html, render, useState, useEffect, usePoll, getJSON, hms, usd, when, to
 import { Sidebar } from "./sidebar.js";
 import { Overview } from "./overview.js";
 import { Log } from "./log.js";
-import { Lab } from "./lab.js";
+import { Lab, Group } from "./lab.js";
 import { Budgets } from "./budgets.js";
 import { Resources } from "./resources.js";
 import { Chat } from "./chat.js";
@@ -15,15 +15,16 @@ const TABS = [["overview", "Overview"], ["log", "Log"], ["files", "Files"], ["bu
 function readAddress() {
   const q = new URLSearchParams(location.search);
   const named = q.get("c");
+  const group = q.get("group") || "";
   const campaign = named != null ? named
-    : q.has("lab") ? "" : (WATCH.scope === "campaign" ? WATCH.campaign : "");
-  return {campaign, run: q.get("run") || "", agent: q.get("agent") || "", file: q.get("file") || "",
+    : q.has("lab") || group ? "" : (WATCH.scope === "campaign" ? WATCH.campaign : "");
+  return {campaign, group, run: q.get("run") || "", agent: q.get("agent") || "", file: q.get("file") || "",
           tab: TABS.some(([t]) => t === q.get("tab")) ? q.get("tab") : "overview"};
 }
 
 function writeAddress(v, push) {
   const q = new URLSearchParams();
-  if (v.campaign) q.set("c", v.campaign); else q.set("lab", "");
+  if (v.campaign) q.set("c", v.campaign); else if (v.group) q.set("group", v.group); else q.set("lab", "");
   if (v.run) q.set("run", v.run);
   if (v.agent) q.set("agent", v.agent);
   if (v.campaign && v.tab !== "overview") q.set("tab", v.tab);
@@ -59,7 +60,8 @@ function Campaign({view, go, chat, top}) {
   return html`<div class="work"><div class="main">
     <header class="topbar">
       <div class="titlerow">
-        <h1 title=${campaign}>${campaign}</h1>
+        <h1 title=${campaign}>${campaign.includes("/") ? html`<a href="#" class="grouplink" title="The group's runs"
+            onClick=${e => { e.preventDefault(); go({campaign: "", group: campaign.split("/")[0], run: "", agent: "", file: ""}, true); }}>${campaign.split("/")[0]}</a><span class="crumb"> / </span>${campaign.slice(campaign.indexOf("/") + 1)}` : campaign}</h1>
         ${top && top.run && html`<span class="pill ${tone(status)}"><span class="dot ${tone(status)} ${live ? "live" : ""}"></span>${status}</span>`}
         <span class="spacer"></span>
         <${RunPicker} campaign=${campaign} run=${run} onRun=${r => go({run: r, agent: ""}, true)} />
@@ -100,14 +102,19 @@ function Campaign({view, go, chat, top}) {
   </div>`;
 }
 
-function LabPage({go, chat}) {
+function LabPage({go, chat, group}) {
+  const pick = c => go({campaign: c, group: "", run: "", agent: "", file: "", tab: "overview"}, true);
   return html`<div class="work"><div class="main">
     <header class="topbar" style="padding-bottom:14px">
-      <div class="titlerow"><h1>Lab overview</h1><span class="spacer"></span>
+      <div class="titlerow">
+        ${group ? html`<h1><a href="#" class="grouplink" onClick=${e => { e.preventDefault(); go({group: ""}, true); }}>Lab</a><span class="crumb"> / </span>${group}</h1>`
+                : html`<h1>Lab overview</h1>`}
+        <span class="spacer"></span>
         ${!chat.open && html`<button class="btn" onClick=${() => chat.set(true)}>Secretary</button>`}</div>
-      <div class="subrow">Every campaign's latest run. Running campaigns come first.</div>
+      <div class="subrow">${group ? "The runs of this group, running ones first." : "Every campaign's latest run. Running campaigns come first."}</div>
     </header>
-    <div class="content"><${Lab} onPick=${c => go({campaign: c, run: "", agent: "", file: "", tab: "overview"}, true)} /></div>
+    <div class="content">${group ? html`<${Group} key=${group} group=${group} onPick=${pick} />`
+      : html`<${Lab} onPick=${pick} onGroup=${g => go({group: g}, true)} />`}</div>
   </div>
   ${chat.open && html`<${Chat} lab onClose=${() => chat.set(false)} />`}
   </div>`;
@@ -123,7 +130,7 @@ function App() {
     writeAddress(view, false);
     return () => removeEventListener("popstate", back);
   }, []);
-  useEffect(() => { document.title = (view.campaign || "Lab") + " · AgentLab"; }, [view.campaign]);
+  useEffect(() => { document.title = (view.campaign || view.group || "Lab") + " · AgentLab"; }, [view.campaign, view.group]);
   const go = (change, push) => setView(v => {
     const next = {...v, ...change};
     writeAddress(next, push);
@@ -149,8 +156,9 @@ function App() {
   return html`<div class="shell">
     <${Sidebar} campaign=${view.campaign} theme=${theme} onTheme=${flipTheme}
       top=${top} agent=${view.agent} onAgent=${a => go({agent: a}, true)}
-      onPick=${c => go({campaign: c, run: "", agent: "", file: "", tab: view.tab}, true)} />
-    ${view.campaign ? html`<${Campaign} key=${view.campaign} view=${view} go=${go} chat=${chat} top=${top} />` : html`<${LabPage} go=${go} chat=${chat} />`}
+      group=${view.group} onGroup=${g => go({campaign: "", group: g, run: "", agent: "", file: ""}, true)}
+      onPick=${c => go({campaign: c, group: "", run: "", agent: "", file: "", tab: view.tab}, true)} />
+    ${view.campaign ? html`<${Campaign} key=${view.campaign} view=${view} go=${go} chat=${chat} top=${top} />` : html`<${LabPage} go=${go} chat=${chat} group=${view.group} />`}
   </div>`;
 }
 
