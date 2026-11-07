@@ -5,10 +5,10 @@ import { html, useState, hms, short, usd, score, plural, when, tone, copyText } 
 const modelCost = s => (s.cost_models || []).reduce((t, m) => t + (m.usd || 0), 0);
 const hasCost = s => (s.cost_models || []).some(m => m.usd != null);
 
-function Kpi({label, value, sub, title}) {
+function Kpi({label, value, sub, title, text}) {
   return html`<div class="kpi" title=${title || ""}>
     <div class="label">${label}</div>
-    <div class="value">${value}</div>
+    <div class="value ${text ? "text" : ""}">${value}</div>
     ${sub && html`<div class="sub">${sub}</div>`}
   </div>`;
 }
@@ -24,7 +24,7 @@ function Kpis({s}) {
     ? `${hms(s.phase_age_s)} in this step · heartbeat ${hms(s.heartbeat_age_s)} ago`
     : s.turns ? `after ${plural(s.turns, "turn")}` : "";
   return html`<div class="kpis">
-    <${Kpi} label=${s.status === "running" ? "Doing" : "Stopped"} value=${state} sub=${stateSub} title=${state} />
+    <${Kpi} label=${s.status === "running" ? "Doing" : "Stopped"} value=${state} sub=${stateSub} title=${state} text />
     <${Kpi} label="Run time" value=${hms(s.elapsed_s)}
             sub=${runtime && runtime.limit ? `of ${hms(runtime.limit)} allowed` : when(s.started_at) + " start"} />
     ${s.show_cost !== false && html`<${Kpi} label="Cost" value=${hasCost(s) ? usd(modelCost(s)) : "—"}
@@ -38,18 +38,18 @@ function Kpis({s}) {
   </div>`;
 }
 
-function Card({title, right, children, flush}) {
+function Card({title, right, children, flush, more}) {
   return html`<section class="card">
-    <h2>${title}${right != null && html`<span class="right">${right}</span>`}</h2>
+    <h2>${title}${right != null && html`<span class="right">${right}</span>`}${more && html`<a class="more" href="#" onClick=${e => { e.preventDefault(); more[1](); }}>${more[0]} →</a>`}</h2>
     ${flush ? children : html`<div class="body">${children}</div>`}
   </section>`;
 }
 
 // A budget is a ceiling, not a target: the bar shows how much of it is used.
-function Budgets({s}) {
+function Budgets({s, onTab}) {
   const rows = s.budgets || [];
   if (!rows.length) return null;
-  return html`<${Card} title="Budgets">
+  return html`<${Card} title="Budgets" more=${["Details", () => onTab("budgets")]}>
     ${rows.map(r => {
       const fmt = r.unit === "s" ? hms : r.unit === "h" ? (v => (+v).toFixed(1)) : String;
       const used = r.used || 0;
@@ -109,13 +109,13 @@ function Agents({top, agent, onAgent}) {
 }
 
 // Where the run's tasks go: each bucket's block shape and what is in flight in it.
-function Compute({s}) {
+function Compute({s, onTab}) {
   const shapes = Object.entries(s.buckets || {});
   const where = s.endpoint
     ? (Object.keys(s.systems || {}).length ? Object.keys(s.systems) : [s.system || "?"])
         .join(", ") + (s.has_local ? ", this machine" : "")
     : "this machine";
-  return html`<${Card} title="Compute" right=${s.kind === "resources" ? "places work" : "tasks run on " + where} flush>
+  return html`<${Card} title="Compute" right=${s.kind === "resources" ? "places work" : "tasks run on " + where} flush more=${["Resources", () => onTab("resources")]}>
     ${shapes.length ? html`<table class="table">
       <thead><tr><th>Bucket</th><th>System</th><th>Queue</th><th class="r">Nodes / block</th>
         <th class="r">Walltime</th><th class="r">Max blocks</th><th class="r">In flight</th></tr></thead>
@@ -220,16 +220,16 @@ function Totals({s}) {
   </${Card}>`;
 }
 
-export function Overview({top, s, agent, onAgent}) {
+export function Overview({top, s, agent, onAgent, onTab}) {
   if (!s) return html`<div class="empty">Loading…</div>`;
   if (!s.run) return html`<div class="empty">This campaign has no run yet.</div>`;
   return html`
     <${Kpis} s=${s} />
     <div class="cols">
       <div class="col">
-        <${Budgets} s=${s} />
+        <${Budgets} s=${s} onTab=${onTab} />
         <${Agents} top=${top} agent=${agent} onAgent=${onAgent} />
-        <${Compute} s=${s} />
+        <${Compute} s=${s} onTab=${onTab} />
         <${Routes} s=${s} />
       </div>
       <div class="col">

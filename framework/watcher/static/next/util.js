@@ -13,24 +13,29 @@ export async function getJSON(path, params = {}) {
 
 // Calls `fetcher` now and again `ms` after each reply, until `deps` change. A reply that
 // arrives after they changed is dropped, so a slow one cannot overwrite the new view.
+// `reload` fetches at once, keeping what is shown until the reply comes.
 export function usePoll(fetcher, ms, deps) {
   const [state, setState] = useState({data: null, error: null});
+  const again = useRef(() => {});
   useEffect(() => {
-    let live = true, timer;
+    let live = true, timer, seq = 0;
     setState({data: null, error: null});
     const tick = async () => {
+      clearTimeout(timer);
+      const mine = ++seq;
       try {
         const data = await fetcher();
-        if (live) setState({data, error: null});
+        if (live && mine === seq) setState({data, error: null});
       } catch (error) {
-        if (live) setState(s => ({data: s.data, error}));
+        if (live && mine === seq) setState(s => ({data: s.data, error}));
       }
-      if (live) timer = setTimeout(tick, ms);
+      if (live && mine === seq) timer = setTimeout(tick, ms);
     };
+    again.current = tick;
     tick();
     return () => { live = false; clearTimeout(timer); };
   }, deps);
-  return state;
+  return {...state, reload: () => again.current()};
 }
 
 export const short = n => n == null ? "—"

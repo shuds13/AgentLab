@@ -20,7 +20,7 @@ export function Lab({onPick}) {
   const head = (k, label, cls) => html`<th class=${cls || ""} style="cursor:pointer"
     onClick=${() => setSort(s => ({key: k, desc: s.key === k ? !s.desc : k !== "campaign"}))}>
     ${label}${sort.key === k ? (sort.desc ? " ↓" : " ↑") : ""}</th>`;
-  return html`<section class="card">
+  return html`<section class="card scrollx">
     <table class="table">
       <thead><tr>${COLUMNS.map(([k, l, c]) => head(k, l, c))}</tr></thead>
       <tbody>${rows.map(r => html`<tr class="click" onClick=${() => onPick(r.campaign)}>

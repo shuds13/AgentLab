@@ -5,8 +5,11 @@ import { Sidebar } from "./sidebar.js";
 import { Overview } from "./overview.js";
 import { Log } from "./log.js";
 import { Lab } from "./lab.js";
+import { Budgets } from "./budgets.js";
+import { Resources } from "./resources.js";
+import { Chat } from "./chat.js";
 
-const TABS = [["overview", "Overview"], ["log", "Log"]];
+const TABS = [["overview", "Overview"], ["log", "Log"], ["budgets", "Budgets"], ["resources", "Resources"]];
 
 function readAddress() {
   const q = new URLSearchParams(location.search);
@@ -38,7 +41,7 @@ function RunPicker({campaign, run, onRun}) {
   </select>`;
 }
 
-function Campaign({view, go}) {
+function Campaign({view, go, chat}) {
   const {campaign, run, agent, tab} = view;
   const top = usePoll(() => getJSON("/status", {c: campaign, run}), 2000, [campaign, run]).data;
   const picked = usePoll(() => agent ? getJSON("/status", {c: campaign, run: agent}) : null,
@@ -52,13 +55,14 @@ function Campaign({view, go}) {
   const status = top && top.status;
   const live = status === "running";
 
-  return html`<div class="main">
+  return html`<div class="work"><div class="main">
     <header class="topbar">
       <div class="titlerow">
         <h1 title=${campaign}>${campaign}</h1>
         ${top && top.run && html`<span class="pill ${tone(status)}"><span class="dot ${tone(status)} ${live ? "live" : ""}"></span>${status}</span>`}
         <span class="spacer"></span>
         <${RunPicker} campaign=${campaign} run=${run} onRun=${r => go({run: r, agent: ""}, true)} />
+        ${!chat.open && html`<button class="btn" onClick=${() => chat.set(true)}>Chat</button>`}
       </div>
       <div class="subrow">
         ${top && top.run ? html`
@@ -78,18 +82,29 @@ function Campaign({view, go}) {
     </header>
     ${tab === "log"
       ? html`<div class="content flush"><${Log} campaign=${campaign} run=${agent || run} /></div>`
+      : tab === "budgets"
+      ? html`<div class="content"><${Budgets} campaign=${campaign} run=${agent || run} onTab=${t => go({tab: t}, true)} /></div>`
+      : tab === "resources"
+      ? html`<div class="content"><${Resources} campaign=${campaign} run=${agent || run}
+               agentName=${agentRow && agentRow.branch} /></div>`
       : html`<div class="content"><${Overview} top=${top} s=${s} agent=${agent}
-               onAgent=${a => go({agent: a}, true)} /></div>`}
+               onAgent=${a => go({agent: a}, true)} onTab=${t => go({tab: t}, true)} /></div>`}
+  </div>
+  ${chat.open && html`<${Chat} campaign=${campaign} run=${run} worker=${agentRow}
+      ended=${!!(top && top.run && !live)} onClose=${() => chat.set(false)} />`}
   </div>`;
 }
 
-function LabPage({go}) {
-  return html`<div class="main">
+function LabPage({go, chat}) {
+  return html`<div class="work"><div class="main">
     <header class="topbar" style="padding-bottom:14px">
-      <div class="titlerow"><h1>Lab overview</h1></div>
+      <div class="titlerow"><h1>Lab overview</h1><span class="spacer"></span>
+        ${!chat.open && html`<button class="btn" onClick=${() => chat.set(true)}>Secretary</button>`}</div>
       <div class="subrow">Every campaign's latest run. Running campaigns come first.</div>
     </header>
     <div class="content"><${Lab} onPick=${c => go({campaign: c, run: "", agent: "", tab: "overview"}, true)} /></div>
+  </div>
+  ${chat.open && html`<${Chat} lab onClose=${() => chat.set(false)} />`}
   </div>`;
 }
 
@@ -109,6 +124,11 @@ function App() {
     writeAddress(next, push);
     return next;
   });
+  const [chatOpen, setChatOpen] = useState(() => { try { return localStorage.getItem("chat") !== "closed"; } catch (e) { return true; } });
+  const chat = {open: chatOpen, set: open => {
+    try { localStorage.setItem("chat", open ? "open" : "closed"); } catch (e) {}
+    setChatOpen(open);
+  }};
   const flipTheme = () => {
     const t = theme === "light" ? "dark" : "light";
     document.documentElement.dataset.theme = t;
@@ -118,7 +138,7 @@ function App() {
   return html`<div class="shell">
     <${Sidebar} campaign=${view.campaign} theme=${theme} onTheme=${flipTheme}
       onPick=${c => go({campaign: c, run: "", agent: "", tab: view.tab}, true)} />
-    ${view.campaign ? html`<${Campaign} key=${view.campaign} view=${view} go=${go} />` : html`<${LabPage} go=${go} />`}
+    ${view.campaign ? html`<${Campaign} key=${view.campaign} view=${view} go=${go} chat=${chat} />` : html`<${LabPage} go=${go} chat=${chat} />`}
   </div>`;
 }
 
