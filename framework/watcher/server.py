@@ -227,7 +227,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         q = urllib.parse.parse_qs(url.query, keep_blank_values=True)
         campaign = self._campaign(q)
         run = (q.get("run") or [""])[0] or None    # a past run, else the newest
-        if url.path == "/":
+        if url.path in ("/", "/next"):
+            # `/next` is the page being redesigned, on the same data as `/`.
             # The page opens where the address says, so a bookmark is showing the right
             # place before the first poll rather than a moment after it. Opened with the
             # key, the page may make changes from then on (see _can_write).
@@ -236,8 +237,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if self.key and given and secrets.compare_digest(given, self.key):
                 headers = (("Set-Cookie", f"{self._cookie_name()}={self.key}; Path=/; "
                                           f"HttpOnly; SameSite=Strict"),)
-            self._send(self._page(campaign, self._scope(q)), "text/html; charset=utf-8",
-                       headers=headers)
+            page = "next/index.html" if url.path == "/next" else "index.html"
+            self._send(self._page(page, campaign, self._scope(q)),
+                       "text/html; charset=utf-8", headers=headers)
         elif url.path.startswith("/static/"):
             self._send_static(url.path[len("/static/"):])
         elif url.path == "/campaigns":
@@ -369,19 +371,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return {"text": text, "offset": size, "reset": reset,
                 "name": os.path.basename(path), "running": bool(beating)}
 
-    def _page(self, campaign, scope):
+    def _page(self, name, campaign, scope):
         """The page, opening on the campaign and scope the address asked for. Read on
         every request, like everything else here, so an edit shows on reload."""
-        with open(os.path.join(STATIC, "index.html")) as f:
+        with open(os.path.join(STATIC, name)) as f:
             page = f.read()
         return (page.replace("{{campaign}}", html.escape(campaign))
                     .replace("{{campaign_json}}", json.dumps(campaign))
                     .replace("{{scope_json}}", json.dumps(scope)))
 
     def _send_static(self, name):
-        """The page's own stylesheet and script: only files directly in static/."""
+        """The page's own stylesheets and scripts, from under static/. A path with an
+        empty or hidden part (which covers `..`) is refused."""
         ext = os.path.splitext(name)[1]
-        if "/" in name or name.startswith(".") or ext not in STATIC_TYPES:
+        if any(not p or p.startswith(".") for p in name.split("/")) or ext not in STATIC_TYPES:
             self.send_error(404)
             return
         try:

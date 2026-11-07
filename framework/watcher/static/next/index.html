@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{campaign}} · AgentLab</title>
+<script>
+  try { const t = localStorage.getItem("theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+  const WATCH = {campaign: {{campaign_json}}, scope: {{scope_json}}};
+</script>
+<link rel="stylesheet" href="/static/next/app.css">
+<script type="module" src="/static/next/app.js"></script>
+</head><body><div id="app"></div></body></html>
