@@ -317,6 +317,10 @@ pre.code { padding: 8px 10px; margin: 0 0 8px; white-space: pre-wrap; }
 .composebar { display: flex; align-items: center; justify-content: space-between; font-size: 11px; }
 .btn.primary { background: var(--accent); color: #fff; border-color: transparent; }
 .btn.primary:hover { color: #fff; filter: brightness(1.08); }
+.sendbtns { display: flex; gap: 6px; }
+.btn.mic { display: inline-flex; align-items: center; padding: 4px 8px; }
+.btn.mic.on { color: var(--bad); border-color: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft);
+              animation: pulse 2s infinite; }
 .scrollx { overflow-x: auto; }
 .kpi .value.text { font-size: 16px; line-height: 1.35; white-space: normal; display: -webkit-box;
                    -webkit-line-clamp: 2; -webkit-box-orient: vertical; margin-top: 4px; }
