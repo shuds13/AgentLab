@@ -8,15 +8,16 @@ import { Lab } from "./lab.js";
 import { Budgets } from "./budgets.js";
 import { Resources } from "./resources.js";
 import { Chat } from "./chat.js";
+import { Files } from "./files.js";
 
-const TABS = [["overview", "Overview"], ["log", "Log"], ["budgets", "Budgets"], ["resources", "Resources"]];
+const TABS = [["overview", "Overview"], ["log", "Log"], ["files", "Files"], ["budgets", "Budgets"], ["resources", "Resources"]];
 
 function readAddress() {
   const q = new URLSearchParams(location.search);
   const named = q.get("c");
   const campaign = named != null ? named
     : q.has("lab") ? "" : (WATCH.scope === "campaign" ? WATCH.campaign : "");
-  return {campaign, run: q.get("run") || "", agent: q.get("agent") || "",
+  return {campaign, run: q.get("run") || "", agent: q.get("agent") || "", file: q.get("file") || "",
           tab: TABS.some(([t]) => t === q.get("tab")) ? q.get("tab") : "overview"};
 }
 
@@ -26,6 +27,7 @@ function writeAddress(v, push) {
   if (v.run) q.set("run", v.run);
   if (v.agent) q.set("agent", v.agent);
   if (v.campaign && v.tab !== "overview") q.set("tab", v.tab);
+  if (v.campaign && v.tab === "files" && v.file) q.set("file", v.file);
   const url = location.pathname + "?" + q.toString().replace(/^lab=$/, "lab");
   history[push ? "pushState" : "replaceState"](null, "", url);
 }
@@ -81,6 +83,10 @@ function Campaign({view, go, chat, top}) {
     </header>
     ${tab === "log"
       ? html`<div class="content flush"><${Log} campaign=${campaign} run=${agent || run} /></div>`
+      : tab === "files"
+      ? html`<div class="content flush"><${Files} campaign=${campaign} run=${agent || run} sel=${view.file}
+               onSel=${f => go({file: f}, true)} records=${s && s.records}
+               agentName=${agent ? (agentRow ? agentRow.branch : agent) : workers.length ? lead : "The agent"} /></div>`
       : tab === "budgets"
       ? html`<div class="content"><${Budgets} campaign=${campaign} run=${agent || run} onTab=${t => go({tab: t}, true)} /></div>`
       : tab === "resources"
@@ -101,7 +107,7 @@ function LabPage({go, chat}) {
         ${!chat.open && html`<button class="btn" onClick=${() => chat.set(true)}>Secretary</button>`}</div>
       <div class="subrow">Every campaign's latest run. Running campaigns come first.</div>
     </header>
-    <div class="content"><${Lab} onPick=${c => go({campaign: c, run: "", agent: "", tab: "overview"}, true)} /></div>
+    <div class="content"><${Lab} onPick=${c => go({campaign: c, run: "", agent: "", file: "", tab: "overview"}, true)} /></div>
   </div>
   ${chat.open && html`<${Chat} lab onClose=${() => chat.set(false)} />`}
   </div>`;
@@ -143,7 +149,7 @@ function App() {
   return html`<div class="shell">
     <${Sidebar} campaign=${view.campaign} theme=${theme} onTheme=${flipTheme}
       top=${top} agent=${view.agent} onAgent=${a => go({agent: a}, true)}
-      onPick=${c => go({campaign: c, run: "", agent: "", tab: view.tab}, true)} />
+      onPick=${c => go({campaign: c, run: "", agent: "", file: "", tab: view.tab}, true)} />
     ${view.campaign ? html`<${Campaign} key=${view.campaign} view=${view} go=${go} chat=${chat} top=${top} />` : html`<${LabPage} go=${go} chat=${chat} />`}
   </div>`;
 }
