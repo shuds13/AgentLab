@@ -873,10 +873,15 @@ def _route_problem(frm, to):
     for b in (frm, to):
         if b not in _SYS["buckets"]:
             return f"no bucket {b!r}; buckets are {sorted(_SYS['buckets'])}"
-    if _SYS["buckets"][frm]["nodes_per_job"] != _SYS["buckets"][to]["nodes_per_job"]:
-        return (f"{frm!r} gives a job {_SYS['buckets'][frm]['nodes_per_job']} node(s) and "
-                f"{to!r} {_SYS['buckets'][to]['nodes_per_job']}; a redirect must keep the "
-                f"nodes per job")
+    # A job's worker: the nodes it gets, and how many workers share each node. The block
+    # around it may differ in size, queue and walltime.
+    f, t = _SYS["buckets"][frm], _SYS["buckets"][to]
+    if f["nodes_per_job"] != t["nodes_per_job"]:
+        return (f"{frm!r} gives a job {f['nodes_per_job']} node(s) and {to!r} "
+                f"{t['nodes_per_job']}; a redirect must keep the nodes per job")
+    if f["workers_per_node"] != t["workers_per_node"]:
+        return (f"{frm!r} runs {f['workers_per_node']} worker(s) per node and {to!r} "
+                f"{t['workers_per_node']}; a redirect must keep the workers per node")
     return None
 
 
@@ -907,6 +912,11 @@ def _local_pending_count():
 def jobs_in_flight():
     """Jobs submitted but not yet collected (pending + done-but-uncollected)."""
     return len(_jobs) + len(_local_jobs)
+
+
+def remote_jobs_landed():
+    """Remote jobs that have finished and are not yet collected."""
+    return sum(1 for j in _jobs.values() if j["future"].done())
 
 
 def pending_count():
@@ -1802,7 +1812,8 @@ SET_ROUTE_DESC = (
     "Send every task bound for one resource bucket to another instead, for all runs in "
     "this workspace, from their next submit; or, with to_bucket empty, stop redirecting "
     "it. Tasks already submitted stay where they are. Both buckets must give a job the "
-    "same number of nodes. Give the reason, which is logged with the change.\n\n"
+    "same number of nodes and workers per node. Give the reason, which is logged with the "
+    "change.\n\n"
     "The buckets:\n" + "\n".join(_block_shape(n) for n in _SYS["buckets"])
 )
 
@@ -1825,10 +1836,90 @@ async def set_route(args):
         {**c, "redirects": _routing.load(WORKSPACE_DIR)})}]}
 
 
+def hold_block(args, target):
+    """Runs on the compute system, as a resource agent's hold job: it keeps one worker of
+    its block busy for `seconds`, so the block is not released as idle. The block it ran
+    in comes back in ran_on."""
+    import time
+    seconds = max(0, int(args.get("seconds") or 0))
+    time.sleep(seconds)
+    return {"held_s": seconds}
+
+
+_HOLD_SOURCE = __import__("textwrap").dedent(inspect.getsource(hold_block))
+HAS_HOLD = RESOURCE_AGENT and any(SYSTEMS[b["system"]]["endpoint"]
+                                  for b in _SYS["buckets"].values())
+
+SUBMIT_HOLD_DESC = (
+    "Send a hold job to a bucket. It goes to that bucket whatever the routes, and the "
+    "endpoint starts a block there for it if none is running. Once it runs, it keeps one "
+    "worker of the block busy for `seconds`, so the block is not released as idle; with 0 "
+    "it returns as soon as it starts. It counts against no submit budget, but the block's "
+    "time counts towards node-hours like any other. You are woken when it comes back: "
+    "collect it with get_completed_jobs. Its `ran_on` gives the block: `batch_job`, "
+    "`block_start`, `block_walltime_s` and `block_queue`. One hold job per bucket in "
+    "flight at a time. A hold job still queued when the run ends stays queued, and runs "
+    "when its block starts.\n\nThe buckets:\n"
+    + "\n".join(_block_shape(n) for n in _SYS["buckets"])
+)
+
+
+@tool("submit_hold", SUBMIT_HOLD_DESC,
+      {"type": "object", "properties": {"bucket": {"type": "string"},
+                                        "seconds": {"type": "integer"},
+                                        "note": {"type": "string"}},
+       "required": ["bucket", "seconds"]})
+async def submit_hold(args):
+    def refuse(msg):
+        return {"content": [{"type": "text", "text": json.dumps({"error": msg})}],
+                "is_error": True}
+    if _stop_requested:
+        return refuse(_WINDDOWN_REFUSAL)
+    bucket = (args.get("bucket") or "").strip()
+    if bucket not in _SYS["buckets"]:
+        return refuse(f"no bucket {bucket!r}; buckets are {sorted(_SYS['buckets'])}")
+    try:
+        seconds = max(0, int(args.get("seconds") or 0))
+    except (TypeError, ValueError):
+        return refuse("seconds must be a whole number")
+    b = _SYS["buckets"][bucket]
+    if not SYSTEMS[b["system"]]["endpoint"]:
+        return refuse(f"no endpoint for {b['system']} in your user file")
+    nh = node_hours_budgets().get(b["system"])
+    if nh and nh[0] >= nh[1]:
+        return refuse(f"the {b['system']} node-hour budget is spent ({nh[0]:.1f} of "
+                      f"{nh[1]:g})")
+    for jid, j in _jobs.items():
+        if j["bucket"] == bucket and not j["future"].done():
+            return refuse(f"hold job {jid} for {bucket!r} is still in flight")
+    # needs_seconds: a block with less time left than the hold hands it back to wait for
+    # the next block, as any job's would.
+    hold = {"seconds": seconds, "needs_seconds": seconds,
+            "note": (args.get("note") or "").strip()}
+    target = {"bucket": bucket, "walltime": b["user_config"].get("walltime", "")}
+    job_id = next(_job_counter)
+    key = f"hold:{bucket}:{job_id}"
+    try:
+        fut = _RetryingFuture(lambda: get_executor(bucket).submit(
+                                  _run_remote, _HOLD_SOURCE, "hold_block", hold, target),
+                              job_id=job_id, max_wait=b["idle_s"] + RETRY_MARGIN)
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        return refuse(f"submit failed: {e}")
+    _jobs[job_id] = {"future": fut, "args": hold, "key": key, "bucket": bucket,
+                     "kind": "hold", "chosen": bucket}
+    _append_jobs_log({"event": "submit", "job_id": job_id, "key": key, "args": hold,
+                      "kind": "hold", "bucket": bucket, "system": b["system"],
+                      "idle_s": b["idle_s"]})
+    return {"content": [{"type": "text", "text": json.dumps(
+        {"job_id": job_id, "bucket": bucket, "seconds": seconds})}]}
+
+
 def _tools():
     """The tools this agent is given. The job tools are offered only when the task
     defines the matching function -- remote_fn for the remote tools, local_fn for the
-    local -- and not to a resource agent, which places work rather than doing it."""
+    local -- and not to a resource agent, which places work rather than doing it. It
+    gets hold jobs instead, to start a block or keep one."""
     tools = []
     if HAS_REMOTE and not RESOURCE_AGENT:
         tools += (list(KIND_TOOLS.values()) if MULTI_KIND
@@ -1846,6 +1937,8 @@ def _tools():
         tools.append(system_status)
     if RESOURCE_AGENT and len(_SYS["buckets"]) > 1:
         tools.append(set_route)
+    if HAS_HOLD:
+        tools += [submit_hold, get_completed_jobs]
     return tools
 
 

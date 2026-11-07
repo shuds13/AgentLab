@@ -210,9 +210,10 @@ EXPLORE_PROMPT = _prompt("EXPLORE_PROMPT",
     "the next step is and submit it. If the goal is met, or nothing further is worth "
     "running, say so and stop rather than filling the budget. " + _WAIT_NOTE
 )
-# A resource agent (ROLE=resources) has no jobs of its own. It is woken every
-# RESOURCE_INTERVAL seconds, or sooner when the work in flight in the workspace changes,
-# and ends once no other run there has been alive for RESOURCE_IDLE_END seconds.
+# A resource agent (ROLE=resources) does no work of the campaign; its only jobs are hold
+# jobs, which start or keep a block. It is woken every RESOURCE_INTERVAL seconds, or
+# sooner when the work in flight in the workspace changes or a hold job comes back, and
+# ends once no other run there has been alive for RESOURCE_IDLE_END seconds.
 RESOURCE_INTERVAL = int(os.environ.get("RESOURCE_INTERVAL", "300"))
 RESOURCE_IDLE_END = int(os.environ.get("RESOURCE_IDLE_END", "600"))
 RESOURCE_POLL = 15
@@ -1210,7 +1211,6 @@ def _start_run_dir():
                 systems={n: {"endpoint": sy["endpoint"], "work_dir": sy["work_dir"]}
                          for n, sy in tools.SYSTEMS.items()} if tools.HAS_REMOTE else {},
                 has_local=tools.HAS_LOCAL,
-                started_by=os.environ.get("STARTED_BY", ""),
                 host=socket.gethostname(), pid=os.getpid(),
                 # A continuation keeps the run's start; its own is the part's.
                 started_at=(PREV_META.get("started_at") if CONTINUED else None)
@@ -1223,7 +1223,10 @@ def _start_run_dir():
                 campaign=CAMPAIGN,
                 shared_dir=WORKSPACE_DIR, log=LOG_PATH, status="running",
                 primary_score=tools.PRIMARY_SCORE,
-                cwd=AGENT_CWD, **RUN_META)
+                # Who started it: STARTED_BY, unless the run's RUN_META says (a resource
+                # agent's does).
+                cwd=AGENT_CWD, **{"started_by": os.environ.get("STARTED_BY", ""),
+                                  **RUN_META})
     # The scores a job's result names are kept with the run, as they come in.
     tools.SCORES_HOOK = lambda scores: _write_meta(scores=scores)
     _heartbeat()
@@ -2270,6 +2273,7 @@ async def main():
                 # for jobs of its own.
                 if tools.RESOURCE_AGENT:
                     seen = tools._routing.demand(WORKSPACE_DIR, RUN_ID)
+                    landed = tools.remote_jobs_landed()
                     waited = 0
                     while (waited < RESOURCE_INTERVAL and not _stop_file_present()
                            and not _over_time()):
@@ -2277,7 +2281,9 @@ async def main():
                         await asyncio.sleep(RESOURCE_POLL)
                         waited += RESOURCE_POLL
                         _heartbeat(force=False)
+                        # Its own hold jobs coming back wake it too.
                         if (tools._routing.demand(WORKSPACE_DIR, RUN_ID) != seen
+                                or tools.remote_jobs_landed() > landed
                                 or _inbox_waiting()):
                             break
                     now = tools._routing.demand(WORKSPACE_DIR, RUN_ID)
@@ -2290,6 +2296,9 @@ async def main():
                         break
                     prompt = RESOURCE_PROMPT.format(demand=json.dumps(now),
                                                     minutes=max(1, RESOURCE_INTERVAL // 60))
+                    if tools.remote_jobs_landed():
+                        prompt += (f" {tools.remote_jobs_landed()} of your hold jobs have "
+                                   f"come back: collect them with get_completed_jobs.")
                     continue
                 # Idle turn with budget left: re-prompt the agent to propose a NEW
                 # region instead of exiting. A consecutive-empty cap stops a truly

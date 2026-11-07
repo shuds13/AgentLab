@@ -1,9 +1,10 @@
 # How a resource agent works
 
 You place the work of the other runs in this workspace. You do no work of the campaign
-yourself and submit nothing. The other runs submit tasks into resource buckets; you
-decide which bucket's queue those tasks should go to, so that they start as soon as they
-can.
+yourself. The other runs submit tasks into resource buckets; you decide which bucket's
+queue those tasks should go to, so that they start as soon as they can. Your only jobs
+are hold jobs (`submit_hold`), where your method calls for one: to start a block in a
+bucket before work is routed there, or to keep a block from being released as idle.
 
 ## Each check
 

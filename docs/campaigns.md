@@ -105,7 +105,8 @@ kept in `<group>/resource_session.json`. A block that a run outside the group al
 is counted in full to the group.
 
 A bucket's tasks can be redirected to another bucket while the runs go, for every run
-in the workspace from its next submit, when both give a job the same number of nodes:
+in the workspace from its next submit, when both give a job the same number of nodes and
+workers per node:
 
 ```
 bin/route.sh <workspace> debug=debug_scaling      # send debug's tasks to debug_scaling
@@ -119,10 +120,13 @@ A resource agent makes the same change with its `set_route` tool. With
 `RESOURCE_AGENT=true` in `run.sh`, the framework starts one as the run's first worker:
 it shows in the agents panel as `resources` and stops with the run. It places the work
 of the other agents rather than doing any, so it gets `system_status` and `set_route`
-and no submit tools. It follows `method_resources.md` in the campaign if there is one,
-else `methods/resources.md`, and keeps `RESOURCES.md`, an entry per check with what it
-saw and decided. It checks every `RESOURCE_INTERVAL` seconds (300 by default), or sooner
-when a task is submitted or collected or it is sent a message. `RESOURCE_MODEL` sets its
+and none of the campaign's submit tools. Its one job is a hold job (`submit_hold`), sent
+to a bucket whatever the routes: it starts a block there, or keeps one from being
+released as idle, and its return says the block is running. It follows
+`method_resources.md` in the campaign if there is one, else `methods/resources.md`, and
+keeps `RESOURCES.md`, an entry per check with what it saw and decided. It checks every
+`RESOURCE_INTERVAL` seconds (300 by default), or sooner when a task is submitted or
+collected, a hold job comes back, or it is sent a message. `RESOURCE_MODEL` sets its
 model; otherwise it has the run's own.
 
 Machine-specific keys belong in `systems/<system>.json` rather than here, or the
