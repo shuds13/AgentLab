@@ -33,25 +33,59 @@ function Stat({label, value, sub}) {
   return html`<div class="stat"><div class="label">${label}</div><div class="value num">${value}</div>${sub && html`<div class="sub">${sub}</div>`}</div>`;
 }
 
-// What the system reports through its IRI API: its state, open incidents, how busy the
-// queues are, and your batch jobs there.
+// A section shown as one line until opened; whether it is open is remembered.
+function Section({name, title, summary, children}) {
+  const [open, setOpen] = useState(() => recall(name, "") === "1");
+  return html`<div class="sect">
+    <button class="secthead" onClick=${() => { setOpen(!open); remember(name, open ? "" : "1"); }}>
+      <span class="caret">${open ? "▾" : "▸"}</span><b>${title}</b>${summary}</button>
+    ${open && html`<div class="sectbody">${children}</div>`}
+  </div>`;
+}
+
+// What the system reports through its IRI API: its state, how busy the queues are, and
+// your batch jobs there. Open incidents are shown whether or not the section is open.
 function Facility({iri}) {
   if (!iri) return null;
-  if (!iri.checked_at) return html`<div class="body faint">Waiting for the system's first status report.</div>`;
+  if (!iri.checked_at) return html`<div class="body faint sect">Waiting for the system's first status report.</div>`;
   const queues = Object.entries(iri.queues || {});
   const jobs = iri.your_jobs || [];
-  return html`<div class="body facility">
-    <div class="factrow">
-      ${iri.status && html`<span class="pill ${iri.status === "active" || iri.status === "up" ? "ok" : "warn"}">${iri.status}</span>`}
-      ${queues.map(([q, n]) => html`<span class="qcount"><b>${q}</b> ${n.active} running · ${n.queued} queued${n.held ? ` · ${n.held} held` : ""}</span>`)}
-      <span class="faint" style="margin-left:auto">checked ${hms(Date.now() / 1000 - iri.checked_at)} ago</span>
-    </div>
-    ${jobs.length > 0 && html`<div class="factrow"><span class="muted">Your batch jobs:</span>
-      ${jobs.map(j => html`<span class="tag" title=${j.message || ""}>${j.id} · ${j.queue || "?"} · ${j.state}</span>`)}</div>`}
-    ${(iri.incidents || []).map(i => html`<div class="incident"><b>${i.name}</b> <span class="faint">${i.type || ""} · ${i.status || ""}</span>
-      ${i.description && html`<div class="muted">${i.description}</div>`}</div>`)}
-    ${(iri.jobs_error || iri.status_error) && html`<div class="faint">${iri.status_error || ""} ${iri.jobs_error || ""}</div>`}
-  </div>`;
+  const states = {};
+  for (const j of jobs) states[j.state] = (states[j.state] || 0) + 1;
+  const summary = html`
+    ${iri.status && html`<span class="pill ${iri.status === "active" || iri.status === "up" ? "ok" : "warn"}">${iri.status}</span>`}
+    <span class="muted">${jobs.length ? `${plural(jobs.length, "batch job")} of yours: ${Object.entries(states).map(([k, n]) => `${n} ${k}`).join(", ")}`
+      : "no batch jobs of yours"}</span>
+    <span class="faint" style="margin-left:auto">checked ${hms(Date.now() / 1000 - iri.checked_at)} ago</span>`;
+  return html`
+    <${Section} name="resFacility" title="Facility" summary=${summary}>
+      <div class="facility">
+        ${queues.length > 0 && html`<div class="factrow"><span class="muted">Queues:</span>
+          ${queues.map(([q, n]) => html`<span class="qcount"><b>${q}</b> ${n.active} running · ${n.queued} queued${n.held ? ` · ${n.held} held` : ""}</span>`)}</div>`}
+        ${jobs.length > 0 && html`<div class="factrow"><span class="muted">Your batch jobs:</span>
+          ${jobs.map(j => html`<span class="tag" title=${j.message || ""}>${j.id} · ${j.queue || "?"} · ${j.state}</span>`)}</div>`}
+        ${(iri.jobs_error || iri.status_error) && html`<div class="faint">${iri.status_error || ""} ${iri.jobs_error || ""}</div>`}
+      </div>
+    <//>
+    ${(iri.incidents || []).length > 0 && html`<div class="body facility">${iri.incidents.map(i => html`<div class="incident">
+      <b>${i.name}</b> <span class="faint">${i.type || ""} · ${i.status || ""}</span>
+      ${i.description && html`<div class="muted">${i.description}</div>`}</div>`)}</div>`}`;
+}
+
+function Buckets({sy}) {
+  const buckets = Object.entries(sy.buckets || {});
+  if (!buckets.length) return null;
+  const summary = html`<span class="muted">${buckets.map(([k, b]) => `${k} → ${b.queue || "?"}`).join(" · ")}</span>`;
+  return html`<${Section} name="resBuckets" title="Buckets" summary=${summary}>
+    <table class="table">
+      <thead><tr><th>Bucket</th><th>Queue</th><th class="r">Nodes / block</th><th>Per block</th><th class="r">Walltime</th><th class="r">Max blocks</th><th>Sent by</th></tr></thead>
+      <tbody>${buckets.map(([k, b]) => {
+        const who = (sy.sharing || {})[k] || [];
+        return html`<tr><td><b style="font-weight:500">${k}</b></td><td>${b.queue || "?"}</td><td class="r">${b.num_nodes || 1}</td>
+          <td class="muted">${perBlock(b)}</td><td class="r">${b.walltime || "?"}</td><td class="r">${b.max_blocks || 1}</td>
+          <td class="muted" title=${who.join(", ")}>${who.length > 2 ? `${who.slice(0, 2).join(", ")} +${who.length - 2}` : who.join(", ") || "—"}</td></tr>`;
+      })}</tbody></table>
+  <//>`;
 }
 
 function BlockRows({b, pick, mark}) {
@@ -162,26 +196,27 @@ function Timelines({sy, pick, mark, only}) {
   return blocks.map(b => html`<${Timeline} key=${b.id} b=${b} shapes=${sy.buckets || {}} pick=${pick} mark=${mark} />`);
 }
 
-function Loose({sy, tasks, mark}) {
+function Loose({sy, tasks, mark, on}) {
   const loose = tasks.filter(t => !t.block && t.system === sy.system);
   const groups = [["In flight", "their block is known when they finish", loose.filter(t => t.state === "waiting or running")],
                   ["Never reached a block", "", loose.filter(t => t.state !== "waiting or running")]];
-  return groups.filter(([, , ts]) => ts.length).map(([title, note, ts]) => html`
-    <div class="subhead">${title} <span class="faint">${note}</span></div>
-    <table class="table"><thead><tr><th>Agent</th><th class="r">Task</th><th>Kind</th><th>Bucket</th><th>Submitted</th><th>State</th></tr></thead>
+  return groups.filter(([, , ts]) => ts.length).map(([title, note, ts]) => html`<section class="card">
+    <h2>${title}${on}<span class="h2note">${note}</span><span class="right">${plural(ts.length, "task")}</span></h2>
+    <div class="scrollx"><table class="table"><thead><tr><th>Agent</th><th class="r">Task</th><th>Kind</th><th>Bucket</th><th>Submitted</th><th>State</th></tr></thead>
       <tbody>${ts.map(t => html`<tr class=${mark(t)}><td>${t.agent}</td><td class="r">${t.job_id}</td>
         <td class="muted">${t.kind || ""}</td><td class="muted">${t.bucket || ""}</td>
-        <td>${clock(t.submitted)}</td><td>${taskState(sy, t)}</td></tr>`)}</tbody></table>`);
+        <td>${clock(t.submitted)}</td><td>${taskState(sy, t)}</td></tr>`)}</tbody></table></div>
+  </section>`);
 }
 
-function System({sy, d, view, only}) {
+function System({sy, d, view, only, multi}) {
   const pick = t => !only || t.mine;
   const mark = t => d.selected ? (t.mine ? "me" : "other") : "";
   const tasks = (d.tasks || []).filter(pick);
   const here = tasks.filter(t => t.system === sy.system);
   const flying = here.filter(t => t.state === "waiting or running");
   const agents = new Set(flying.map(t => t.agent));
-  const buckets = Object.entries(sy.buckets || {});
+  const on = multi ? ` on ${sy.system}` : "";
   return html`<section class="card">
     <h2>${sy.system}<span class="right mono" title="Endpoint">${sy.endpoint}</span></h2>
     <div class="stats">
@@ -192,19 +227,14 @@ function System({sy, d, view, only}) {
       <${Stat} label="Tasks done" value=${here.length - flying.length} />
     </div>
     <${Facility} iri=${sy.iri} />
-    ${buckets.length > 0 && html`<table class="table">
-      <thead><tr><th>Bucket</th><th>Queue</th><th class="r">Nodes / block</th><th>Per block</th><th class="r">Walltime</th><th class="r">Max blocks</th><th>Sent by</th></tr></thead>
-      <tbody>${buckets.map(([k, b]) => {
-        const who = (sy.sharing || {})[k] || [];
-        return html`<tr><td><b style="font-weight:500">${k}</b></td><td>${b.queue || "?"}</td><td class="r">${b.num_nodes || 1}</td>
-          <td class="muted">${perBlock(b)}</td><td class="r">${b.walltime || "?"}</td><td class="r">${b.max_blocks || 1}</td>
-          <td class="muted" title=${who.join(", ")}>${who.length > 2 ? `${who.slice(0, 2).join(", ")} +${who.length - 2}` : who.join(", ") || "—"}</td></tr>`;
-      })}</tbody></table>`}
-    <div class="subhead">Blocks <span class="faint">${d.group ? `shared by the ${d.group_runs} runs of ${d.group}, this run's tasks marked` : "shared by all agents of the run"}</span></div>
+    <${Buckets} sy=${sy} />
+  </section>
+  <section class="card">
+    <h2>Blocks${on}<span class="h2note">${d.group ? `shared by the ${d.group_runs} runs of ${d.group}, this run's tasks marked` : "shared by all agents of the run"}</span></h2>
     ${view === "timeline" ? html`<${Timelines} sy=${sy} pick=${pick} mark=${mark} only=${only} />`
-      : html`<${BlockTable} sy=${sy} pick=${pick} mark=${mark} only=${only} />`}
-    <${Loose} sy=${sy} tasks=${tasks} mark=${mark} />
-  </section>`;
+      : html`<div class="scrollx"><${BlockTable} sy=${sy} pick=${pick} mark=${mark} only=${only} /></div>`}
+  </section>
+  <${Loose} sy=${sy} tasks=${tasks} mark=${mark} on=${on} />`;
 }
 
 export function Resources({campaign, run, agentName}) {
@@ -227,5 +257,5 @@ export function Resources({campaign, run, agentName}) {
       ${d.selected && !only && html`<span class="legend"><i class="me"></i>${agentName || "this agent"} <i class="other"></i>others</span>`}
     </div>
     ${!systems.length && html`<div class="empty">This run sent no work to another system.</div>`}
-    <div class="col">${shown.map(sy => html`<${System} key=${sy.system} sy=${sy} d=${d} view=${view} only=${!!d.selected && only} />`)}</div>`;
+    <div class="col">${shown.map(sy => html`<${System} key=${sy.system} sy=${sy} d=${d} view=${view} only=${!!d.selected && only} multi=${shown.length > 1} />`)}</div>`;
 }
