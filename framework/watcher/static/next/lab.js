@@ -1,11 +1,11 @@
 // The lab: every campaign's latest run, running ones first. Workspaces under one
 // directory (a comparison, a set of variants) are one row for their group, which opens
 // to its own page or unfolds in place.
-import { html, useState, usePoll, getJSON, hms, usd, score, when, tone, plural } from "./util.js";
+import { html, useState, usePoll, getJSON, hms, usd, when, tone, plural } from "./util.js";
 
 const COLUMNS = [
   ["campaign", "Campaign"], ["status", "State"], ["model", "Model"], ["doing", "Doing / stopped"],
-  ["elapsed_s", "Run time", "r"], ["usd", "Cost", "r"], ["score", "Score", "r"], ["started_at", "Started"],
+  ["elapsed_s", "Run time", "r"], ["started_at", "Started"],
 ];
 
 const doing = r => (r.live ? r.phase : r.stop_reason) || "";
@@ -50,8 +50,6 @@ function RunRow({r, label, sub, onPick}) {
     <td class="muted">${(r.model || "—").replace(/^claude-/, "")}</td>
     <td class="wrap muted" style="max-width:360px">${doing(r)}</td>
     <td class="r">${hms(r.elapsed_s)}</td>
-    <td class="r">${usd(r.usd)}</td>
-    <td class="r">${score(r.score)}</td>
     <td class="muted">${when(r.started_at)}</td>
   </tr>`;
 }
@@ -65,8 +63,6 @@ function GroupRow({g, open, onToggle, onGroup}) {
                : html`<span class="pill">none running</span>`}</td>
     <td class="muted">—</td><td class="muted">—</td>
     <td class="r">${hms(g.elapsed_s)}</td>
-    <td class="r">${usd(g.usd)}</td>
-    <td class="r"></td>
     <td class="muted">${when(g.started_at)}</td>
   </tr>`;
 }
