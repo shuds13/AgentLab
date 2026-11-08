@@ -1,6 +1,6 @@
-// The campaign list: running first, then recently ended, then all of them, with groups
-// (`group/name`) folded under their group.
-import { html, useState, useEffect, usePoll, getJSON } from "./util.js";
+// The campaign list: running first, then recently ended, then all of them, with each
+// group (`group/name`) one entry that opens its page.
+import { html, useState, useEffect, usePoll, getJSON, plural } from "./util.js";
 import { AgentTree, GroupRuns } from "./agents.js";
 
 function useCampaigns() {
@@ -55,7 +55,6 @@ export function Sidebar({campaign, group: groupOn, onGroup, onPick, theme, onThe
   useEffect(() => setMode(null), [campaign]);
   const show = mode === "campaigns" || !context ? "campaigns" : context;
   const [filter, setFilter] = useState("");
-  const [open, setOpen] = useState(() => new Set(campaign.includes("/") ? [campaign.split("/")[0]] : []));
   const live = new Set(running);
   const f = filter.trim().toLowerCase();
   const match = n => !f || n.toLowerCase().includes(f);
@@ -67,7 +66,6 @@ export function Sidebar({campaign, group: groupOn, onGroup, onPick, theme, onThe
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push(n);
   }
-  const toggle = g => setOpen(s => { const t = new Set(s); t.has(g) ? t.delete(g) : t.add(g); return t; });
   const all = [];
   const order = [...[...groups.keys()].filter(Boolean).map(key => ({key, group: true})),
                  ...(groups.get("") || []).map(key => ({key, group: false}))]
@@ -75,17 +73,9 @@ export function Sidebar({campaign, group: groupOn, onGroup, onPick, theme, onThe
   for (const {key, group} of order) {
     if (group) {
       const members = groups.get(key);
-      const isOpen = open.has(key) || !!f || key === groupOn;
-      const anyLive = members.some(m => live.has(m));
-      all.push(html`<div class="navitem ${groupOn === key ? "on" : ""}" title=${key}
-          onClick=${() => { onGroup(key); setOpen(s => new Set(s).add(key)); }}>
-        <span class="caret" title=${isOpen ? "Fold" : "Unfold"} onClick=${e => { e.stopPropagation(); toggle(key); }}>${isOpen ? "▾" : "▸"}</span>
-        <span class="name">${key}</span>
-        <span class="meta">${anyLive ? html`<span class="dot ok" style="display:inline-block;margin-right:6px"></span>` : ""}${members.length}</span>
-      </div>`);
-      if (isOpen) for (const m of members)
-        all.push(html`<${Item} name=${m} label=${m.slice(key.length + 1)} sub on=${m === campaign}
-                                dot=${live.has(m) ? "ok" : ""} onPick=${onPick} />`);
+      all.push(html`<${Item} name=${key} on=${groupOn === key || campaign.startsWith(key + "/")}
+                              dot=${members.some(m => live.has(m)) ? "ok" : ""}
+                              meta=${plural(members.length, "run")} onPick=${onGroup} />`);
     } else {
       all.push(html`<${Item} name=${key} on=${key === campaign} dot=${live.has(key) ? "ok" : ""} onPick=${onPick} />`);
     }

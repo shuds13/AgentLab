@@ -1,6 +1,6 @@
 // The lab: every campaign's latest run, running ones first. Workspaces under one
 // directory (a comparison, a set of variants) are one row for their group, which opens
-// to its own page or unfolds in place.
+// to its own page.
 import { html, useState, usePoll, getJSON, hms, usd, when, tone, plural } from "./util.js";
 
 const COLUMNS = [
@@ -43,9 +43,9 @@ function order(rows, sort) {
   });
 }
 
-function RunRow({r, label, sub, onPick}) {
-  return html`<tr class="click ${sub ? "subrow" : ""}" onClick=${() => onPick(r.campaign)}>
-    <td><span class=${sub ? "indent2" : ""}><b style="font-weight:500">${label || r.campaign}</b></span></td>
+function RunRow({r, label, onPick}) {
+  return html`<tr class="click" onClick=${() => onPick(r.campaign)}>
+    <td><b style="font-weight:500">${label || r.campaign}</b></td>
     <td><span class="pill ${tone(r.status, r.live)}"><span class="dot ${tone(r.status, r.live)} ${r.live ? "live" : ""}"></span>${!r.run ? "never run" : r.live ? "running" : r.status || "—"}</span></td>
     <td class="muted">${(r.model || "—").replace(/^claude-/, "")}</td>
     <td class="wrap muted" style="max-width:360px">${doing(r)}</td>
@@ -54,11 +54,9 @@ function RunRow({r, label, sub, onPick}) {
   </tr>`;
 }
 
-function GroupRow({g, open, onToggle, onGroup}) {
+function GroupRow({g, onGroup}) {
   return html`<tr class="click grouprow" onClick=${() => onGroup(g.campaign)}>
-    <td><button class="fold" title=${open ? "Fold" : "Show its runs here"}
-          onClick=${e => { e.stopPropagation(); onToggle(g.campaign); }}>${open ? "▾" : "▸"}</button>
-      <b style="font-weight:500">${g.campaign}</b> <span class="faint">${plural(g.members.length, "run")}</span></td>
+    <td><b style="font-weight:500">${g.campaign}</b> <span class="faint">${plural(g.members.length, "run")}</span></td>
     <td>${g.up ? html`<span class="pill ok"><span class="dot ok live"></span>${g.up} running</span>`
                : html`<span class="pill">none running</span>`}</td>
     <td class="muted">—</td><td class="muted">—</td>
@@ -90,18 +88,11 @@ export function RunsTable({rows, onPick, strip}) {
 export function Lab({onPick, onGroup}) {
   const {data, error} = usePoll(() => getJSON("/lab"), 10000, [], {keep: true});
   const [sort, head] = useSort({key: "started_at", desc: true});
-  const [open, setOpen] = useState(() => new Set());
   if (!data) return html`<div class="empty">${error ? "Could not load the lab: " + error.message : "Loading the lab…"}</div>`;
-  const toggle = g => setOpen(s => { const t = new Set(s); t.has(g) ? t.delete(g) : t.add(g); return t; });
   const rows = [];
-  for (const r of order(groupRows(data), sort)) {
-    if (!r.group) { rows.push(html`<${RunRow} key=${r.campaign} r=${r} onPick=${onPick} />`); continue; }
-    rows.push(html`<${GroupRow} key=${"g:" + r.campaign} g=${r} open=${open.has(r.campaign)} onToggle=${toggle} onGroup=${onGroup} />`);
-    if (open.has(r.campaign))
-      for (const m of order(r.members, sort))
-        rows.push(html`<${RunRow} key=${m.campaign} r=${m} sub onPick=${onPick}
-                        label=${m.campaign.slice(r.campaign.length + 1)} />`);
-  }
+  for (const r of order(groupRows(data), sort))
+    rows.push(r.group ? html`<${GroupRow} key=${"g:" + r.campaign} g=${r} onGroup=${onGroup} />`
+                      : html`<${RunRow} key=${r.campaign} r=${r} onPick=${onPick} />`);
   return html`<section class="card scrollx">
     <table class="table">
       <thead><tr>${COLUMNS.map(([k, l, c]) => head(k, l, c))}</tr></thead>
