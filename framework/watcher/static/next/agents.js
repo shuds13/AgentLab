@@ -26,6 +26,7 @@ export function AgentTree({top, agent, onAgent, bare}) {
       <span class="who" style=${`padding-left:${Math.min(depth, 6) * 10}px`}>
         <span class="dot ${tone(a.status)} ${a.status === "running" ? "live" : ""}"></span>
         <b>${a.branch || a.run}</b>
+        <span class="kind">${(a.method || a.kind || "") + (extra || "")}</span>
       </span>
       <span class="score" title=${score(a.score)}>${a.score == null ? "" : String(+(+a.score).toPrecision(4))}</span>
       ${costs && html`<span class="usd">${usd(a.usd)}</span>`}

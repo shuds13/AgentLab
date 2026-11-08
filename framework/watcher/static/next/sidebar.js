@@ -24,6 +24,25 @@ function Item({name, label, on, dot, meta, sub, onPick}) {
   </div>`;
 }
 
+// The sidebar's width, dragged from its right edge and remembered.
+const WIDTH = "sidebarWidth";
+const clampWidth = w => Math.max(200, Math.min(window.innerWidth * 0.7, w));
+const setWidth = w => document.documentElement.style.setProperty("--sidebar", w + "px");
+try { const w = parseInt(localStorage.getItem(WIDTH), 10); if (w > 0) setWidth(clampWidth(w)); } catch (e) {}
+
+function startDrag(e) {
+  const side = e.currentTarget.parentElement, from = e.clientX, start = side.offsetWidth;
+  const move = m => setWidth(clampWidth(start + m.clientX - from));
+  const up = () => {
+    removeEventListener("mousemove", move); removeEventListener("mouseup", up);
+    document.body.style.userSelect = "";
+    try { localStorage.setItem(WIDTH, side.offsetWidth); } catch (err) {}
+  };
+  document.body.style.userSelect = "none";
+  addEventListener("mousemove", move); addEventListener("mouseup", up);
+  e.preventDefault();
+}
+
 // Inside a campaign whose run started workers, the sidebar shows its agents, so one can
 // be chosen from any tab; a switch at the top goes back to the campaigns.
 export function Sidebar({campaign, group: groupOn, onGroup, onPick, theme, onTheme, top, agent, onAgent}) {
@@ -73,6 +92,7 @@ export function Sidebar({campaign, group: groupOn, onGroup, onPick, theme, onThe
   }
 
   return html`<aside class="sidebar">
+    <div class="sidedrag" onMouseDown=${startDrag} title="Drag to widen"></div>
     <div class="brand"><span class="logo">A</span>AgentLab</div>
     ${context && html`<div class="seg sideseg">
       <button class=${show === "campaigns" ? "on" : ""} onClick=${() => setMode("campaigns")}>Campaigns</button>
