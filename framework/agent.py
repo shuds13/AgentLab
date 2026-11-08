@@ -263,7 +263,9 @@ AGENT_CWD = os.path.abspath(os.environ.get("AGENT_CWD") or SCRIPT_DIR)
 # Fields whoever launched this run adds to its meta.json, as a JSON object: how it
 # relates to other runs, such as the run that started it and the branch it works on.
 RUN_META = json.loads(os.environ.get("RUN_META") or "{}")
-MAX_TURNS = 500           # backstop against a runaway loop
+# Backstop against a runaway loop. A resource agent has none: it is woken on every change
+# in the work in flight, and it ends with the runs it serves.
+MAX_TURNS = None if ROLE == "resources" else 1000
 # Largest single message the SDK accepts from the CLI, and so the largest tool result
 # the agent can receive. The reader holds a message in memory until it is complete, so
 # the cap is what bounds a stream that never ends. An image arrives around 1.5 MB.
@@ -1202,7 +1204,8 @@ def _start_run_dir():
     _seed_budgets()
     _write_meta(buckets=_buckets, default_bucket=tools._default_bucket,
                 submits_label=tools.submits_label(),
-                max_turns=MAX_TURNS + ((PREV_META.get("turns") or 0) if CONTINUED else 0),
+                max_turns=(MAX_TURNS and
+                           MAX_TURNS + ((PREV_META.get("turns") or 0) if CONTINUED else 0)),
                 critic=CRITIC_LABEL, advisor=AGENT_ADVISOR, show_cost=SHOW_COST,
                 run_id=RUN_ID, handle=HANDLE, system=SYSTEM, role=ROLE,
                 endpoint=tools.ENDPOINT_ID if tools.HAS_REMOTE else "",
@@ -2104,7 +2107,8 @@ async def main():
             last_live = time.time()     # a resource agent's last sight of another run
             # A continuation's turns are numbered on from the earlier part's.
             first_turn = (PREV_META.get("turns") or 0) + 1 if CONTINUED else 1
-            for turn_num in range(first_turn, first_turn + MAX_TURNS):
+            for turn_num in (itertools.count(first_turn) if MAX_TURNS is None
+                             else range(first_turn, first_turn + MAX_TURNS)):
                 print(f"\n===== TURN {turn_num} =====", flush=True)
                 _heartbeat()
                 _set_phase(f"turn {turn_num}: reasoning")
