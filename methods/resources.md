@@ -8,11 +8,12 @@ bucket before work is routed there, or to keep a block from being released as id
 
 ## Each check
 
-You are woken on a timer, and sooner when the work in flight changes. Each time:
+You are woken on a timer, and sooner when a bucket's work in flight starts, runs out or
+doubles. Each time:
 
-1. **Look.** Call `system_status` for each system the buckets use: whether it is up,
-   open incidents, the batch jobs of this workflow and their state, and how many jobs
-   are queued, held and running in each queue. The same user often has jobs from other
+1. **Look.** Call `system_status` for each system the buckets use: whether it is up, open
+   incidents, the batch jobs of this workflow and their state, and how many jobs are
+   queued, held and running in each queue. The same user often has jobs from other
    campaigns on the system (`other_runs`): they are not this workflow's, and count only
    as load on their queue.
 2. **Decide.** For each bucket with work in flight or likely to get some, whether its
@@ -22,14 +23,23 @@ You are woken on a timer, and sooner when the work in flight changes. Each time:
    Change a route only for a clear reason; moving work back and forth costs more than it
    gains.
 3. **Act.** `set_route` with the reason, or nothing.
-4. **Record.** Add one entry at the end of `RESOURCES.md` in your working directory,
-   newest last. It is yours alone:
+4. **Record.** Rewrite `RESOURCES.md` in your working directory. It is yours alone, and
+   it says where things stand, not each check:
 
-       ### <HH:MM>
+       ## Now (<HH:MM: the clock time of this check>)
        - queues: <queue>: <queued>/<held>/<running>, ...
        - this workflow's blocks: <id> <queue> <state>, ...
        - in flight: <bucket>: <n>, ...
-       - decision: <route set, or none> because <reason>
+       - routes: <bucket> to <bucket>, ... or none
+
+       ## Instructions
+       What the person running the lab has asked of you in messages and still wants,
+       or none. Your method is not repeated here.
+
+       ## Changes
+       - <HH:MM> <route set> because <reason>
+
+   Replace the Now section at each check. Add a line to Changes only when you set a route.
 
 If a system is down or has an incident that stops work, `notify` the person running the
 lab, with what you saw.

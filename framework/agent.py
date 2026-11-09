@@ -212,18 +212,25 @@ EXPLORE_PROMPT = _prompt("EXPLORE_PROMPT",
 )
 # A resource agent (ROLE=resources) does no work of the campaign; its only jobs are hold
 # jobs, which start or keep a block. It is woken every RESOURCE_INTERVAL seconds, or
-# sooner when the work in flight in the workspace changes or a hold job comes back, and
+# sooner when a bucket's work in flight starts, runs out or doubles, a hold job comes
+# back, or it is sent a message. Its checks re-read the conversation so far, so before a
+# check that conversation is compacted once it has passed RESOURCE_COMPACT_AT tokens. It
 # ends once no other run there has been alive for RESOURCE_IDLE_END seconds.
 RESOURCE_INTERVAL = int(os.environ.get("RESOURCE_INTERVAL", "300"))
 RESOURCE_IDLE_END = int(os.environ.get("RESOURCE_IDLE_END", "600"))
 RESOURCE_POLL = 15
+RESOURCE_COMPACT_AT = int(os.environ.get("RESOURCE_COMPACT_AT", "50000"))
+RESOURCE_COMPACT_KEEPS = ("Keep what later checks need: this workflow's blocks and when they "
+                          "end, the routes set and why, hold jobs in flight, and what the "
+                          "person running the lab has asked.")
 RESOURCE_FIRST_WAIT = int(os.environ.get("RESOURCE_FIRST_WAIT", "300"))
 RESOURCE_PROMPT = _prompt("RESOURCE_PROMPT",
     "Time to check where work goes. The work in flight in this workspace now, as tasks "
     "per bucket, and the runs alive: {demand}. Check the systems, change any route your "
-    "method calls for, and record the check as your method says. Then end your turn by "
-    "replying without a tool call: you are woken again within {minutes} minutes, or "
-    "sooner when the work in flight changes."
+    "method calls for, and record the check as your method says. "
+    "Then end your turn by replying without a tool call: you are woken again within "
+    "{minutes} minutes, or sooner when a bucket's work in flight starts, runs out or "
+    "doubles."
 )
 WINDDOWN_PROMPT = _prompt("WINDDOWN_PROMPT",
     "Wind-down requested: this run is ending. Submit no new work -- the submit tools "
@@ -509,6 +516,14 @@ def _note_cost(message):
         return
     _last_cost[:] = entries
     _write_meta(cost_models=entries)
+
+
+async def _compact_conversation(client, instructions=""):
+    """Replace the conversation with a summary of it, keeping the system prompt, tools
+    and session."""
+    await client.query(f"/compact {instructions}".strip())
+    async for message in client.receive_response():
+        pass
 
 
 def _fmt_cost(entries, sep=" · "):
@@ -1127,7 +1142,11 @@ def _start_part():
         json.dump(meta, f, indent=2)
     CONTINUATION.update(part=n + 1, part_dir=part_dir,
                         stop_reason=PREV_META.get("stop_reason") or "no reason recorded",
-                        stopped_short=[w for w in workers if w["stop_reason"] != "goal met"])
+                        # Only kinds this run starts can be carried on: not, for one,
+                        # the resource agent the framework starts beside it.
+                        stopped_short=[w for w in workers if w["stop_reason"] != "goal met"
+                                       and w["kind"] in (getattr(tools.task, "ROLES", None)
+                                                         or {})])
 
 
 def _changed_since_part():
@@ -1837,6 +1856,16 @@ async def drain_turn(client, turn_num):
         _refresh_context(client)
 
 
+def _demand_shifted(seen, now):
+    """Whether the work in flight, as tasks per bucket, has changed enough to check the
+    placement before the timer: a bucket's work started or ran out, or doubled."""
+    for b in set(seen) | set(now):
+        a, n = seen.get(b, 0), now.get(b, 0)
+        if (a == 0) != (n == 0) or (a and n >= 2 * a):
+            return True
+    return False
+
+
 def _run_seconds():
     """Seconds the run has run: its earlier parts and this one."""
     return RUN_S_BEFORE + time.time() - PART_START
@@ -2127,6 +2156,7 @@ async def main():
             _, budget_seen = budgets.changes_since(RUN_DIR, 0)
             finalize_turns = 0
             last_live = time.time()     # a resource agent's last sight of another run
+            compact_first = False       # compact a resource agent's conversation first
             # A continuation's turns are numbered on from the earlier part's.
             first_turn = (PREV_META.get("turns") or 0) + 1 if CONTINUED else 1
             for turn_num in (itertools.count(first_turn) if MAX_TURNS is None
@@ -2249,6 +2279,11 @@ async def main():
                 if mail:
                     prompt = _inbox_prompt(mail, tail=prompt)
                 submits_before = tools.submit_count()
+                if compact_first:
+                    print(f"[resources] compacting at {_last_context.get('tokens')} tokens",
+                          flush=True)
+                    await _compact_conversation(client, RESOURCE_COMPACT_KEEPS)
+                    compact_first = False
                 _prov_turn(prompt)
                 await client.query(prompt)
                 await drain_turn(client, turn_num)
@@ -2308,7 +2343,8 @@ async def main():
                         waited += RESOURCE_POLL
                         _heartbeat(force=False)
                         # Its own hold jobs coming back wake it too.
-                        if (tools._routing.demand(WORKSPACE_DIR, RUN_ID) != seen
+                        if (_demand_shifted(seen["in_flight"], tools._routing.demand(
+                                    WORKSPACE_DIR, RUN_ID)["in_flight"])
                                 or tools.remote_jobs_landed() > landed
                                 or _inbox_waiting()):
                             break
@@ -2325,6 +2361,7 @@ async def main():
                     if tools.remote_jobs_landed():
                         prompt += (f" {tools.remote_jobs_landed()} of your hold jobs have "
                                    f"come back: collect them with get_completed_jobs.")
+                    compact_first = (_last_context.get("tokens") or 0) > RESOURCE_COMPACT_AT
                     continue
                 # Idle turn with budget left: re-prompt the agent to propose a NEW
                 # region instead of exiting. A consecutive-empty cap stops a truly

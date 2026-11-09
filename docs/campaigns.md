@@ -124,10 +124,11 @@ and none of the campaign's submit tools. Its one job is a hold job (`submit_hold
 to a bucket whatever the routes: it starts a block there, or keeps one from being
 released as idle, and its return says the block is running. It follows
 `method_resources.md` in the campaign if there is one, else `methods/resources.md`, and
-keeps `RESOURCES.md`, an entry per check with what it saw and decided. It checks every
-`RESOURCE_INTERVAL` seconds (300 by default), or sooner when a task is submitted or
-collected, a hold job comes back, or it is sent a message. `RESOURCE_MODEL` sets its
-model; otherwise it has the run's own.
+keeps `RESOURCES.md`: where things stand, and each route it set. It checks every
+`RESOURCE_INTERVAL` seconds (300 by default), or sooner when a bucket's work in flight
+starts, runs out or doubles, a hold job comes back, or it is sent a message. Before a
+check, its conversation is compacted once it passes `RESOURCE_COMPACT_AT` tokens (50000
+by default). `RESOURCE_MODEL` sets its model; otherwise it has the run's own.
 
 Machine-specific keys belong in `systems/<system>.json` rather than here, or the
 campaign will not run anywhere else.
