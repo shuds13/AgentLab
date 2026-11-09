@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>{{campaign}}</title>
+<link rel="stylesheet" href="/static/watch.css"></head><body>
+<header><b id="home">AgentLab</b><span class="sep" id="sep">/</span><select id="camp"><option>{{campaign}}</option></select><span id="head">connecting…</span></header>
+<div id="tabs"></div>
+<div id="main"><aside id="agents" hidden></aside><div id="agentsdrag"></div><div id="pane"><pre id="view">loading…</pre><div id="labsvc"><div class="svcs"><span class="labtabs"><button id="tabcamps" class="on">campaigns</button><button id="tabpeople">users</button></span><span class="acts"><span class="lbl">services</span><span id="svclist"></span><span class="div"></span><button id="labrun">start</button></span></div></div><div id="lab"></div><div id="labusers"></div></div><aside id="side" hidden></aside></div>
+<button id="newest">↓ newest</button>
+<div id="chat">
+  <div id="chathead"><span id="chattitle">CHAT</span><button id="chattoggle">hide</button></div>
+  <div id="chatlog" class="none">no messages yet</div>
+  <div id="say"><select id="to" title="who the message goes to"><option value="">everyone</option></select><input id="msg" autocomplete="off"
+    placeholder="message the agent — it reads between turns"><button>send</button></div>
+</div>
+<script>const WATCH = {campaign: {{campaign_json}}, scope: {{scope_json}}};</script>
+<script src="/static/watch.js"></script></body></html>
