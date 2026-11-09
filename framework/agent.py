@@ -452,20 +452,34 @@ _last_cost = []             # one entry per model, from the most recent result
 
 def _inherited_cost():
     """What the session this run forks had already consumed, per model. The CLI's totals
-    on a resumed session include the original conversation, so a forked run subtracts
-    these to report only its own. Known when that session was a run in this workspace."""
+    on a resumed session include the original conversation, and that one's own original,
+    back to the first, so a forked run subtracts what each run along that chain recorded
+    to report only its own. Known for the runs of the chain in this workspace."""
     # A continuation is the same run, so its cost runs on from the earlier part's.
     if not RESUME_SESSION or (CONTINUED and RESUME_SESSION == PREV_META.get("session_id")):
         return {}
+    by_session = {}
     for path in glob.glob(os.path.join(WORKSPACE_DIR, "runs", "*", "meta.json")):
         try:
             with open(path) as f:
                 meta = json.load(f)
         except (OSError, json.JSONDecodeError):
             continue
-        if meta.get("session_id") == RESUME_SESSION:
-            return {c["model"]: c for c in meta.get("cost_models") or []}
-    return {}
+        if meta.get("session_id"):
+            by_session[meta["session_id"]] = meta
+    total, seen, sid = {}, set(), RESUME_SESSION
+    while sid in by_session and sid not in seen:
+        seen.add(sid)
+        meta = by_session[sid]
+        for c in meta.get("cost_models") or []:
+            t = total.setdefault(c["model"], {"model": c["model"], "input_tokens": 0,
+                                              "output_tokens": 0})
+            for k in ("input_tokens", "output_tokens"):
+                t[k] += c.get(k, 0)
+            if c.get("usd") is not None:
+                t["usd"] = (t.get("usd") or 0) + c["usd"]
+        sid = meta.get("parent_session")
+    return total
 
 
 _INHERITED_COST = _inherited_cost()
