@@ -62,7 +62,7 @@ collects what is in flight, writes up, and exits.
 |---|---|---|
 | `PREFLIGHT` | unset | run the checks, print the tools and the model, and stop without starting the run |
 | `RESUME_SESSION` | — | a Claude session id to start from, so a run continues a conversation you had with an agent. Forked, so that transcript is untouched; its whole context comes with it |
-| `CONTINUE_RUN` | unset | carry an ended run on as the same run: a run id, or `last` for the newest on this system. Its conversation is resumed and its budgets hold (see below). What the earlier part was given moves to `runs/<id>/part<N>/` with `progress.json`, where it had got to; jobs it left in flight are recorded as abandoned. The agent is told where its budgets stand, whatever it was given that changed, and which workers stopped before finishing |
+| `CONTINUE_RUN` | unset | carry an ended run on as the same run: a run id, or `last` for the newest on this system. Its conversation is resumed and its budgets hold (see below). What the earlier part was given moves to `runs/<id>/part<N>/` with `progress.json`, where it had got to; remote jobs it left in flight are taken back by their Globus Compute task ids and collected as usual, and local ones are recorded as abandoned. The agent is told where its budgets stand, whatever it was given that changed, and which workers stopped before finishing |
 | `MAX_SUBMITS` | 60 | jobs submitted before winding down |
 | `MAX_RUNTIME` | unset | seconds from start before winding down; unset means no limit |
 | `STALL_LIMIT` | unset | seconds with nothing completing before giving up; unset means wait |

@@ -1059,6 +1059,8 @@ def _log_task_id(job_id, fut):
     """Record a submission's Globus task id in the jobs log, so the task can be looked up
     with the service. The executor sets it once its batch submit returns, after submit()
     has handed back the future, so it is waited for in the background."""
+    if getattr(fut, "reattached", False):
+        return
     def wait():
         for _ in range(600):
             tid = getattr(fut, "task_id", None)
@@ -1153,6 +1155,111 @@ class _RetryingFuture(Future):
         return cancelled
 
 
+# A continued run takes back the remote jobs its earlier part left in flight. Globus
+# Compute cannot cancel a submitted task, so each still runs, and its result is kept at
+# the service, to be fetched by task id. The service treats a task with no activity for
+# two weeks as abandoned, so one older than that is not looked for.
+REATTACH_POLL_S = 30
+TASK_TTL_S = 14 * 86400
+_watched = {}              # task id -> Future, for tasks an earlier process submitted
+_watch_lock = threading.Lock()
+_watcher = None
+
+
+def _watch_task(task_id):
+    """A future for a task submitted by an earlier process, resolved by polling the
+    service for its result."""
+    global _watcher
+    fut = Future()
+    fut.task_id = task_id
+    fut.reattached = True
+    with _watch_lock:
+        _watched[task_id] = fut
+        if _watcher is None:
+            _watcher = threading.Thread(target=_poll_watched, daemon=True)
+            _watcher.start()
+    return fut
+
+
+def _poll_watched():
+    import globus_compute_sdk as _gc
+    client = None
+    while True:
+        with _watch_lock:
+            ids = [t for t, f in _watched.items() if not f.done()]
+        if ids:
+            try:
+                client = client or _gc.Client()
+                got = client.get_batch_result(ids)
+            except Exception as e:
+                print(f"[reattach] could not poll the service (will retry): {e}",
+                      flush=True)
+                got = {}
+            for tid, r in got.items():
+                if r.get("pending", True):
+                    continue
+                fut = _watched.get(tid)
+                if fut is None or fut.done():
+                    continue
+                if r.get("status") == "success" and "result" in r:
+                    fut.set_result(r["result"])
+                else:
+                    fut.set_exception(RuntimeError(str(r.get("exception") or r.get("reason")
+                                                       or r.get("status") or "failed")))
+        time.sleep(REATTACH_POLL_S)
+
+
+def reattach(job):
+    """Take back a remote job an earlier part of this run submitted. `job` is its submit
+    record from the jobs log, with `task_id`, its latest submission's task. It comes back
+    through get_completed_jobs like any job, and a retry it asks for is submitted anew.
+    Returns False when its bucket is gone."""
+    job_id, args, kind = job["job_id"], job.get("args") or {}, job.get("kind") or "job"
+    bucket, key = job.get("bucket"), job.get("key")
+    b = _SYS["buckets"].get(bucket)
+    if b is None or (kind != "hold" and kind not in KINDS):
+        return False
+    # The earlier part's process held the claim: it is this one's now.
+    if kind != "hold" and key:
+        _release_claim(key)
+        _try_claim(key, stage=ROLE)
+    call = _remote_call(args, kind, bucket)
+    first = [_watch_task(job["task_id"])]
+
+    def submit():
+        return first.pop() if first else get_executor(bucket).submit(_run_remote, *call)
+    fut = _RetryingFuture(submit, job_id=job_id, max_wait=b["idle_s"] + RETRY_MARGIN)
+    _jobs[job_id] = {"future": fut, "args": args, "key": key, "bucket": bucket,
+                     "kind": kind,
+                     "chosen": bucket if kind == "hold" else _chosen_bucket(args, kind)}
+    _append_jobs_log({"event": "reattached", "job_id": job_id, "key": key,
+                      "task_id": job["task_id"]})
+    return True
+
+
+def _remote_call(args, kind, bucket):
+    """What a remote job of a kind runs in a bucket: (source, function name, args,
+    target), for _run_remote."""
+    if kind == "hold":
+        b = _SYS["buckets"][bucket]
+        return (_HOLD_SOURCE, "hold_block", args,
+                {"bucket": bucket, "walltime": b["user_config"].get("walltime", "")})
+    _b = _SYS["buckets"][bucket]
+    target = dict(SYSTEMS[_b["system"]]["target"])
+    target["nranks"] = _b.get("nodes_per_job", 1) * target["ppn"]
+    # The shape the job actually got, so it can size itself to the allocation it is in.
+    target["bucket"] = bucket
+    target["num_nodes"] = _b.get("nodes_per_job", 1)
+    target["walltime"] = _b.get("user_config", {}).get("walltime", "")
+    if REMOTE_FILES:
+        target["files"] = REMOTE_FILES
+    if KINDS[kind].get("estimate_source"):
+        target["estimate"] = {"source": KINDS[kind]["estimate_source"],
+                              "name": KINDS[kind]["estimate_name"]}
+        target["timings"] = _timings(kind)
+    return KINDS[kind]["source"], KINDS[kind]["name"], args, target
+
+
 def _fire_remote(args, kind="job"):
     """Claim one piece of remote work and start it. Returns {"job_id", "key"}, or
     {"error"} for work already in flight, claimed elsewhere, or refused by the backend."""
@@ -1182,23 +1289,10 @@ def _fire_remote(args, kind="job"):
         return {"error": f"submit refused: the {_b['system']} node-hour budget is spent "
                          f"({_nh[0]:.1f} of {_nh[1]:g}; {whose}). No more {_b['system']} "
                          f"jobs can run unless the budget is raised."}
-    target = dict(SYSTEMS[_b["system"]]["target"])
-    target["nranks"] = _b.get("nodes_per_job", 1) * target["ppn"]
-    # The shape the job actually got, so it can size itself to the allocation it is in.
-    target["bucket"] = bucket
-    target["num_nodes"] = _b.get("nodes_per_job", 1)
-    target["walltime"] = _b.get("user_config", {}).get("walltime", "")
-    if REMOTE_FILES:
-        target["files"] = REMOTE_FILES
-    if KINDS[kind].get("estimate_source"):
-        target["estimate"] = {"source": KINDS[kind]["estimate_source"],
-                              "name": KINDS[kind]["estimate_name"]}
-        target["timings"] = _timings(kind)
+    call = _remote_call(args, kind, bucket)
     job_id = next(_job_counter)
     try:
-        fut = _RetryingFuture(lambda: get_executor(bucket).submit(
-                                  _run_remote, KINDS[kind]["source"], KINDS[kind]["name"],
-                                  args, target),
+        fut = _RetryingFuture(lambda: get_executor(bucket).submit(_run_remote, *call),
                               job_id=job_id, max_wait=_b["idle_s"] + RETRY_MARGIN)
     except Exception as e:
         _release_claim(key)
@@ -1896,12 +1990,11 @@ async def submit_hold(args):
     # the next block, as any job's would.
     hold = {"seconds": seconds, "needs_seconds": seconds,
             "note": (args.get("note") or "").strip()}
-    target = {"bucket": bucket, "walltime": b["user_config"].get("walltime", "")}
+    call = _remote_call(hold, "hold", bucket)
     job_id = next(_job_counter)
     key = f"hold:{bucket}:{job_id}"
     try:
-        fut = _RetryingFuture(lambda: get_executor(bucket).submit(
-                                  _run_remote, _HOLD_SOURCE, "hold_block", hold, target),
+        fut = _RetryingFuture(lambda: get_executor(bucket).submit(_run_remote, *call),
                               job_id=job_id, max_wait=b["idle_s"] + RETRY_MARGIN)
     except Exception as e:
         traceback.print_exc(file=sys.stderr)

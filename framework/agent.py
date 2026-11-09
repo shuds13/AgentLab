@@ -1033,6 +1033,7 @@ def _start_part():
     count = {"submit": 0, "local_submit": 0}
     by_bucket = {}
     open_jobs = {}            # submitted and not yet returned: (event, id) -> (key, bucket)
+    records = {}              # a remote job's submit record, with its latest task id
     try:
         with open(tools.JOBS_LOG) as f:
             for line in f:
@@ -1047,10 +1048,16 @@ def _start_part():
                 ev, jid = r.get("event"), r.get("job_id")
                 if ev in last:
                     last[ev] = max(last[ev], int(jid or 0))
-                    count[ev] += 1
-                    if r.get("bucket"):
-                        by_bucket[r["bucket"]] = by_bucket.get(r["bucket"], 0) + 1
+                    # A hold job counts against no submit budget.
+                    if r.get("kind") != "hold":
+                        count[ev] += 1
+                        if r.get("bucket"):
+                            by_bucket[r["bucket"]] = by_bucket.get(r["bucket"], 0) + 1
                     open_jobs[(ev, jid)] = (r.get("key"), r.get("bucket"))
+                    if ev == "submit":
+                        records[jid] = r
+                elif ev == "task" and jid in records:
+                    records[jid]["task_id"] = r.get("task_id")
                 elif ev in ("completed", "abandoned", "local_completed"):
                     sub = "local_submit" if ev == "local_completed" or r.get("local") else "submit"
                     key, bucket = open_jobs.pop((sub, jid), (None, None))
@@ -1060,8 +1067,19 @@ def _start_part():
                             by_bucket[bucket] -= 1
     except OSError:
         pass
-    # What the earlier part left in flight is not collected: recorded as abandoned, so
-    # it is not counted as still running.
+    # The remote jobs the earlier part left in flight are taken back: each still runs,
+    # and its result waits at the service. What cannot be (local jobs, whose process
+    # ended with the earlier part, and remote ones with no task id, older than the
+    # service keeps a task, or whose bucket is gone) is recorded as abandoned, so it is
+    # not counted as still running.
+    CONTINUATION["reattached"] = 0
+    for (ev, job_id), (key, _bucket) in list(open_jobs.items()):
+        rec = records.get(job_id) if ev == "submit" else None
+        if (rec and rec.get("task_id")
+                and time.time() - (rec.get("ts") or 0) < tools.TASK_TTL_S
+                and tools.reattach(rec)):
+            del open_jobs[(ev, job_id)]
+            CONTINUATION["reattached"] += 1
     for (ev, job_id), (key, _bucket) in open_jobs.items():
         tools._append_jobs_log({"event": "abandoned", "job_id": job_id, "key": key,
                                 "local": ev == "local_submit",
@@ -1874,7 +1892,11 @@ def _continuation_prompt(system_prompt, user_prompt):
     c = CONTINUATION
     changed = _changed_since_part()
     lines = [f"This run is being continued (part {c['part']}). The earlier part stopped: "
-             f"{c['stop_reason']}. Jobs it had in flight are not collected.",
+             f"{c['stop_reason']}. " + (
+                 f"Its {c['reattached']} remote job(s) still in flight were taken back: "
+                 f"they come back through get_completed_jobs as usual, under their own "
+                 f"job ids. Any other jobs it had in flight are not collected."
+                 if c.get("reattached") else "Jobs it had in flight are not collected."),
              "", "Where each budget stands, for the whole run:"]
     lines += [f"- {l}" for l in _budget_lines()]
     # A run from before instructions.md was kept is compared by its prompt files.
